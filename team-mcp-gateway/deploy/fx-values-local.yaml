@@ -1,0 +1,3 @@
+server: fx
+authHeader: Authorization
+existingSecret: fx-mcp-credentials

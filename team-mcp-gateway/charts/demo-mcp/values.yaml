@@ -1,0 +1,33 @@
+# Install once per server, e.g.
+#   helm upgrade --install notes charts/demo-mcp -n mercora -f deploy/notes-values-local.yaml
+#   helm upgrade --install fx    charts/demo-mcp -n mercora -f deploy/fx-values-local.yaml
+
+image:
+  repository: demo-mcp
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# notes or fx
+server: notes
+# Header the caller must send. "Authorization" means "Bearer <AUTH_TOKEN>".
+authHeader: Authorization
+# Existing Secret with one key, AUTH_TOKEN. The same value is given to the
+# gateway when an admin adds this server; the chart never holds it.
+existingSecret: ""
+
+service:
+  port: 8000
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+networkPolicy:
+  enabled: true
+  allowFromPodLabels:
+    app.kubernetes.io/name: gateway
+  allowFromNamespace: ""

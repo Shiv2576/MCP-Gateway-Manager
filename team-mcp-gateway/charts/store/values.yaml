@@ -1,0 +1,48 @@
+# Defaults. Environment differences live in deploy/store-values-local.yaml and
+# deploy/store-values-prod.yaml. Install with release name "mercora" so the
+# Service is mercora-wordpress, which charts/woo-mcp points at.
+
+# Secret that already exists in this namespace with WOO_CONSUMER_KEY and
+# WOO_CONSUMER_SECRET. The same Secret woo-mcp reads, so there is one copy of the key.
+wooKeySecret: woo-mcp-credentials
+
+setup:
+  currency: INR
+  country: IN
+  # Seeded only when the store has no products yet.
+  products:
+    - { name: "Masala Chai 250g", price: "299" }
+    - { name: "Filter Coffee 500g", price: "549" }
+    - { name: "Brass Tumbler", price: "799" }
+
+# Everything below goes to the Bitnami WordPress chart.
+wordpress:
+  image:
+    # Bitnami's free catalog only publishes "latest". The setup Job uses the same image.
+    registry: registry-1.docker.io
+    repository: bitnami/wordpress
+    tag: latest
+  wordpressUsername: admin
+  wordpressEmail: admin@example.com
+  wordpressBlogName: Mercora
+  # Admin and DB passwords are generated on install and kept on upgrade.
+  # Admin password: kubectl -n mercora get secret mercora-wordpress -o jsonpath='{.data.wordpress-password}' | base64 -d
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hostname: store.localhost
+    tls: false
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  mariadb:
+    enabled: true
+    primary:
+      persistence:
+        enabled: true
+        size: 5Gi

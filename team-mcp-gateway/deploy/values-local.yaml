@@ -1,0 +1,10 @@
+# k3d on your laptop. Use with:
+#   helm upgrade --install woo-mcp charts/woo-mcp -n mercora -f deploy/values-local.yaml
+# Image is built locally and loaded with:  k3d image import woo-mcp:0.1.0 -c <cluster>
+image:
+  repository: woo-mcp
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+store:
+  internalUrl: http://mercora-wordpress.mercora.svc.cluster.local
+  publicUrl: http://store.localhost

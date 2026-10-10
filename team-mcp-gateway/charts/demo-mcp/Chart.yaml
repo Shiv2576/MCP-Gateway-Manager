@@ -1,0 +1,6 @@
+apiVersion: v2
+name: demo-mcp
+description: A small MCP server (notes or fx) used as an extra gateway upstream. Install once per server.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

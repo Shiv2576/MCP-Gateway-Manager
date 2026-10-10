@@ -1,0 +1,5 @@
+# k3d on your laptop:
+#   helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-local.yaml
+ingress:
+  host: gateway.localhost
+cookieSecure: false

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gateway
+description: Team MCP gateway - one MCP endpoint in front of many upstream MCP servers.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

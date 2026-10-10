@@ -1,0 +1,44 @@
+# Defaults. Environment differences live in deploy/values-local.yaml and
+# deploy/values-prod.yaml; nothing in templates/ changes between environments.
+
+replicaCount: 1
+
+image:
+  repository: woo-mcp
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+store:
+  # Where this pod SENDS requests: the WordPress Service inside the cluster.
+  internalUrl: http://wordpress.store.svc.cluster.local
+  # The WordPress "Site Address". WooCommerce signs against this, so it must match.
+  publicUrl: http://store.localhost
+  # auto = OAuth 1.0a signing over http, Basic over https.
+  authMode: auto
+  timeoutSeconds: 10
+  # Defines what "today" means for list_orders.
+  timezone: Asia/Kolkata
+
+# Name of a Secret that already exists in this namespace, with three keys:
+#   WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET, MCP_AUTH_TOKEN
+# The chart never contains the values themselves.
+existingSecret: woo-mcp-credentials
+
+service:
+  port: 8000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 300m
+    memory: 192Mi
+
+networkPolicy:
+  enabled: true
+  # Only pods carrying these labels may connect. Set them on the gateway.
+  allowFromPodLabels:
+    app.kubernetes.io/name: gateway
+  # Leave empty when the gateway runs in the same namespace as this server.
+  allowFromNamespace: ""

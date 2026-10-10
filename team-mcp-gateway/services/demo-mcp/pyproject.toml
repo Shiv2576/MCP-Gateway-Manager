@@ -1,0 +1,11 @@
+[project]
+name = "demo-mcp"
+version = "0.1.0"
+description = "Two small MCP servers (notes, fx) used as extra gateway upstreams."
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2.2,<3",
+    "uvicorn>=0.31",
+    "starlette>=0.48",
+    "pydantic>=2.12",
+]

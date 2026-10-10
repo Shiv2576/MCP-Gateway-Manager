@@ -1,0 +1,30 @@
+{{- if .Values.networkPolicy.enabled }}
+# Selecting these pods with an Ingress policy flips them to "deny by default":
+# only the sources listed below may open a connection. Everything else in the
+# cluster, including the storefront, is refused at the network layer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "demo-mcp.name" . }}
+  labels:
+    {{- include "demo-mcp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo-mcp.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.allowFromPodLabels | nindent 14 }}
+          {{- with .Values.networkPolicy.allowFromNamespace }}
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8000
+{{- end }}

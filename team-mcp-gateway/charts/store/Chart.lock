@@ -1,0 +1,6 @@
+dependencies:
+- name: wordpress
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 34.1.3
+digest: sha256:6de09f6053e6f458582ae7a2e909ca6f28c222c5a1b9ae6589ae7650b770609a
+generated: "2026-10-09T16:54:29.833009+05:30"

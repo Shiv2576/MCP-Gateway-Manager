@@ -1,0 +1,13 @@
+# k3s on a VPS. Same chart, different values:
+#   helm upgrade --install woo-mcp charts/woo-mcp -n mercora -f deploy/values-prod.yaml
+image:
+  repository: ghcr.io/CHANGE-ME/woo-mcp   # pushed to a registry the VPS can pull from
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+store:
+  internalUrl: http://mercora-wordpress.mercora.svc.cluster.local
+  publicUrl: https://store.example.com     # the real domain; TLS ends at the Ingress
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi

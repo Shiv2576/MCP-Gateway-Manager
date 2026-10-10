@@ -1,0 +1,15 @@
+# The MCP endpoint and admin API; reached from outside through the Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gateway.name" . }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gateway.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

@@ -1,0 +1,16 @@
+# ClusterIP only, and this chart has no Ingress on purpose: the server must not
+# be reachable from outside the cluster. Only the gateway calls it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "woo-mcp.name" . }}
+  labels:
+    {{- include "woo-mcp.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "woo-mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

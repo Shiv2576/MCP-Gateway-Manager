@@ -1,0 +1,6 @@
+apiVersion: v2
+name: woo-mcp
+description: MCP server that exposes one WooCommerce store's products and orders as tools.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

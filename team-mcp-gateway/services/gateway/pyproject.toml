@@ -1,0 +1,20 @@
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "Team MCP gateway: one MCP endpoint in front of many upstream MCP servers."
+requires-python = ">=3.12"
+dependencies = [
+    # MCP SDK: the server side for /mcp and the client side for upstreams.
+    "mcp>=2.2,<3",
+    "httpx2>=2.5",
+    "anyio>=4",
+    "uvicorn>=0.31",
+    "starlette>=0.48",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

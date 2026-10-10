@@ -1,0 +1,31 @@
+[project]
+name = "woo-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # The official MCP SDK (server and client). 2.x renamed FastMCP to MCPServer.
+    "mcp>=2.2,<3",
+    # HTTP client used to call the WooCommerce REST API (also what the SDK uses).
+    "httpx2>=2.5",
+    # The web server that runs the app.
+    "uvicorn>=0.31",
+    # Web framework underneath the SDK; used directly for the health routes.
+    "starlette>=0.48",
+    # Validation of tool arguments.
+    "pydantic>=2.12",
+    # Timezone database, so "today" works in slim container images.
+    "tzdata",
+]
+
+[dependency-groups]
+dev = [
+    # Independent OAuth 1.0a implementation, used only to check our signer.
+    "oauthlib>=3.2",
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

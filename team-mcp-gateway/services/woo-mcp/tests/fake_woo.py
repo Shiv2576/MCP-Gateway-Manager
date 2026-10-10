@@ -1,0 +1,183 @@
+"""A stand-in for WooCommerce, small enough to read in one sitting.
+
+It keeps products and orders in memory and, like the real thing over plain
+HTTP, refuses any request whose OAuth 1.0a signature does not check out. The
+check is done by `oauthlib`, an independent implementation, so a pass here
+means our hand-written signer agrees with a library other people rely on.
+
+The base string is built from PUBLIC_ORIGIN, not from the URL the request
+arrived on. That mirrors WooCommerce, which signs against the site's home URL.
+"""
+
+from __future__ import annotations
+
+import time
+
+from oauthlib.oauth1.rfc5849 import signature as oauth_sig
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+CONSUMER_KEY = "ck_" + "a" * 40
+CONSUMER_SECRET = "cs_" + "b" * 40
+PUBLIC_ORIGIN = "http://store.localhost"
+
+
+def build_fake_woo() -> Starlette:
+    products: dict[int, dict] = {
+        1: {
+            "id": 1,
+            "name": "Trail Mix",
+            "price": "199",
+            "status": "publish",
+            "stock_status": "instock",
+            "sku": "TM-1",
+            "permalink": f"{PUBLIC_ORIGIN}/p/trail-mix",
+        },
+    }
+    orders: dict[int, dict] = {}
+    seen_nonces: set[str] = set()
+    state = {"next_id": 100, "slow": False}
+
+    def authorised(request: Request) -> bool:
+        params = dict(request.query_params)
+        supplied = params.pop("oauth_signature", None)
+        if not supplied or params.get("oauth_consumer_key") != CONSUMER_KEY:
+            return False
+        if params.get("oauth_signature_method") != "HMAC-SHA256":
+            return False
+        if abs(time.time() - int(params.get("oauth_timestamp", "0"))) > 900:
+            return False
+        nonce = params.get("oauth_nonce", "")
+        if not nonce or nonce in seen_nonces:
+            return False
+        seen_nonces.add(nonce)
+        normalized = oauth_sig.normalize_parameters(list(params.items()))
+        base = oauth_sig.signature_base_string(
+            request.method, PUBLIC_ORIGIN + request.url.path, normalized
+        )
+        expected = oauth_sig.sign_hmac_sha256(base, CONSUMER_SECRET, "")
+        return oauth_sig.safe_string_equals(expected, supplied)
+
+    def guard(handler):
+        async def wrapped(request: Request):
+            if not authorised(request):
+                return JSONResponse(
+                    {
+                        "code": "woocommerce_rest_authentication_error",
+                        "message": "Invalid signature - provided signature does not match.",
+                    },
+                    status_code=401,
+                )
+            if state["slow"]:
+                import anyio
+
+                await anyio.sleep(5)
+            return await handler(request)
+
+        return wrapped
+
+    async def list_products(request: Request):
+        q = (request.query_params.get("search") or "").lower()
+        rows = [p for p in products.values() if q in p["name"].lower()]
+        rows.sort(key=lambda p: -p["id"])
+        return JSONResponse(rows[: int(request.query_params.get("per_page", 10))])
+
+    async def create_product(request: Request):
+        body = await request.json()
+        pid = state["next_id"]
+        state["next_id"] += 1
+        products[pid] = {
+            "id": pid,
+            "name": body["name"],
+            "price": body["regular_price"],
+            "status": body.get("status", "draft"),
+            "stock_status": "instock",
+            "sku": body.get("sku", ""),
+            "permalink": f"{PUBLIC_ORIGIN}/p/{pid}",
+        }
+        return JSONResponse(products[pid], status_code=201)
+
+    async def trash_product(request: Request):
+        pid = int(request.path_params["pid"])
+        if pid not in products:
+            return JSONResponse(
+                {"code": "woocommerce_rest_product_invalid_id", "message": "Invalid ID."},
+                status_code=404,
+            )
+        products[pid]["status"] = "trash"
+        return JSONResponse(products.pop(pid))
+
+    async def list_orders(request: Request):
+        qp = request.query_params
+        rows = list(orders.values())
+        if qp.get("status"):
+            rows = [o for o in rows if o["status"] == qp["status"]]
+        if qp.get("after"):
+            assert qp.get("dates_are_gmt") == "true"
+            rows = [
+                o for o in rows if qp["after"] <= o["date_created_gmt"] < qp["before"]
+            ]
+        rows.sort(key=lambda o: o["date_created_gmt"], reverse=True)
+        return JSONResponse(rows[: int(qp.get("per_page", 10))])
+
+    async def one_order(request: Request):
+        oid = int(request.path_params["oid"])
+        if oid not in orders:
+            return JSONResponse(
+                {
+                    "code": "woocommerce_rest_shop_order_invalid_id",
+                    "message": "Invalid ID.",
+                },
+                status_code=404,
+            )
+        if request.method == "PUT":
+            orders[oid]["status"] = (await request.json())["status"]
+        return JSONResponse(orders[oid])
+
+    app = Starlette(
+        routes=[
+            Route("/wp-json/wc/v3/products", guard(list_products), methods=["GET"]),
+            Route("/wp-json/wc/v3/products", guard(create_product), methods=["POST"]),
+            Route(
+                "/wp-json/wc/v3/products/{pid:int}",
+                guard(trash_product),
+                methods=["DELETE"],
+            ),
+            Route("/wp-json/wc/v3/orders", guard(list_orders), methods=["GET"]),
+            Route(
+                "/wp-json/wc/v3/orders/{oid:int}",
+                guard(one_order),
+                methods=["GET", "PUT"],
+            ),
+        ]
+    )
+    app.state.orders = orders
+    app.state.products = products
+    app.state.flags = state
+    return app
+
+
+def make_order(
+    oid: int, created_gmt: str, status: str = "processing", total: str = "499.00"
+) -> dict:
+    return {
+        "id": oid,
+        "number": str(oid),
+        "status": status,
+        "total": total,
+        "currency": "INR",
+        "date_created_gmt": created_gmt,
+        "billing": {
+            "first_name": "Priya",
+            "last_name": "Sharma",
+            "email": "priya@example.com",
+        },
+        "shipping": {"city": "Pune", "state": "MH", "country": "IN"},
+        "payment_method_title": "Cash on delivery",
+        "customer_note": "",
+        "line_items": [
+            {"product_id": 1, "name": "Trail Mix", "quantity": 2, "total": total}
+        ],
+    }

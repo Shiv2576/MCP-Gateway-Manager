@@ -1,0 +1,93 @@
+{{- $wp := .Values.wordpress -}}
+{{- $fullname := printf "%s-wordpress" .Release.Name -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-store-setup
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  setup-woo.sh: |-
+{{ .Files.Get "files/setup-woo.sh" | indent 4 }}
+  register-woo-key.php: |-
+{{ .Files.Get "files/register-woo-key.php" | indent 4 }}
+  products: |
+{{- range .Values.setup.products }}
+    {{ .name }}|{{ .price }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-store-setup
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "1"
+    # Kept after it finishes so `kubectl logs job/...` works; replaced on the next run.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        # Bitnami's MariaDB NetworkPolicy admits only this label pair.
+        # No name=wordpress label, so the WordPress Service does not route here.
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: wordpress
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        fsGroup: 1001
+      # The WordPress volume is ReadWriteOnce, so this pod must run on the same node.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+                  app.kubernetes.io/name: wordpress
+      containers:
+        - name: setup
+          image: "{{ $wp.image.registry }}/{{ $wp.image.repository }}:{{ $wp.image.tag }}"
+          command: ["/bin/bash", "/setup/setup-woo.sh"]
+          env:
+            - name: WP_SERVICE
+              value: {{ $fullname }}
+            - name: HOME
+              value: /tmp
+            - name: CURRENCY
+              value: {{ .Values.setup.currency | quote }}
+            - name: COUNTRY
+              value: {{ .Values.setup.country | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.wooKeySecret }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: setup, mountPath: /setup }
+            - { name: app, mountPath: /app }
+            - { name: tmp, mountPath: /tmp }
+            - { name: tmp, mountPath: /opt/bitnami/php/tmp, subPath: php }
+            - { name: wordpress-data, mountPath: /bitnami/wordpress, subPath: wordpress }
+      volumes:
+        - name: setup
+          configMap:
+            name: {{ .Release.Name }}-store-setup
+        - { name: app, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        - name: wordpress-data
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}

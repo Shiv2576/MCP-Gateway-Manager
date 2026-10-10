@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.local.yaml
+team-mcp-gateway/services/woo-mcp/.env
+charts/*/charts/
