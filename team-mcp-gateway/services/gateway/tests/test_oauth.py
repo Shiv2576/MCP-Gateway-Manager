@@ -106,6 +106,8 @@ def test_oauth_flow(tmp_path):
             new = r.json()
             assert (await c.post("/token", data=refresh)).status_code == 400
 
+            assert (await admin.get("/api/connect")).json() == {"oauth": True, "mcp_url": f"{gw}/mcp"}
+
             # Dashboard: bob sees his connection; the admin sees everyone's.
             bob = await login(gw, "bob", "bob-password-123")
             conns = (await bob.get("/api/oauth/connections")).json()
@@ -137,6 +139,8 @@ def test_oauth_off_without_public_url(tmp_path):
             assert (await c.get("/oauth/login")).status_code == 404
             r = await c.post("/mcp", json={})
             assert r.status_code == 401 and r.headers["www-authenticate"] == "Bearer"
+            admin = await login(gw, *ADMIN)
+            assert (await admin.get("/api/connect")).json() == {"oauth": False, "mcp_url": None}
 
     asyncio.run(run())
 

@@ -28,7 +28,10 @@ Added on top during the work:
 - **member access**: admins choose which servers each member may use (4.7);
 - **multi-store provisioning**: admins create up to 3 WooCommerce stores from
   templates, each in its own namespace with its own woo-mcp, registered in the
-  gateway automatically (4.8).
+  gateway automatically (4.8);
+- **OAuth sign-in for Claude**: members add the gateway to claude.ai / Claude
+  Desktop as a custom connector and sign in with their gateway login; Anthropic's
+  servers then call `/mcp` with an OAuth token (4.9).
 
 An earlier `customer` role (store customers ordering through the gateway) was
 built and later **removed**; the gateway's migration deletes old customer users
@@ -44,8 +47,9 @@ and the `customer_tools` column. woo-mcp now has only the 6 store tools.
  │                                                                                          │
  │  Browser ── dash.localhost ──► team-ui-dashboard (nginx: React app, /api ──► gateway)     │
  │  Claude Code / Inspector ── gateway.localhost ──► team-gateway                           │
- │                                (Starlette + MCP SDK, SQLite on a PVC)                    │
- │                                 /mcp  one MCP endpoint (API key)                         │
+ │  claude.ai (Anthropic) ── https PUBLIC_URL (ngrok) ──┘ (Starlette + MCP SDK, SQLite PVC) │
+ │                                 /mcp  one MCP endpoint (API key or OAuth token)          │
+ │                                 /authorize /token /register /oauth/login  OAuth server   │
  │                                 /api  REST API (session cookie or API key)               │
  │                                 adds each upstream's credential                          │
  │                   ┌─────────────┬───────┴──────────┬──────────────────────┐              │
@@ -91,8 +95,9 @@ team-mcp-gateway/
       app/chat.py           chat agent (POST /api/chat)
       app/stores.py         store API (POST/GET/DELETE /api/stores)
       app/kube.py           minimal Kubernetes client for Store resources (ServiceAccount token)
-      app/main.py           settings, /mcp API-key guard, MCP handlers, app wiring
-      tests/test_gateway.py, tests/test_stores.py
+      app/oauth.py          OAuth authorization server for /mcp (clients, codes, tokens, login page)
+      app/main.py           settings, /mcp guard (API key or OAuth token), MCP handlers, app wiring
+      tests/test_gateway.py, tests/test_stores.py, tests/test_oauth.py
     store-operator/         kopf operator: Store CR -> namespace + Helm releases + gateway server
       store_operator/manifests.py  everything it creates, as plain data (unit tested)
       store_operator/handlers.py   create / reconcile / repair / delete handlers
@@ -101,7 +106,7 @@ team-mcp-gateway/
     demo-mcp/               two small upstreams in one image: notes and fx
     dashboard/              React 19 + Vite 7, served by nginx
       src/App.jsx           shell, login, sidebar
-      src/Servers.jsx       server cards, add/edit form
+      src/Servers.jsx       servers table, add/edit form, OAuth / API key status
       src/Tools.jsx         tool browser and "try a tool" runner (typed form from the input schema)
       src/Chat.jsx          chat agent UI
       src/Stores.jsx        store templates, create, status, delete
@@ -167,6 +172,9 @@ Tables:
 | `servers` | name, url, `auth_header`, `auth_value` (the credential), enabled |
 | `user_servers` | which servers each member may use (see 4.7) |
 | `audit_log` | time, user, tool, server, ok, duration, error text (never arguments or results) |
+| `oauth_clients` | client_id, registration info (name, redirect URIs) |
+| `oauth_codes` | sha256 of the login-page id, then of the auth code; client, user, PKCE params, expiry |
+| `oauth_tokens` | sha256 of access / refresh token, user, client, scopes, resource, expiry |
 
 `db._migrate` upgrades older databases in place (drops the old customer role
 and `customer_tools` column, adds `user_servers` granting existing members every
@@ -210,6 +218,9 @@ forwarded upstream.
   the same time.
 - MCP clients and scripts: `Authorization: Bearer mcpg_...` API key, shown once,
   stored as a hash.
+- Claude custom connector: OAuth access token on `/mcp` (4.9), only when `PUBLIC_URL` is set.
+- Wrong-password limit: 5 failures per 15 min per username, on both the dashboard
+  login and the OAuth login page (in memory, per replica).
 
 **Roles:**
 
@@ -234,12 +245,15 @@ call, including refused ones, is audited.
 | `POST /api/chat` | logged in (4.6) |
 | `GET, POST /api/stores`, `DELETE /api/stores/{name}` | admin; delete only your own (4.8) |
 | `GET /api/audit?limit=` | admin |
+| `GET /api/oauth/connections`, `DELETE /api/oauth/connections/{user_id}/{client_id}` | own; admin sees all (4.9) |
+| `GET /api/connect` | logged in: `{oauth, mcp_url}` for the dashboard |
 | `/healthz`, `/readyz` | open |
 
 **Settings (env):** `DATABASE_PATH`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`,
 `CALL_TIMEOUT_S` (10), `LIST_TIMEOUT_S` (5), `REFRESH_INTERVAL_S` (30),
 `CALLS_PER_MINUTE` (60), `COOKIE_SECURE`, `STORES_NAMESPACE` (turns the store API on;
-set by the chart when `stores.enabled`), `OPENROUTER_API_KEY`, `LLM_MODEL`.
+set by the chart when `stores.enabled`), `OPENROUTER_API_KEY`, `LLM_MODEL`,
+`PUBLIC_URL` (chart `publicUrl`; turns OAuth on), `OAUTH_REDIRECT_URIS` (chart `oauthRedirectUris`).
 
 ### 4.4 demo-mcp: notes and fx (phase 4)
 
@@ -255,9 +269,10 @@ Both have a tool named `list` on purpose, to show the collision scheme
 React + Vite, served by nginx, which also forwards `/api` to the gateway so the
 session cookie stays same-origin. Pages:
 
-- **Servers**: stat tiles (servers, healthy, unreachable, tools), a card per
-  server with a health dot, URL, credential set/not set, last check, error;
-  add / edit / disable / remove (admin); expand to see tools. Refreshes every 3 s.
+- **Servers**: stat tiles (servers, healthy, unreachable, tools), pills showing
+  whether OAuth and API keys are enabled for `/mcp`, then a table: name/status,
+  upstream auth type, tools, created, enabled switch, edit / delete icons (admin);
+  expand to see tools. Refreshes every 3 s.
 - **Tools**: every tool the user may use, grouped by server. Picking one builds
   a typed form from its input schema: text inputs with length/pattern checks,
   number inputs with min/max, a dropdown for enums (with "Any" when optional), a
@@ -268,7 +283,8 @@ session cookie stays same-origin. Pages:
 - **Stores** (admin): pick a template, name the store, create; live phase and
   message, store URL when Ready, delete your own stores; `n/3` counter.
 - **Chat**: talk to an LLM agent that uses the gateway tools as you (see 4.6).
-- **API keys**: create (shown once, copy button), list, revoke.
+- **API keys**: create (shown once, copy button), list, revoke; **Connected apps**
+  lists OAuth sign-ins (app, user, last token) with Disconnect.
 - **Users** (admin): add admin / member (with the servers a member may use),
   change a member's access, delete a user.
 - **Audit log** (admin): last 200 calls, refreshes every 5 s.
@@ -389,6 +405,61 @@ its memory requests; a restarted operator stayed Pending, so deletes waited for
 it. Store pods now use PriorityClass `store-workload` (-100, never preempts), so
 the operator and gateway can always evict a store pod to start.
 
+### 4.9 OAuth for Claude custom connectors (bonus, part 3)
+
+claude.ai and Claude Desktop "custom connectors" connect from **Anthropic's
+servers**, not from the laptop, and cannot send a static API-key header. They
+follow the MCP authorization spec (OAuth 2.1 + PKCE + dynamic client
+registration). The gateway now is its own authorization server for `/mcp`.
+
+Code: `services/gateway/app/oauth.py` (the SDK's `OAuthAuthorizationServerProvider`
+backed by SQLite), wiring in `app/main.py`, tests in `tests/test_oauth.py`.
+
+```
+Claude (Anthropic) ── POST /mcp, no token ──► 401 + WWW-Authenticate: resource_metadata=…
+   │ GET /.well-known/oauth-protected-resource/mcp, /.well-known/oauth-authorization-server
+   │ POST /register        (dynamic client registration; redirect URI must be allowed)
+   │ GET  /authorize       (PKCE) ──► 302 to /oauth/login?id=…
+   │        member types gateway username + password ──► 302 to claude.ai/api/mcp/auth_callback?code=…
+   │ POST /token           (code + PKCE verifier) ──► access token (1 h) + refresh token (30 d)
+   └ POST /mcp  Authorization: Bearer <access token> ──► same path as an API key
+```
+
+- **On only when `PUBLIC_URL` is set** (chart `publicUrl`). It is the issuer and
+  the token audience (`<PUBLIC_URL>/mcp`); a token issued for another URL is refused.
+  Without it the OAuth routes return 404 and `/mcp` takes API keys only.
+- **Token = the user who signed in**: their server grants (4.7), rate limit and
+  audit rows apply exactly as with an API key. Admin sign-in works too.
+- **Stored hashed**: codes and tokens are sha256 in SQLite, never in plain text.
+  Codes are single use and short-lived; refresh tokens rotate (each works once).
+- **Redirect allow-list**: clients may register only Claude's callbacks
+  (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`,
+  override with `OAUTH_REDIRECT_URIS`) or loopback `http://localhost` / `127.0.0.1`
+  (Claude Code, MCP Inspector). Anything else is refused at registration.
+- **Revocation**: Dashboard → API keys → Connected apps → Disconnect deletes
+  that user+client's tokens; the next call is 401 and Claude asks to sign in again.
+  Deleting a user deletes their tokens. `/revoke` works for clients.
+- **Login page** `/oauth/login`: plain server-rendered form, same password check
+  and wrong-password limit as the dashboard.
+
+**Exposing it (local test):** `/mcp` must be reachable on public HTTPS.
+
+```
+kubectl -n mercora port-forward svc/team-gateway 8000:8000
+ngrok http 8000
+helm upgrade team charts/gateway -n mercora -f deploy/gateway-values-local.yaml \
+  --set publicUrl=https://<id>.ngrok-free.app --set image.tag=<current> --set stores.enabled=true
+```
+
+Then Claude → Settings → Connectors → Add custom connector → `https://<id>.ngrok-free.app/mcp`
+→ Connect → gateway login page → sign in as a member.
+
+**Verified live (2026-10-10):** Claude registered as client "Claude" with redirect
+`https://claude.ai/api/mcp/auth_callback`; member `shop3-tester` signed in and
+holds an access + refresh token; the metadata at
+`http://gateway.localhost/.well-known/oauth-authorization-server` advertises the
+ngrok issuer. The audit log shows `shop3__list_products` calls under `shop3-tester`.
+
 ## 5. What is running now (local)
 
 Cluster `store-check` (k3d, port 80).
@@ -397,8 +468,8 @@ Namespace `mercora` (platform):
 
 | Helm release | Chart | Address / Service | Image |
 |---|---|---|---|
-| `team` | charts/gateway | http://gateway.localhost (`team-gateway:8000`) | `gateway:0.1.2` |
-| `team-ui` | charts/dashboard | http://dash.localhost (`team-ui-dashboard`) | `dashboard:0.1.1` |
+| `team` | charts/gateway | http://gateway.localhost (`team-gateway:8000`); public via ngrok (`publicUrl`) | `gateway:0.1.5` |
+| `team-ui` | charts/dashboard | http://dash.localhost (`team-ui-dashboard`) | `dashboard:0.1.5` |
 | `store-operator` | charts/store-operator | (no Service; liveness on :8080) | `store-operator:0.1.2` |
 | `notes` | charts/demo-mcp | `notes:8000` (cluster only) | `demo-mcp:0.1.0` |
 | `fx` | charts/demo-mcp | `fx:8000` (cluster only) | `demo-mcp:0.1.0` |
@@ -407,11 +478,11 @@ Stores (each in `store-<name>` with releases `store` and `woo-mcp`, image `woo-m
 
 | Store | Template | URL | Phase |
 |---|---|---|---|
-| `basic1` | catalog-a | http://basic1.localhost | Ready |
-| `basic2` | blank | http://basic2.localhost | Ready |
+| `shop3` | blank | http://shop3.localhost | Ready |
 
-The dashboard image in the cluster (0.1.1) does not have the new typed Tools
-form yet; rebuild and redeploy it (below) to get it.
+`team` values: `image.tag=0.1.5`, `stores.enabled=true`, `publicUrl=<ngrok URL>`.
+A free ngrok URL changes each run: re-run the helm upgrade with the new URL and
+reconnect in Claude. With ngrok stopped, Claude's connector fails; API keys still work.
 
 **Secrets** (namespace `mercora`):
 
@@ -426,16 +497,20 @@ Per store, `store-<name>/woo-mcp-credentials` (`WOO_CONSUMER_KEY`,
 `WOO_CONSUMER_SECRET`, `MCP_AUTH_TOKEN`), generated once by the operator.
 
 **Registered upstreams in the gateway:** `notes`, `fx`, and one per store
-(`basic1`, `basic2`, URL `http://woo-mcp-woo-mcp.store-<name>.svc.cluster.local:8000/mcp`,
+(`shop3`, URL `http://woo-mcp-woo-mcp.store-<name>.svc.cluster.local:8000/mcp`,
 bearer). The old `woo` server (the removed single store) was deleted.
 
 **Gateway users:** `admin` (admin); members `test_user1`, `test_user2`,
 `test_user3` (granted notes + fx) and `dave` (test member from the store
-acceptance run, no grants left; can be deleted).
+acceptance run, no grants left; can be deleted); `shop3-tester` (member used
+for the Claude OAuth test).
 
 **Claude Code connection (user scope):** `team-gateway` →
 `http://gateway.localhost/mcp` with a member's key; it sees only that member's
 granted servers. A direct `woo` connection (local woo-mcp) should be removed.
+
+**Claude (claude.ai) connector:** `<ngrok URL>/mcp`, signed in by OAuth as
+`shop3-tester`; listed under Dashboard → API keys → Connected apps.
 
 ### Rebuild and redeploy
 
@@ -457,7 +532,7 @@ Fresh install: see README, "The gateway → Install", "The dashboard" and "Store
 
 | Suite | Command | Result |
 |---|---|---|
-| gateway | `cd services/gateway && uv run pytest` | 12 passed |
+| gateway | `cd services/gateway && uv run pytest` | 15 passed |
 | woo-mcp | `cd services/woo-mcp && uv run pytest tests/tests_woo_mcp.py` | 8 passed |
 | store-operator | `cd services/store-operator && uv run pytest` | 11 passed |
 | dashboard | `cd services/dashboard && npx vite build` | builds |
@@ -474,8 +549,13 @@ credentials absent from API responses, dashboard tool endpoints, rate limit,
 member grants (members see and call only granted servers; old members keep
 their servers on upgrade), deleting users, the chat agent, the store API
 (admin only, name rules, reserved names, 3-per-admin cap under concurrent
-creates, off outside a cluster), refusing to start without a first admin, and
-in-place upgrade of an old database.
+creates, off outside a cluster), refusing to start without a first admin,
+in-place upgrade of an old database, and OAuth: the full flow (register, authorize,
+login page, code + PKCE, token, `/mcp` call as that user), refused foreign
+redirect URIs, wrong password on the login page, single-use refresh, Disconnect → 401,
+`/api/connect`, everything off (404) without `PUBLIC_URL`, and the wrong-password
+lock. Not tested: a token issued for another resource URL (the check is in
+`oauth.user_for_oauth_token`).
 
 Operator tests cover the generated manifests (quota, limits, policies, values,
 priority class, namespace ownership, cap, progress, timeout) and the gateway
@@ -494,6 +574,7 @@ filter both made the tests fail, so the tests really check those paths.
 - Store provisioning: see the live run in 4.8.
 - From Claude Code (member key, original store): created "Masala Chai Gift Box" (#19), deleted
   "Rolled Oats" (#20), both audited under `test_user2`.
+- From claude.ai over ngrok: OAuth sign-in as `shop3-tester`, tools listed (4.9).
 
 ---
 
@@ -511,6 +592,7 @@ filter both made the tests fail, so the tests really check those paths.
 | Old store PVC stuck `Terminating` after `helm uninstall` | Helm hook Job (not removed by uninstall) still used the PVC | delete the Job; operator installs set `setup.hook: false` |
 | Gateway showed `woo` unreachable | its woo-mcp was uninstalled with the old store | server removed in the dashboard |
 | Tools page needed raw JSON arguments | no types shown | typed form generated from the input schema |
+| claude.ai connector impossible with API keys | Anthropic's servers call `/mcp` and need OAuth + public HTTPS | gateway became its own OAuth server; ngrok for the public URL (4.9) |
 | `delete_product` reply says `publish` | real WooCommerce returns the product as it was before trashing | **open**: one-line fix in `services/woo-mcp/app/server.py` to report `trash` |
 
 ---
@@ -532,7 +614,11 @@ filter both made the tests fail, so the tests really check those paths.
 
 - Upstream credentials are stored in plain text in SQLite (encryption is on the hardening list).
 - SQLite and the in-memory rate limit mean one gateway replica only.
-- No login rate limiting; no SSRF check on server URLs.
+- Login limit is per username, in memory (resets on restart; someone can lock a
+  user out for 15 min by guessing). No SSRF check on server URLs.
+- OAuth needs a stable public URL; the ngrok one is temporary and `publicUrl`
+  must match it exactly. While ngrok runs, the whole gateway (incl. `/api`) is public.
+- OAuth scopes are not used: a token gives the same access as the user's API key.
 - No change-password.
 - notes are kept in memory and vanish on restart.
 - Chat history lives only in the browser tab; the reply is not streamed (the UI
@@ -549,10 +635,10 @@ filter both made the tests fail, so the tests really check those paths.
 |---|---|---|
 | Claude Code | your laptop | yes (header with API key) |
 | Claude Desktop local config via `npx mcp-remote ... --header` | your laptop | yes (not yet tried) |
-| claude.ai / Desktop "custom connector" | Anthropic's servers | no: needs a public HTTPS URL **and** an OAuth login |
+| claude.ai / Desktop "custom connector" | Anthropic's servers | yes, via OAuth (4.9) while a public HTTPS URL (ngrok) points at the gateway |
 
-A tunnel (`cloudflared tunnel --url http://gateway.localhost:80`) can give a
-temporary public URL for testing, but it exposes `/api` too and still needs OAuth.
+The tunnel exposes `/api` too. For prod: a real domain with TLS, only `/mcp`,
+`/authorize`, `/token`, `/register`, `/revoke`, `/oauth/login` and `/.well-known/*` public.
 
 ---
 
@@ -562,8 +648,8 @@ temporary public URL for testing, but it exposes `/api` too and still needs OAut
 2. Rotate the API keys that were pasted into chat (dashboard → API keys).
 3. Rebuild and redeploy the dashboard (typed Tools form).
 4. Change-password. Optional: per-tool grants for members.
-5. Done: ~~chat agent (4.6)~~, ~~member access (4.7)~~, ~~multi-store provisioning (4.8)~~,
+5. Done: ~~OAuth for Claude custom connectors (4.9)~~, ~~login rate limit~~, ~~chat agent (4.6)~~, ~~member access (4.7)~~, ~~multi-store provisioning (4.8)~~,
    ~~typed Tools form (4.5)~~, ~~customer role removed~~, ~~old single store cleaned up~~.
 6. ROADMAP phase 7: VPS with a real domain and TLS, images in a registry,
    `values-prod` files, public `/mcp` only, private dashboard; record the demo.
-7. Hardening: encrypt upstream credentials, SSRF check, login rate limit.
+7. Hardening: encrypt upstream credentials, SSRF check; persistent login limit.

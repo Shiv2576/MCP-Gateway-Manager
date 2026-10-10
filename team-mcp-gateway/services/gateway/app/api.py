@@ -185,6 +185,14 @@ async def me(request: Request) -> Response:
     return JSONResponse(_user(current_user(request)))
 
 
+@handler
+async def connect_info(request: Request) -> Response:
+    """How MCP clients can sign in to /mcp, for the dashboard."""
+    current_user(request)
+    public_url = request.app.state.settings.public_url
+    return JSONResponse({"oauth": bool(public_url), "mcp_url": f"{public_url}/mcp" if public_url else None})
+
+
 def _user(u: sqlite3.Row) -> dict:
     return {"id": u["id"], "username": u["username"], "role": u["role"]}
 
@@ -511,6 +519,7 @@ routes = [
     Route("/api/login", login, methods=["POST"]),
     Route("/api/logout", logout, methods=["POST"]),
     Route("/api/me", me, methods=["GET"]),
+    Route("/api/connect", connect_info, methods=["GET"]),
     Route("/api/users", list_users, methods=["GET"]),
     Route("/api/users", create_user, methods=["POST"]),
     Route("/api/users/{id:int}/servers", set_user_servers, methods=["PUT"]),

@@ -22,6 +22,11 @@ export default function Servers({ user }) {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(null) // null | 'new' | server
   const [open, setOpen] = useState({})
+  const [connect, setConnect] = useState(null)
+
+  useEffect(() => {
+    api('/connect').then(setConnect).catch(() => {})
+  }, [])
 
   const load = useCallback(() => {
     api('/servers').then(setServers).catch((e) => setError(e.message))
@@ -55,6 +60,13 @@ export default function Servers({ user }) {
         <Stat label="Tools exposed" value={tools} />
       </div>
 
+      {connect && (
+        <div className="row">
+          <span className={`pill ${connect.oauth ? 'ok' : ''}`}>OAuth {connect.oauth ? 'enabled' : 'disabled'}</span>
+          <span className="pill ok">API key enabled</span>
+        </div>
+      )}
+
       <div className="toolbar">
         <h2>Upstream MCP servers</h2>
         {isAdmin && (
@@ -81,7 +93,7 @@ export default function Servers({ user }) {
           <thead>
             <tr>
               <th>Server</th>
-              <th>Auth type</th>
+              <th title="How the gateway signs in to this server">Upstream auth</th>
               <th>Tools</th>
               <th>Created</th>
               <th>Enabled</th>
