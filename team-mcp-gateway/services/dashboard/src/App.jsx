@@ -133,44 +133,68 @@ export default function App() {
 function Login({ onLogin }) {
   const [form, setForm] = useState({ username: '', password: '' })
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
   async function submit(e) {
     e.preventDefault()
     setError('')
+    setBusy(true)
     try {
       onLogin(await api('/login', { method: 'POST', body: form }))
     } catch (err) {
       setError(err.message)
+      setBusy(false)
     }
   }
 
   return (
     <div className="login">
-      <form className="card" onSubmit={submit}>
-        <h1>
+      <div className="login-side">
+        <div className="brand">
           <span className="logo">◆</span> MCP Gateway
-        </h1>
-        <label>
-          Username
-          <input
-            autoFocus
-            autoComplete="username"
-            value={form.username}
-            onChange={(e) => setForm({ ...form, username: e.target.value })}
-          />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
-          />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button className="primary">Log in</button>
-      </form>
+        </div>
+        <form className="login-form" onSubmit={submit}>
+          <div className="login-head">
+            <h1>Welcome back</h1>
+            <p className="muted">Sign in to manage your MCP servers, tools and keys.</p>
+          </div>
+          <label>
+            Username
+            <input
+              autoFocus
+              required
+              autoComplete="username"
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              required
+              autoComplete="current-password"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+            />
+          </label>
+          {error && <p className="error" role="alert">{error}</p>}
+          <button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+        </form>
+        <p className="muted small">Accounts are created by an admin.</p>
+      </div>
+      <div className="lava" aria-hidden="true">
+        {/* Goo filter: blur the blobs together, then sharpen alpha so they merge like wax. */}
+        <svg width="0" height="0">
+          <filter id="goo">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="18" />
+            <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 40 -18" />
+          </filter>
+        </svg>
+        <div className="blobs">
+          {[...Array(7)].map((_, i) => <span key={i} />)}
+        </div>
+      </div>
     </div>
   )
 }

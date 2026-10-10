@@ -170,9 +170,43 @@ th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--bo
 th { font-size: 12px; color: var(--muted-foreground); font-weight: 500; }
 tr:last-child td { border-bottom: none; }
 
-.login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
-.login .card { width: 100%; max-width: 360px; }
-.login .primary { width: 100%; margin-top: 6px; }
+.login { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; }
+.login-side { display: flex; flex-direction: column; justify-content: space-between; gap: 24px; padding: 24px 32px; }
+.login-side .brand { padding: 0; }
+.login-form { width: 100%; max-width: 340px; margin: 0 auto; }
+.login-head { margin-bottom: 24px; }
+.login-head h1 { font-size: 26px; margin-bottom: 6px; letter-spacing: -0.02em; }
+.login-head p { margin: 0; text-wrap: balance; }
+.login label { font-size: 13px; color: var(--foreground); font-weight: 500; margin-bottom: 14px; }
+.login input { padding: 10px 12px; transition: border-color 0.15s; }
+.login input:focus-visible { border-color: var(--ring); }
+.login .primary { width: 100%; margin-top: 8px; padding: 10px 12px; font-weight: 500; }
+.login .error { margin: 0 0 8px; font-size: 13px; }
+
+/* Lava lamp: blobs rise and sink, the #goo SVG filter melts them together. */
+.lava { position: relative; overflow: hidden; margin: 12px; border-radius: 18px; background: linear-gradient(160deg, #2a0a2e, #12061f 60%, #050208); }
+.lava::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 110%, #ff6a3d55, transparent 60%); pointer-events: none; }
+.blobs { position: absolute; inset: 0; filter: url(#goo); }
+.blobs span { position: absolute; bottom: -20%; border-radius: 50%; background: linear-gradient(180deg, #ffb347, #ff4e6a); animation: lava-rise var(--t) ease-in-out infinite alternate; animation-delay: var(--d); }
+.blobs span:nth-child(1) { left: 10%; width: 160px; height: 160px; --t: 18s; --d: 0s; }
+.blobs span:nth-child(2) { left: 45%; width: 220px; height: 220px; --t: 24s; --d: -6s; }
+.blobs span:nth-child(3) { left: 70%; width: 130px; height: 130px; --t: 15s; --d: -3s; }
+.blobs span:nth-child(4) { left: 25%; width: 110px; height: 110px; --t: 20s; --d: -12s; }
+.blobs span:nth-child(5) { left: 60%; width: 170px; height: 170px; --t: 27s; --d: -18s; }
+.blobs span:nth-child(6) { left: 5%; width: 90px; height: 90px; --t: 13s; --d: -8s; }
+/* Pools at the top and bottom, like the hot plate and cap of a real lamp. */
+.blobs span:nth-child(7) { left: -10%; right: -10%; bottom: -60px; width: auto; height: 140px; border-radius: 50%; animation: none; }
+@keyframes lava-rise {
+  0% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(-55vh) scale(0.9, 1.15); }
+  100% { transform: translateY(-110vh) scale(1.1, 0.9); }
+}
+@media (prefers-reduced-motion: reduce) { .blobs span { animation-play-state: paused; } }
+@media (max-width: 760px) {
+  .login { grid-template-columns: 1fr; }
+  .lava { display: none; }
+  .login-side { padding: 20px 16px; }
+}
 
 @media (max-width: 760px) {
   .shell, .shell.collapsed { grid-template-columns: 1fr; }
