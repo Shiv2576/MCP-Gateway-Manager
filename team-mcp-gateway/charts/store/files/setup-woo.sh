@@ -29,9 +29,7 @@ wp option update woocommerce_cod_settings --format=json \
   '{"enabled":"yes","title":"Cash on delivery","description":"Pay with cash upon delivery.","instructions":"Pay with cash upon delivery.","enable_for_methods":[],"enable_for_virtual":"yes"}'
 
 if [ "$(wp wc product list --user=1 --format=count)" = 0 ]; then
-  while IFS='|' read -r name price; do
-    wp wc product create --user=1 --name="$name" --regular_price="$price" --status=publish --porcelain
-  done < /setup/products
+  wp eval-file /setup/seed.php
 fi
 
 wp eval-file /setup/register-woo-key.php

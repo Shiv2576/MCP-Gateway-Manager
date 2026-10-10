@@ -1,0 +1,3 @@
+# k3d on your laptop:
+#   helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml
+gatewayUrl: http://team-gateway:8000

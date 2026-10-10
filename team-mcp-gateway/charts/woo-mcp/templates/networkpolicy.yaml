@@ -14,6 +14,7 @@ spec:
       {{- include "woo-mcp.selectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     - from:
         - podSelector:
@@ -27,4 +28,21 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
+  # Outbound: only this namespace's WordPress, plus DNS. woo-mcp never needs
+  # anything else, so it cannot reach another store.
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: wordpress
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
 {{- end }}

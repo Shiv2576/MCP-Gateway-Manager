@@ -1,0 +1,32 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stores.mcpgateway.example.com
+spec:
+  group: mcpgateway.example.com
+  scope: Namespaced
+  names: { plural: stores, singular: store, kind: Store, shortNames: [st] }
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Template, type: string, jsonPath: .spec.template }
+        - { name: Owner, type: string, jsonPath: .spec.owner }
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Message, type: string, jsonPath: .status.message }
+        - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [template]
+              properties:
+                template: { type: string, enum: [catalog-a, catalog-b, blank] }
+                owner: { type: string }
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

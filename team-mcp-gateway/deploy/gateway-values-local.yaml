@@ -3,3 +3,5 @@
 ingress:
   host: gateway.localhost
 cookieSecure: false
+stores:
+  enabled: true

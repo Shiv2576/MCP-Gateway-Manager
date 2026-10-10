@@ -18,7 +18,12 @@ spec:
         # app.kubernetes.io/name: gateway is the label upstream NetworkPolicies allow.
         {{- include "gateway.selectorLabels" . | nindent 8 }}
     spec:
+      {{- if .Values.stores.enabled }}
+      serviceAccountName: {{ include "gateway.name" . }}
+      automountServiceAccountToken: true
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -44,6 +49,20 @@ spec:
               value: {{ .Values.refreshIntervalSeconds | quote }}
             - name: COOKIE_SECURE
               value: {{ .Values.cookieSecure | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.llmModel | quote }}
+            {{- with .Values.publicUrl }}
+            - name: PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.oauthRedirectUris }}
+            - name: OAUTH_REDIRECT_URIS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.stores.enabled }}
+            - name: STORES_NAMESPACE
+              value: {{ .Release.Namespace }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ required "existingSecret is required" .Values.existingSecret }}

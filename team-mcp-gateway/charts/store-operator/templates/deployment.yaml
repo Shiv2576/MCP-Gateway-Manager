@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: store-operator
+  labels: { app.kubernetes.io/name: store-operator }
+spec:
+  replicas: 1   # kopf runs --standalone: exactly one operator
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: store-operator }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: store-operator }
+    spec:
+      serviceAccountName: store-operator
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - { name: STORES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
+            - { name: GATEWAY_URL, value: {{ .Values.gatewayUrl | quote }} }
+          envFrom:
+            - secretRef:
+                name: {{ required "existingSecret is required" .Values.existingSecret }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

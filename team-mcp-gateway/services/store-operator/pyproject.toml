@@ -1,0 +1,16 @@
+[project]
+name = "store-operator"
+version = "0.1.0"
+description = "Turns Store resources into WooCommerce stores with their own MCP server, registered in the gateway."
+requires-python = ">=3.12"
+dependencies = [
+    "kopf>=1.37",
+    "kubernetes>=31",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { Icon } from './App.jsx'
 
 const EMPTY = { name: '', url: '', authType: 'none', token: '', header: '', value: '' }
 
@@ -7,6 +8,12 @@ function authBody(f) {
   if (f.authType === 'bearer') return { type: 'bearer', token: f.token }
   if (f.authType === 'header') return { type: 'header', name: f.header, value: f.value }
   return { type: 'none' }
+}
+
+// How the gateway authenticates to this upstream; the value itself never reaches the browser.
+function authLabel(s) {
+  if (!s.has_credential) return 'None'
+  return s.auth_header === 'Authorization' ? 'Bearer token' : `Header · ${s.auth_header}`
 }
 
 export default function Servers({ user }) {
@@ -69,62 +76,103 @@ export default function Servers({ user }) {
         />
       )}
 
-      <div className="list">
-        {servers.length === 0 && <p className="muted">No servers yet.</p>}
-        {servers.map((s) => (
-          <div key={s.id} className="card server">
-            <div className="row">
-              <span className={`dot ${s.enabled ? s.status : 'disabled'}`} />
-              <div className="grow">
-                <div className="title">
-                  {s.name} <span className="pill">{s.enabled ? s.status : 'disabled'}</span>
-                </div>
-                <div className="muted mono">{s.url}</div>
-                <div className="muted small">
-                  Credential: {s.has_credential ? `set (${s.auth_header})` : 'none'} · checked {when(s.checked_at)}
-                </div>
-                {s.error && <div className="error small">{s.error}</div>}
-              </div>
-              <button className="ghost" onClick={() => setOpen({ ...open, [s.id]: !open[s.id] })}>
-                {s.tools.length} tools {open[s.id] ? '▴' : '▾'}
-              </button>
-              {isAdmin && (
-                <div className="actions">
-                  <button
-                    className="ghost"
-                    onClick={() => act(() => api(`/servers/${s.id}`, { method: 'PATCH', body: { enabled: !s.enabled } }))}
-                  >
-                    {s.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                  <button className="ghost" onClick={() => setEditing(s)}>
-                    Edit
-                  </button>
-                  <button
-                    className="ghost danger"
-                    onClick={() =>
-                      confirm(`Remove ${s.name}? Its tools disappear for every client.`) &&
-                      act(() => api(`/servers/${s.id}`, { method: 'DELETE' }))
-                    }
-                  >
-                    Remove
-                  </button>
-                </div>
-              )}
-            </div>
-            {open[s.id] && (
-              <ul className="tools">
-                {s.tools.map((t) => (
-                  <li key={t.name}>
-                    <span className="mono">
-                      {s.name}__{t.name}
-                    </span>
-                    <span className="muted"> — {t.description}</span>
-                  </li>
-                ))}
-              </ul>
+      <div className="table-wrap card flush">
+        <table>
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Auth type</th>
+              <th>Tools</th>
+              <th>Created</th>
+              <th>Enabled</th>
+              {isAdmin && <th className="right">Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {servers.length === 0 && (
+              <tr>
+                <td colSpan={isAdmin ? 6 : 5} className="muted">
+                  No servers yet.
+                </td>
+              </tr>
             )}
-          </div>
-        ))}
+            {servers.map((s) => (
+              <Fragment key={s.id}>
+                <tr>
+                  <td>
+                    <div className="row">
+                      <span className={`dot ${s.enabled ? s.status : 'disabled'}`} />
+                      <div className="grow">
+                        <div className="title">
+                          {s.name} <span className="pill">{s.enabled ? s.status : 'disabled'}</span>
+                        </div>
+                        <div className="muted mono small">{s.url}</div>
+                        {s.error && <div className="error small">{s.error}</div>}
+                      </div>
+                    </div>
+                  </td>
+                  <td>{authLabel(s)}</td>
+                  <td>
+                    <button
+                      className="ghost tiny"
+                      aria-expanded={!!open[s.id]}
+                      onClick={() => setOpen({ ...open, [s.id]: !open[s.id] })}
+                    >
+                      {s.tools.length} {open[s.id] ? '▴' : '▾'}
+                    </button>
+                  </td>
+                  <td title={`checked ${when(s.checked_at)}`}>{when(s.created_at)}</td>
+                  <td>
+                    <button
+                      className="switch"
+                      role="switch"
+                      aria-checked={s.enabled}
+                      aria-label={`${s.enabled ? 'Disable' : 'Enable'} ${s.name}`}
+                      disabled={!isAdmin}
+                      onClick={() => act(() => api(`/servers/${s.id}`, { method: 'PATCH', body: { enabled: !s.enabled } }))}
+                    />
+                  </td>
+                  {isAdmin && (
+                    <td>
+                      <div className="actions right">
+                        <button className="icon-btn" aria-label={`Edit ${s.name}`} title="Edit" onClick={() => setEditing(s)}>
+                          <Icon name="edit" />
+                        </button>
+                        <button
+                          className="icon-btn danger"
+                          aria-label={`Delete ${s.name}`}
+                          title="Delete"
+                          onClick={() =>
+                            confirm(`Remove ${s.name}? Its tools disappear for every client.`) &&
+                            act(() => api(`/servers/${s.id}`, { method: 'DELETE' }))
+                          }
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+                {open[s.id] && (
+                  <tr>
+                    <td colSpan={isAdmin ? 6 : 5}>
+                      <ul className="tools">
+                        {s.tools.map((t) => (
+                          <li key={t.name}>
+                            <span className="mono">
+                              {s.name}__{t.name}
+                            </span>
+                            <span className="muted"> — {t.description}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
       </div>
     </>
   )

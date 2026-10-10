@@ -16,6 +16,9 @@ spec:
     spec:
       # This pod never talks to the Kubernetes API, so it gets no API token.
       automountServiceAccountToken: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

@@ -8,6 +8,7 @@ image:
 # Name of a Secret that already exists in this namespace, with two keys:
 #   ADMIN_USERNAME, ADMIN_PASSWORD
 # Used only on first start, to create the first admin. The chart never holds them.
+# Optional key OPENROUTER_API_KEY turns on the dashboard chat agent.
 existingSecret: gateway-admin
 
 callTimeoutSeconds: 10
@@ -15,6 +16,15 @@ listTimeoutSeconds: 5
 refreshIntervalSeconds: 30
 # true when the gateway is served over https, so the session cookie is https-only.
 cookieSecure: false
+# The gateway's public https URL, e.g. https://gateway.example.com (or an ngrok
+# URL). Set, it turns on OAuth for /mcp, so a Claude custom connector can sign
+# in with a gateway login. API keys work either way.
+publicUrl: ""
+# Comma-separated redirect URIs OAuth clients may register, besides loopback
+# ones. Empty means Claude's callbacks (claude.ai and claude.com).
+oauthRedirectUris: ""
+# Chat agent model on OpenRouter.
+llmModel: openai/gpt-4.1-mini
 
 # SQLite on a volume. One replica only: SQLite is a single file with one writer.
 persistence:
@@ -36,3 +46,8 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# Store provisioning: the gateway may create/list/delete Store resources in its
+# own namespace. Needs the store-operator chart (it installs the CRD).
+stores:
+  enabled: false

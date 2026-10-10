@@ -19,7 +19,8 @@ charts/woo-mcp/       Helm chart: Deployment, ClusterIP Service, NetworkPolicy
 services/gateway/     the gateway: one MCP endpoint, logins, API keys, audit log
   app/upstream.py     health loop, tool listing, call_tool (route, timeout, audit)
   app/api.py          admin REST API
-  app/main.py         /mcp behind API keys, wiring
+  app/main.py         /mcp behind API keys or OAuth tokens, wiring
+  app/oauth.py        OAuth authorization server for /mcp and its login page
 services/demo-mcp/    two small upstreams: notes and fx (both have a `list` tool)
 charts/gateway/       Helm chart: Deployment (1 replica, SQLite on a PVC), Service, Ingress
 charts/demo-mcp/      Helm chart, installed once per demo server
@@ -140,7 +141,8 @@ to HTTPS, in-cluster calls will be redirected too. If that happens, set
 
 Admins log in, add upstream MCP servers (Streamable HTTP) with an optional
 static credential, and hand out API keys. MCP clients use one URL,
-`http://gateway.localhost/mcp`, with `Authorization: Bearer <api key>`.
+`http://gateway.localhost/mcp`, with `Authorization: Bearer <api key>`, or
+sign in through OAuth when `PUBLIC_URL` is set (see below).
 
 ### Tool names: the collision scheme
 
@@ -183,6 +185,8 @@ Users are `admin` (manage servers, users, audit) or `member` (use tools, manage
 their own keys). Browsers get an HttpOnly session cookie from `POST /api/login`.
 API keys are shown once and only their hashes are stored. Every tool call writes
 an audit row with the user, tool, server, result and duration.
+Each user may make 60 tool calls per minute (`CALLS_PER_MINUTE`); refused
+calls are audited too.
 
 | Endpoint | Who |
 | --- | --- |
@@ -192,6 +196,43 @@ an audit row with the user, tool, server, result and duration.
 | `GET /api/servers` | logged in |
 | `POST /api/servers`, `PATCH, DELETE /api/servers/{id}` | admin |
 | `GET /api/audit?limit=100` | admin |
+| `GET /api/oauth/connections`, `DELETE /api/oauth/connections/{user_id}/{client_id}` | own; admin sees all |
+
+### OAuth (Claude custom connector)
+
+Set `PUBLIC_URL` (chart: `publicUrl`) to the gateway's public https URL and
+`/mcp` also accepts OAuth tokens, so members can add the gateway to Claude as a
+custom connector and sign in with their gateway username and password. API keys
+keep working. The gateway is its own authorization server (`app/oauth.py`):
+the MCP SDK serves `/register`, `/authorize`, `/token`, `/revoke` and the
+`/.well-known/*` metadata; the gateway stores clients, codes and tokens (hashed)
+in SQLite and serves the login page at `/oauth/login`.
+
+- A token belongs to the user who signed in: their server grants, rate limit
+  and audit rows apply as with an API key.
+- Access tokens last 1 hour, refresh tokens 30 days and work once (rotated).
+- Clients may register only Claude's callbacks (`OAUTH_REDIRECT_URIS`, default
+  `https://claude.ai/api/mcp/auth_callback` and the `claude.com` one) or a
+  loopback `http://localhost` URL (Claude Code, MCP Inspector).
+- Dashboard → API keys → **Connected apps** lists signed-in apps; Disconnect
+  ends access on the next call. Deleting a user deletes their tokens.
+
+Claude connects from Anthropic's servers, so the URL must be reachable from
+the internet. Trying it from k3d with ngrok:
+
+```
+kubectl -n mercora port-forward svc/team-gateway 8000:8000
+ngrok http 8000                      # copy the https://….ngrok-free.app URL
+helm upgrade team charts/gateway -n mercora -f deploy/gateway-values-local.yaml \
+  --set publicUrl=https://<id>.ngrok-free.app
+# restart the port-forward after the pod rolls
+```
+
+Then in Claude: Settings → Connectors → Add custom connector →
+`https://<id>.ngrok-free.app/mcp`, sign in as a member, and ask for that
+member's servers' tools. A free ngrok URL changes each run unless you use your
+free static domain, and `publicUrl` must match it. Stop ngrok when done: the
+gateway is on the internet while it runs.
 
 ### Install (local k3d)
 
@@ -241,5 +282,38 @@ k3d image import dashboard:0.1.0 -c <your-cluster>
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-local.yaml
 ```
 
-Opening `/mcp` in a browser shows `a valid API key is required`. That is
-expected: it is the endpoint for MCP clients, which send `Authorization: Bearer <key>`.
+Opening `/mcp` in a browser shows `a valid API key or OAuth token is required`. That is
+expected: it is the endpoint for MCP clients, which send `Authorization: Bearer <key or token>`.
+
+## Store provisioning
+
+Admins create and delete WooCommerce stores from the dashboard's **Stores** tab.
+Each store gets its own namespace `store-<name>` (WordPress, MariaDB, PVCs,
+Secrets, Ingress `http://<name>.localhost`, ResourceQuota, LimitRange,
+NetworkPolicies) and its own woo-mcp, registered in the gateway as server
+`<name>`, so its tools are `<name>__list_orders` and so on.
+
+- Templates: `catalog-a` (300 products), `catalog-b` (300 products, other
+  categories), `blank` (3 products). Each also seeds a few orders dated the day it is created.
+- At most 3 stores per admin; a store not Ready in 15 minutes is marked Failed with the reason.
+- Deleting a store removes its gateway server first, then its namespace.
+  Deleting an admin deletes their stores.
+- Members see only the servers an admin granted them (Members → Access).
+
+How it works: the gateway writes a `Store` resource; `services/store-operator`
+(kopf) provisions it with Helm (`charts/store`, `charts/woo-mcp`) and registers
+the server through the gateway API.
+
+Install (once; from this folder):
+
+```bash
+docker build -f services/store-operator/Dockerfile -t store-operator:0.1.0 .
+k3d image import store-operator:0.1.0 -c store-check
+# An admin API key for the operator: dashboard → API keys → "store-operator".
+kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='<key>'
+helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml
+helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-local.yaml   # stores.enabled: true
+```
+
+Watch: `kubectl -n mercora get st` (phase and current step), `kubectl -n mercora logs deploy/store-operator`,
+`kubectl -n store-<name> logs job/store-store-setup`.

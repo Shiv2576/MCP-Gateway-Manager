@@ -9,7 +9,12 @@ wooKeySecret: woo-mcp-credentials
 setup:
   currency: INR
   country: IN
-  # Seeded only when the store has no products yet.
+  # catalog-a | catalog-b: 300 generated products (files/seed.php); blank: the list below.
+  template: blank
+  # true: the setup Job is a Helm hook (helm waits for it). The store operator
+  # sets false so helm returns at once and the operator watches the Job instead.
+  hook: true
+  # The "blank" template's products. Seeded only when the store has no products yet.
   products:
     - { name: "Masala Chai 250g", price: "299" }
     - { name: "Filter Coffee 500g", price: "549" }

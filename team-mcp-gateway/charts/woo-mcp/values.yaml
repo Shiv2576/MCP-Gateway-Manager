@@ -27,6 +27,9 @@ existingSecret: woo-mcp-credentials
 service:
   port: 8000
 
+# Empty = the cluster default. The store operator sets its low "store-workload" class.
+priorityClassName: ""
+
 resources:
   requests:
     cpu: 50m

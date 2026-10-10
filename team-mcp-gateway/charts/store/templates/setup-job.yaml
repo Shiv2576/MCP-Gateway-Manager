@@ -4,15 +4,19 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-store-setup
+  {{- if .Values.setup.hook }}
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
 data:
   setup-woo.sh: |-
 {{ .Files.Get "files/setup-woo.sh" | indent 4 }}
   register-woo-key.php: |-
 {{ .Files.Get "files/register-woo-key.php" | indent 4 }}
+  seed.php: |-
+{{ .Files.Get "files/seed.php" | indent 4 }}
   products: |
 {{- range .Values.setup.products }}
     {{ .name }}|{{ .price }}
@@ -22,11 +26,13 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ .Release.Name }}-store-setup
+  {{- if .Values.setup.hook }}
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "1"
     # Kept after it finishes so `kubectl logs job/...` works; replaced on the next run.
     helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
 spec:
   backoffLimit: 3
   activeDeadlineSeconds: 900
@@ -37,6 +43,8 @@ spec:
         # No name=wordpress label, so the WordPress Service does not route here.
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: wordpress
+        # Store namespaces' NetworkPolicies admit the setup Job by this label.
+        mcpgateway.example.com/role: store-setup
     spec:
       restartPolicy: Never
       securityContext:
@@ -66,6 +74,8 @@ spec:
               value: {{ .Values.setup.currency | quote }}
             - name: COUNTRY
               value: {{ .Values.setup.country | quote }}
+            - name: TEMPLATE
+              value: {{ .Values.setup.template | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.wooKeySecret }}

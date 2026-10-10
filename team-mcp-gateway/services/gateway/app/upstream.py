@@ -10,6 +10,7 @@ ordinary tool error with a plain sentence in it.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import logging
 import re
@@ -23,6 +24,8 @@ import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent, Tool
+
+from .db import granted_server_ids
 
 log = logging.getLogger("gateway")
 
@@ -85,11 +88,14 @@ class Upstreams:
         call_timeout: float,
         list_timeout: float,
         refresh_interval: float,
+        calls_per_minute: int = 60,
     ):
         self.db = db
         self.call_timeout = call_timeout
         self.list_timeout = list_timeout
         self.refresh_interval = refresh_interval
+        self.calls_per_minute = calls_per_minute
+        self._recent: dict[int, collections.deque] = collections.defaultdict(collections.deque)
         self.status: dict[int, Status] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -133,6 +139,16 @@ class Upstreams:
                 log.exception("refresh failed")
             await asyncio.sleep(self.refresh_interval)
 
+    def _over_limit(self, user_id: int) -> bool:
+        # shortcut: counted in memory per pod, fine for one replica; use Redis when scaling out.
+        now, recent = time.monotonic(), self._recent[user_id]
+        while recent and now - recent[0] > 60:
+            recent.popleft()
+        if len(recent) >= self.calls_per_minute:
+            return True
+        recent.append(now)
+        return False
+
     def refresh_soon(self, server_id: int) -> None:
         """After an admin adds or edits a server, check it now instead of at the next tick."""
         self.status.pop(server_id, None)
@@ -146,12 +162,15 @@ class Upstreams:
 
     # ------------------------------------------------------------- MCP facing
 
-    def list_tools(self) -> list[Tool]:
-        # Enabled flag read from the database on every request, so disabling a
-        # server hides its tools at once.
+    def list_tools(self, user) -> list[Tool]:
+        # Enabled flag and grants read from the database on every request, so
+        # disabling a server or changing a member's access applies at once.
         rows = self.db.execute("SELECT id, name FROM servers WHERE enabled = 1").fetchall()
+        allowed = granted_server_ids(self.db, user)
         out = []
         for row in rows:
+            if allowed is not None and row["id"] not in allowed:
+                continue
             for tool in self.status.get(row["id"], Status()).tools:
                 out.append(
                     tool.model_copy(
@@ -170,7 +189,10 @@ class Upstreams:
         server_name, sep, tool = name.partition(SEP)
         row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
         started = time.monotonic()
-        if not sep or not tool or row is None:
+        allowed = granted_server_ids(self.db, user)
+        if self._over_limit(user["id"]):
+            result = error_result(f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly.")
+        elif not sep or not tool or row is None or (allowed is not None and row["id"] not in allowed):
             result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
         elif not row["enabled"]:
             result = error_result(f"Server '{server_name}' is disabled.")

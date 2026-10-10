@@ -10,6 +10,7 @@ URL where nothing listens.
 from __future__ import annotations
 
 import asyncio
+import json
 import contextlib
 import socket
 import sys
@@ -40,8 +41,8 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def serve(app):
-    port = _free_port()
+def serve(app, port: int | None = None):
+    port = port or _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -126,6 +127,7 @@ def test_the_whole_gateway(tmp_path):
             # Admin creates a member; the member logs in and makes an API key.
             r = await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})
             assert r.status_code == 201
+            bob_id = r.json()["id"]
             await member.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
             key = (await member.post("/api/keys", json={"name": "inspector"})).json()["key"]
 
@@ -146,6 +148,8 @@ def test_the_whole_gateway(tmp_path):
                 r = await admin.post("/api/servers", json=body)
                 assert r.status_code == 201, r.text
                 ids[body["name"]] = r.json()["id"]
+            r = await admin.put(f"/api/users/{bob_id}/servers", json={"server_ids": list(ids.values())})
+            assert r.status_code == 200
             assert (await admin.post("/api/servers", json=add[0])).status_code == 409
             bad = await admin.post("/api/servers", json={"name": "a__b", "url": "http://x"})
             assert bad.status_code == 400
@@ -245,5 +249,240 @@ def test_the_whole_gateway(tmp_path):
 
             await admin.aclose()
             await member.aclose()
+
+    asyncio.run(run())
+
+
+def test_rate_limit_per_user(tmp_path):
+    from app import db as store
+    from app.upstream import Upstreams
+
+    ups = Upstreams(store.connect(str(tmp_path / "g.db")), call_timeout=1, list_timeout=1, refresh_interval=30, calls_per_minute=2)
+    alice = {"id": 1, "username": "alice", "role": "admin"}
+    bob = {"id": 2, "username": "bob", "role": "admin"}
+
+    async def run():
+        for _ in range(2):
+            assert "Unknown tool" in text(await ups.call_tool(alice, "x__y", {}))
+        assert "Too many calls" in text(await ups.call_tool(alice, "x__y", {}))
+        assert "Unknown tool" in text(await ups.call_tool(bob, "x__y", {}))
+
+    asyncio.run(run())
+
+
+def test_customer_role_is_removed_from_an_old_database(tmp_path):
+    import sqlite3
+
+    from app import db as store
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'customer')), created_at REAL NOT NULL, customer_id INTEGER);
+        CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, created_at REAL NOT NULL, revoked_at REAL);
+        CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL, auth_header TEXT,
+            auth_value TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL, customer_tools TEXT NOT NULL DEFAULT '');
+        INSERT INTO users VALUES (1, 'admin', 'h', 'admin', 0, NULL), (2, 'alice', 'h', 'customer', 0, 7);
+        INSERT INTO api_keys VALUES (1, 1, 'k', 'h1', 'mcpg_', 0, NULL), (2, 2, 'k', 'h2', 'mcpg_', 0, NULL);
+        INSERT INTO servers (name, url, created_at, customer_tools) VALUES ('woo', 'http://w', 0, 'my_orders');
+        """
+    )
+    old.commit()
+    old.close()
+
+    conn = store.connect(path)
+    assert [r["username"] for r in conn.execute("SELECT username FROM users")] == ["admin"]
+    assert [r["user_id"] for r in conn.execute("SELECT user_id FROM api_keys")] == [1]
+    assert "customer_tools" not in {r["name"] for r in conn.execute("PRAGMA table_info(servers)")}
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    try:
+        store.create_user(conn, "bob", "pw-bob-12345", "customer")
+        raise AssertionError("customer role still accepted")
+    except sqlite3.IntegrityError:
+        pass
+    conn.close()
+    store.connect(path)  # second start is a no-op
+
+
+def fake_llm(seen: list):
+    """OpenAI-style chat completions: asks for one tool call, then answers."""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def complete(request):
+        payload = await request.json()
+        seen.append((request.headers.get("authorization"), payload))
+        if payload["messages"][-1]["role"] == "tool":
+            message = {"role": "assistant", "content": "Saved it."}
+        else:
+            call = {"id": "c1", "type": "function",
+                    "function": {"name": "notes__save_note", "arguments": json.dumps({"text": "from chat"})}}
+            message = {"role": "assistant", "content": None, "tool_calls": [call]}
+        return JSONResponse({"choices": [{"message": message}]})
+
+    return Starlette(routes=[Route("/v1/chat/completions", complete, methods=["POST"])])
+
+
+def test_chat_agent_calls_tools_as_the_logged_in_user(tmp_path):
+    seen = []
+
+    async def run():
+        with (
+            serve(http_app(build_notes(), "X-API-Key", NOTES_KEY)) as notes,
+            serve(fake_llm(seen)) as llm,
+        ):
+            settings = Settings(
+                database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1],
+                refresh_interval_s=0.5, openrouter_api_key="test-llm-key", llm_url=f"{llm}/v1/chat/completions",
+            )
+            with serve(create_app(settings)) as gw:
+                admin = httpx2.AsyncClient(base_url=gw, timeout=10)
+                await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+                notes_id = (await admin.post("/api/servers", json={
+                    "name": "notes", "url": f"{notes}/mcp",
+                    "auth": {"type": "header", "name": "X-API-Key", "value": NOTES_KEY}})).json()["id"]
+                await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123", "server_ids": [notes_id]})
+                bob = httpx2.AsyncClient(base_url=gw, timeout=10)
+                await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
+                deadline = time.time() + 5
+                while not (await bob.get("/api/tools")).json():
+                    assert time.time() < deadline
+                    await asyncio.sleep(0.1)
+
+                msg = {"messages": [{"role": "user", "content": "save a note"}]}
+                assert (await httpx2.AsyncClient(base_url=gw).post("/api/chat", json=msg)).status_code == 401
+                r = await bob.post("/api/chat", json=msg)
+                assert r.status_code == 200, r.text
+                out = r.json()
+                assert out["reply"] == "Saved it."
+                assert [(c["name"], c["arguments"], c["ok"]) for c in out["calls"]] == [
+                    ("notes__save_note", {"text": "from chat"}, True)]
+
+                auth, first = seen[0]
+                assert auth == "Bearer test-llm-key"
+                assert "notes__save_note" in {t["function"]["name"] for t in first["tools"]}
+                assert "bob" in first["messages"][0]["content"]
+
+                log = (await admin.get("/api/audit")).json()
+                assert [(e["username"], e["tool"], e["ok"]) for e in log] == [("bob", "notes__save_note", 1)]
+
+    asyncio.run(run())
+
+
+def test_grants_upgrade_keeps_members_on_their_servers(tmp_path):
+    from app import db as store
+
+    path = str(tmp_path / "g.db")
+    conn = store.connect(path)
+    store.create_user(conn, "root", "root-password-123", "admin")
+    bob = store.create_user(conn, "bob", "bob-password-123", "member")
+    conn.execute("INSERT INTO servers (name, url, created_at) VALUES ('notes', 'http://n', 0), ('fx', 'http://f', 0)")
+    conn.execute("DROP TABLE user_servers")  # a database from before grants
+    conn.close()
+
+    conn = store.connect(path)
+    granted = conn.execute(
+        "SELECT u.username, s.name FROM user_servers g JOIN users u ON u.id = g.user_id"
+        " JOIN servers s ON s.id = g.server_id ORDER BY s.name"
+    ).fetchall()
+    assert [tuple(r) for r in granted] == [("bob", "fx"), ("bob", "notes")]
+
+    root = conn.execute("SELECT * FROM users WHERE username = 'root'").fetchone()
+    member = conn.execute("SELECT * FROM users WHERE id = ?", (bob,)).fetchone()
+    assert store.granted_server_ids(conn, root) is None
+    assert len(store.granted_server_ids(conn, member)) == 2
+
+    store.set_grants(conn, bob, [])
+    conn.close()
+    conn = store.connect(path)  # a later start does not grant again
+    assert store.granted_server_ids(conn, member) == set()
+
+
+def test_members_see_only_granted_servers(tmp_path):
+    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0],
+                        admin_password=ADMIN[1], refresh_interval_s=0.5)
+
+    async def run():
+        with (
+            serve(http_app(build_notes(), "X-API-Key", NOTES_KEY)) as notes,
+            serve(http_app(build_fx(), "Authorization", f"Bearer {FX_TOKEN}")) as fx,
+            serve(create_app(settings)) as gw,
+        ):
+            admin = httpx2.AsyncClient(base_url=gw, timeout=10)
+            await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+            ids = {}
+            for body in (
+                {"name": "notes", "url": f"{notes}/mcp", "auth": {"type": "header", "name": "X-API-Key", "value": NOTES_KEY}},
+                {"name": "fx", "url": f"{fx}/mcp", "auth": {"type": "bearer", "token": FX_TOKEN}},
+            ):
+                ids[body["name"]] = (await admin.post("/api/servers", json=body)).json()["id"]
+
+            bad = await admin.post("/api/users", json={"username": "eve", "password": "eve-password-123", "server_ids": [999]})
+            assert bad.status_code == 400
+            r = await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123", "server_ids": [ids["notes"]]})
+            assert r.status_code == 201 and r.json()["server_ids"] == [ids["notes"]]
+            bob_id = r.json()["id"]
+            users = {u["username"]: u for u in (await admin.get("/api/users")).json()}
+            assert users["bob"]["server_ids"] == [ids["notes"]] and users["admin"]["server_ids"] == []
+
+            bob = httpx2.AsyncClient(base_url=gw, timeout=10)
+            await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
+            key = (await bob.post("/api/keys", json={"name": "k"})).json()["key"]
+            deadline = time.time() + 5
+            while len((await admin.get("/api/tools")).json()) < 4:
+                assert time.time() < deadline
+                await asyncio.sleep(0.1)
+
+            assert {t["name"] for t in (await bob.get("/api/tools")).json()} == {"notes__save_note", "notes__list"}
+            assert [s["name"] for s in (await bob.get("/api/servers")).json()] == ["notes"]
+            async with gateway_client(gw, key) as mcp:
+                assert {t.name for t in (await mcp.list_tools()).tools} == {"notes__save_note", "notes__list"}
+                r = await mcp.call_tool("fx__list", {})
+                assert r.is_error and "Unknown tool" in text(r)
+            log = (await admin.get("/api/audit")).json()
+            assert (log[0]["username"], log[0]["tool"], log[0]["ok"]) == ("bob", "fx__list", 0)
+
+            assert (await bob.put(f"/api/users/{bob_id}/servers", json={"server_ids": []})).status_code == 403
+            admin_id = users["admin"]["id"]
+            assert (await admin.put(f"/api/users/{admin_id}/servers", json={"server_ids": []})).status_code == 400
+            r = await admin.put(f"/api/users/{bob_id}/servers", json={"server_ids": [ids["fx"]]})
+            assert r.status_code == 200
+            assert {t["name"] for t in (await bob.get("/api/tools")).json()} == {"fx__convert", "fx__list"}
+
+            # Removing a server removes its grants.
+            await admin.delete(f"/api/servers/{ids['fx']}")
+            users = {u["username"]: u for u in (await admin.get("/api/users")).json()}
+            assert users["bob"]["server_ids"] == []
+
+    asyncio.run(run())
+
+
+def test_admin_deletes_a_user(tmp_path):
+    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+
+    async def run():
+        with serve(create_app(settings)) as gw:
+            admin = httpx2.AsyncClient(base_url=gw, timeout=10)
+            me = (await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})).json()
+            bob_id = (await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})).json()["id"]
+            bob = httpx2.AsyncClient(base_url=gw, timeout=10)
+            await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
+            key = (await bob.post("/api/keys", json={"name": "k"})).json()["key"]
+
+            assert (await bob.delete(f"/api/users/{me['id']}")).status_code == 403
+            assert (await admin.delete(f"/api/users/{me['id']}")).status_code == 400
+            assert (await admin.delete("/api/users/999")).status_code == 404
+            assert (await admin.delete(f"/api/users/{bob_id}")).status_code == 200
+
+            assert (await bob.get("/api/me")).status_code == 401
+            r = await httpx2.AsyncClient(base_url=gw).post(
+                "/mcp", headers={"Authorization": f"Bearer {key}"}, json={})
+            assert r.status_code == 401
+            assert [u["username"] for u in (await admin.get("/api/users")).json()] == ["admin"]
 
     asyncio.run(run())

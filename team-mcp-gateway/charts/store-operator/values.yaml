@@ -1,0 +1,11 @@
+image:
+  repository: store-operator
+  tag: "0.1.2"
+  pullPolicy: IfNotPresent
+# The gateway's Service inside this namespace.
+gatewayUrl: http://team-gateway:8000
+# Secret in this namespace with GATEWAY_API_KEY: an admin API key from the dashboard.
+existingSecret: store-operator-gateway
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 512Mi }

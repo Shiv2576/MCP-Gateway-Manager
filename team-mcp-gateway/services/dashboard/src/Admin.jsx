@@ -13,6 +13,7 @@ function useLoad(path) {
 
 export function Keys({ user }) {
   const [keys, load, error, setError] = useLoad('/keys')
+  const [apps, loadApps] = useLoad('/oauth/connections')
   const [name, setName] = useState('')
   const [fresh, setFresh] = useState(null)
 
@@ -31,6 +32,14 @@ export function Keys({ user }) {
     if (!confirm('Revoke this key? Clients using it stop working at once.')) return
     await api(`/keys/${id}`, { method: 'DELETE' }).catch((e) => setError(e.message))
     load()
+  }
+
+  async function disconnect(c) {
+    if (!confirm(`Disconnect ${c.client_name || 'this app'}? It must sign in again to use the gateway.`)) return
+    await api(`/oauth/connections/${c.user_id}/${encodeURIComponent(c.client_id)}`, { method: 'DELETE' }).catch((e) =>
+      setError(e.message),
+    )
+    loadApps()
   }
 
   return (
@@ -77,6 +86,40 @@ export function Keys({ user }) {
                     Revoke
                   </button>
                 )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h2>Connected apps</h2>
+      <p className="muted small">Apps that signed in through OAuth, e.g. a Claude custom connector pointed at this gateway's /mcp.</p>
+      <table className="card">
+        <thead>
+          <tr>
+            <th>App</th>
+            {user.role === 'admin' && <th>User</th>}
+            <th>Last sign-in or refresh</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {apps.length === 0 && (
+            <tr>
+              <td colSpan={user.role === 'admin' ? 4 : 3} className="muted">
+                No connected apps.
+              </td>
+            </tr>
+          )}
+          {apps.map((c) => (
+            <tr key={`${c.user_id}/${c.client_id}`}>
+              <td>{c.client_name || c.client_id}</td>
+              {user.role === 'admin' && <td>{c.username}</td>}
+              <td>{when(c.last_used)}</td>
+              <td>
+                <button className="ghost danger" onClick={() => disconnect(c)}>
+                  Disconnect
+                </button>
               </td>
             </tr>
           ))}

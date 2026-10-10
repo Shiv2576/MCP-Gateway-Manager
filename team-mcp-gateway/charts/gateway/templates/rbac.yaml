@@ -1,0 +1,31 @@
+{{- if .Values.stores.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gateway.name" . }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+---
+# Only Store objects in this namespace. Provisioning rights stay with the operator.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gateway.name" . }}-stores
+rules:
+  - apiGroups: ["mcpgateway.example.com"]
+    resources: ["stores"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gateway.name" . }}-stores
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gateway.name" . }}-stores
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateway.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

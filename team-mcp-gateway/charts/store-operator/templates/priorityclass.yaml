@@ -1,0 +1,11 @@
+# Store pods run below everything else. On a full node a restarted operator (or
+# the gateway) evicts a store pod to start, instead of staying Pending while
+# deletes wait for it. Store pods never evict anything themselves.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: store-workload
+value: -100
+preemptionPolicy: Never
+globalDefault: false
+description: WooCommerce stores provisioned by the store operator.
