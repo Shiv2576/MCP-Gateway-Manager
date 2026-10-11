@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
+import { GatewayPicker, useGateway } from './Gateways.jsx'
 
 // pydantic writes `x | None` as anyOf [x, null]: unwrap to x, and note it is nullable.
 function unwrap(p) {
@@ -101,10 +102,15 @@ export default function Tools() {
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [gateway, gateways, chooseGateway] = useGateway()
+  const slug = gateway?.slug
 
   useEffect(() => {
-    api('/tools').then(setTools).catch((e) => setError(e.message))
-  }, [])
+    setSelected(null)
+    setResult(null)
+    if (!slug) return setTools([])
+    api(`/tools?gateway=${encodeURIComponent(slug)}`).then(setTools).catch((e) => setError(e.message))
+  }, [slug])
 
   function pick(t) {
     setSelected(t)
@@ -126,7 +132,7 @@ export default function Tools() {
     setBusy(true)
     const started = performance.now()
     try {
-      const r = await api('/tools/call', { method: 'POST', body: { name: selected.name, arguments: parsed } })
+      const r = await api('/tools/call', { method: 'POST', body: { gateway: slug, name: selected.name, arguments: parsed } })
       setResult({ ...r, ms: Math.round(performance.now() - started) })
     } catch (e) {
       setError(e.message)
@@ -156,9 +162,11 @@ export default function Tools() {
         <div>
           <h2>Tools</h2>
           <div className="muted small">
-            {tools.length} tools from {new Set(tools.map((t) => t.name.split('__')[0])).size} servers · pick one on the left to try it
+            {tools.length} tools from {new Set(tools.map((t) => t.name.split('__')[0])).size} servers · what your teams allow on
+            this gateway · pick one on the left to try it
           </div>
         </div>
+        <GatewayPicker current={gateway} gateways={gateways} onChange={chooseGateway} />
       </div>
 
       <details className="card connect">
@@ -170,12 +178,17 @@ export default function Tools() {
             Make a key on the <b>API keys</b> page.
           </li>
           <li>
-            Point the client at{' '}
-            <code>{location.origin}/mcp</code>{' '}
-            <button className="ghost tiny" onClick={() => copy(`${location.origin}/mcp`)}>
-              Copy
-            </button>{' '}
-            (or <code>http://gateway.localhost/mcp</code>).
+            Point the client at a gateway's MCP URL
+            {gateways.length === 0 ? ' (an admin creates gateways on the Gateways page).' : ':'}
+            <ul>
+              {gateways.map((g) => (
+                <li key={g.slug}>
+                  <code>{g.mcp_url}</code>{' '}
+                  <button className="ghost tiny" onClick={() => copy(g.mcp_url)}>Copy</button>{' '}
+                  <span className="muted small">{g.name}</span>
+                </li>
+              ))}
+            </ul>
           </li>
           <li>
             Send the header <code>Authorization: Bearer &lt;API key&gt;</code>.

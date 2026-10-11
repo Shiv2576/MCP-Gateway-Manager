@@ -1,0 +1,6 @@
+apiVersion: v2
+name: postgres
+description: One PostgreSQL shared by the gateway control plane and every gateway edge.
+type: application
+version: 0.1.0
+appVersion: "17"

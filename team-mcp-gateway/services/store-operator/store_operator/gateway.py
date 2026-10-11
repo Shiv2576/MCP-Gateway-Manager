@@ -33,7 +33,7 @@ class Gateway:
         if existing:
             self._call("PATCH", f"/api/servers/{existing['id']}", body)
         else:
-            self._call("POST", "/api/servers", {"name": name, **body})
+            self._call("POST", "/api/servers", {"name": name, "store": name, **body})
 
     def delete_server(self, name: str) -> None:
         existing = self._find(name)

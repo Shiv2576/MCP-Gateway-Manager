@@ -24,6 +24,7 @@ from .gateway import Gateway
 NAMESPACE = os.environ.get("STORES_NAMESPACE", "mercora")
 CHARTS = os.environ.get("CHARTS_DIR", "/charts")
 MAX_ATTEMPTS = 3
+EDGE_IMAGE_TAG = os.environ.get("EDGE_IMAGE_TAG", "0.4.0")
 gateway = Gateway(os.environ.get("GATEWAY_URL", "http://team-gateway:8000"), os.environ.get("GATEWAY_API_KEY", ""))
 
 
@@ -185,3 +186,63 @@ def on_store_deleted(name, logger, **_):
         raise
     # Hold the finalizer until the namespace is gone, so the same name can be reused at once.
     raise kopf.TemporaryError(f"waiting for namespace {ns} to be deleted", delay=10)
+
+
+# ------------------------------------------------------------------ gateways
+# An McpGateway becomes the Helm release gw-<slug> (charts/gateway, edge mode)
+# next to the control plane. No namespace or guardrails of its own.
+
+
+@kopf.on.create(m.GROUP, m.VERSION, m.GATEWAY_PLURAL)
+def on_gateway_created(name, spec, patch, retry, logger, **_):
+    patch.status.update(phase="Provisioning", message="installing", url=m.edge_url(name))
+    try:
+        _helm(m.edge_release(name), "gateway", NAMESPACE, m.edge_values(name, spec, EDGE_IMAGE_TAG))
+    except Exception as e:
+        if retry + 1 >= MAX_ATTEMPTS:
+            patch.status.update(phase="Failed", message=str(e)[:500])
+            return
+        raise kopf.TemporaryError(str(e)[:500], delay=20)
+    patch.status["message"] = "waiting for the edge pods"
+    logger.info(f"gateway {name}: installed {m.edge_release(name)}")
+
+
+@kopf.timer(m.GROUP, m.VERSION, m.GATEWAY_PLURAL, interval=15)
+def reconcile_gateway(name, meta, status, patch, logger, **_):
+    if status.get("phase") != "Provisioning":
+        return
+    if _deployment_ready(AppsV1Api(), NAMESPACE, f"{m.edge_release(name)}-gateway"):
+        patch.status.update(phase="Ready", message="")
+        logger.info(f"gateway {name}: ready")
+    elif m.timed_out(meta["creationTimestamp"], datetime.now(timezone.utc), m.EDGE_TIMEOUT_S):
+        patch.status.update(phase="Failed", message=f"no ready edge pod after {m.EDGE_TIMEOUT_S // 60} min")
+
+
+def _deployment_exists(apps: AppsV1Api, ns: str, name: str) -> bool:
+    try:
+        apps.read_namespaced_deployment(name, ns)
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+
+@kopf.timer(m.GROUP, m.VERSION, m.GATEWAY_PLURAL, interval=60)
+def repair_gateway(name, spec, meta, status, logger, **_):
+    """Reinstall a Ready gateway's edge if its release was removed by hand.
+    (Restarts need nothing: kopf runs a create handler that has not finished.)"""
+    if status.get("phase") != "Ready" or meta.get("deletionTimestamp"):
+        return
+    if not _deployment_exists(AppsV1Api(), NAMESPACE, f"{m.edge_release(name)}-gateway"):
+        _helm(m.edge_release(name), "gateway", NAMESPACE, m.edge_values(name, spec, EDGE_IMAGE_TAG))
+        logger.warning(f"gateway {name}: edge was missing; reinstalled")
+
+
+@kopf.on.delete(m.GROUP, m.VERSION, m.GATEWAY_PLURAL)
+def on_gateway_deleted(name, logger, **_):
+    r = subprocess.run(["helm", "uninstall", m.edge_release(name), "-n", NAMESPACE, "--wait"],
+                       capture_output=True, text=True)
+    if r.returncode and "not found" not in r.stderr:
+        raise kopf.TemporaryError(f"helm uninstall: {r.stderr.strip()[-300:]}", delay=10)
+    logger.info(f"gateway {name}: removed")

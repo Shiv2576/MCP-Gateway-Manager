@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { PasswordInput } from './App.jsx'
 
 function useLoad(path) {
   const [rows, setRows] = useState([])
@@ -129,32 +130,13 @@ export function Keys({ user }) {
   )
 }
 
-function ServerPicks({ servers, value, onChange }) {
-  if (!servers.length) return <span className="muted small">No servers yet</span>
-  return (
-    <div className="picks">
-      {servers.map((s) => (
-        <label key={s.id} className="pick">
-          <input
-            type="checkbox"
-            checked={value.includes(s.id)}
-            onChange={(e) => onChange(e.target.checked ? [...value, s.id] : value.filter((id) => id !== s.id))}
-          />
-          <span className="mono small">{s.name}</span>
-        </label>
-      ))}
-    </div>
-  )
-}
-
 export function Users({ user }) {
   const [users, load, error, setError] = useLoad('/users')
-  const [servers] = useLoad('/servers')
-  const blank = { username: '', password: '', role: 'member', server_ids: [] }
+  const blank = { username: '', password: '', role: 'member' }
   const [f, setF] = useState(blank)
   const [adding, setAdding] = useState(false)
   const [search, setSearch] = useState('')
-  const [editing, setEditing] = useState(null) // { id, server_ids }
+  const [denying, setDenying] = useState(null) // id of the member whose denies are open
 
   async function act(fn) {
     setError('')
@@ -175,19 +157,12 @@ export function Users({ user }) {
     })
   }
 
-  const saveAccess = () =>
-    act(async () => {
-      await api(`/users/${editing.id}/servers`, { method: 'PUT', body: { server_ids: editing.server_ids } })
-      setEditing(null)
-    })
-
   const remove = (u) => {
     const extra = u.role === 'admin' ? ' Their stores and everything in them will be deleted too.' : ''
     if (!confirm(`Delete ${u.username}? Their API keys stop working at once.${extra}`)) return
     act(() => api(`/users/${u.id}`, { method: 'DELETE' }))
   }
 
-  const name = (id) => servers.find((s) => s.id === id)?.name ?? `#${id}`
   const shown = users.filter((u) => u.username.toLowerCase().includes(search.toLowerCase()))
 
   return (
@@ -196,7 +171,7 @@ export function Users({ user }) {
         <div>
           <h2>Members</h2>
           <div className="muted small">
-            {users.length} {users.length === 1 ? 'person' : 'people'} · admins see every server, members only the ones you give them
+            {users.length} {users.length === 1 ? 'person' : 'people'} · admins use every tool, members what their teams allow (Teams page)
           </div>
         </div>
         {!adding && (
@@ -216,23 +191,17 @@ export function Users({ user }) {
               <input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} required autoFocus />
             </label>
             <label>
-              Password (10+ characters)
-              <input type="password" minLength={10} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required />
+              Password
+              <PasswordInput value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required />
             </label>
             <label>
               Role
               <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
-                <option value="member">Member: uses the servers you pick</option>
+                <option value="member">Member: uses the tools their teams allow</option>
                 <option value="admin">Admin: everything, incl. managing members</option>
               </select>
             </label>
           </div>
-          {f.role === 'member' && (
-            <div className="access-box">
-              <div className="small">Servers this member can use</div>
-              <ServerPicks servers={servers} value={f.server_ids} onChange={(ids) => setF({ ...f, server_ids: ids })} />
-            </div>
-          )}
           <div className="row end">
             <button type="button" className="ghost" onClick={() => { setAdding(false); setF(blank) }}>
               Cancel
@@ -251,7 +220,8 @@ export function Users({ user }) {
             <tr>
               <th>Member</th>
               <th>Role</th>
-              <th>Server access</th>
+              <th>Teams</th>
+              <th title="Servers this member stored their own credential for (values are never shown)">Own credentials</th>
               <th className="right">Actions</th>
             </tr>
           </thead>
@@ -270,23 +240,32 @@ export function Users({ user }) {
                     <span className={u.role === 'admin' ? 'pill strong' : 'pill'}>{u.role}</span>
                   </td>
                   <td>
-                    {u.role === 'admin' ? (
-                      <span className="muted small">All servers</span>
-                    ) : u.server_ids.length ? (
+                    {u.teams.length ? (
                       <div className="picks">
-                        {u.server_ids.map((id) => (
-                          <span key={id} className="pill mono">{name(id)}</span>
+                        {u.teams.map((t) => (
+                          <span key={t} className="pill">{t}</span>
                         ))}
                       </div>
                     ) : (
-                      <span className="muted small">No servers yet</span>
+                      <span className="muted small">{u.role === 'admin' ? 'All tools' : 'No team: no tools'}</span>
+                    )}
+                  </td>
+                  <td>
+                    {u.credentials.length ? (
+                      <div className="picks">
+                        {u.credentials.map((c) => (
+                          <span key={c.server} className="pill" title={`set ${when(c.updated_at)}`}>{c.server}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="muted small">—</span>
                     )}
                   </td>
                   <td>
                     <div className="actions right">
-                      {u.role === 'member' && (
-                        <button className="ghost" onClick={() => setEditing(editing?.id === u.id ? null : { id: u.id, server_ids: u.server_ids })}>
-                          Edit access
+                      {u.role !== 'admin' && (
+                        <button className="ghost" onClick={() => setDenying(denying === u.id ? null : u.id)}>
+                          Denies{Object.values(u.denies).flat().length ? ` (${Object.values(u.denies).flat().length})` : ''}
                         </button>
                       )}
                       {u.id !== user.id && (
@@ -297,19 +276,10 @@ export function Users({ user }) {
                     </div>
                   </td>
                 </tr>
-                {editing?.id === u.id && (
-                  <tr className="editing">
-                    <td colSpan={4}>
-                      <div className="small">Servers {u.username} can use</div>
-                      <ServerPicks servers={servers} value={editing.server_ids} onChange={(ids) => setEditing({ ...editing, server_ids: ids })} />
-                      <div className="row end">
-                        <button className="ghost" onClick={() => setEditing(null)}>
-                          Cancel
-                        </button>
-                        <button className="primary" onClick={saveAccess}>
-                          Save access
-                        </button>
-                      </div>
+                {denying === u.id && (
+                  <tr>
+                    <td colSpan={5}>
+                      <Denies member={u} onSaved={() => { setDenying(null); load() }} onError={setError} />
                     </td>
                   </tr>
                 )}
@@ -317,7 +287,7 @@ export function Users({ user }) {
             ))}
             {shown.length === 0 && (
               <tr>
-                <td colSpan={4} className="muted">
+                <td colSpan={5} className="muted">
                   {users.length ? 'No member matches that search.' : 'No members yet.'}
                 </td>
               </tr>
@@ -351,6 +321,8 @@ export function Audit() {
             <th>When</th>
             <th>User</th>
             <th>Tool</th>
+            <th>Gateway</th>
+            <th title="Whose credential the call carried upstream">Identity</th>
             <th>Result</th>
             <th>Time</th>
           </tr>
@@ -361,6 +333,8 @@ export function Audit() {
               <td>{when(r.at)}</td>
               <td>{r.username}</td>
               <td className="mono">{r.tool}</td>
+              <td>{r.gateway || <span className="muted">—</span>}</td>
+              <td>{r.identity || <span className="muted">—</span>}</td>
               <td>{r.ok ? <span className="pill ok">ok</span> : <span className="pill bad" title={r.error}>error</span>} <span className="muted small">{r.error}</span></td>
               <td>{r.duration_ms} ms</td>
             </tr>
@@ -368,5 +342,61 @@ export function Audit() {
         </tbody>
       </table>
     </>
+  )
+}
+
+
+// Tools to take away from one member on one gateway, out of what their teams allow there.
+function Denies({ member, onSaved, onError }) {
+  const [teams, setTeams] = useState([])
+  const [slug, setSlug] = useState('')
+  const [denied, setDenied] = useState([])
+  useEffect(() => {
+    api('/teams').then(setTeams).catch((e) => onError(e.message))
+  }, [onError])
+
+  const allowed = {} // slug -> [{server_id, server, tool}], deduplicated over the member's teams
+  for (const t of teams.filter((t) => t.members.some((m) => m.id === member.id))) {
+    for (const [g, rows] of Object.entries(t.policies)) {
+      allowed[g] = allowed[g] || []
+      for (const r of rows) {
+        if (!allowed[g].some((a) => a.server_id === r.server_id && a.tool === r.tool)) allowed[g].push(r)
+      }
+    }
+  }
+  const slugs = Object.keys(allowed).sort()
+  const current = slug || slugs[0] || ''
+  const key = (r) => `${r.server_id}:${r.tool}`
+  useEffect(() => {
+    setDenied((member.denies[current] || []).map(key))
+  }, [current, member])
+
+  const toggle = (k) => setDenied(denied.includes(k) ? denied.filter((x) => x !== k) : [...denied, k])
+  const save = () =>
+    api(`/users/${member.id}/gateways/${current}/denies`, {
+      method: 'PUT',
+      body: { tools: (allowed[current] || []).filter((r) => denied.includes(key(r))).map(({ server_id, tool }) => ({ server_id, tool })) },
+    }).then(onSaved, (e) => onError(e.message))
+
+  if (!slugs.length) return <p className="muted small">{member.username}'s teams allow no tools yet, so there is nothing to deny.</p>
+  return (
+    <div className="attach">
+      <label className="row small">
+        Gateway
+        <select value={current} onChange={(e) => setSlug(e.target.value)}>
+          {slugs.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+      </label>
+      <p className="muted small">Ticked tools are taken away from {member.username} on {current}, whatever their teams allow.</p>
+      {(allowed[current] || []).map((r) => (
+        <label key={key(r)} className="row">
+          <input type="checkbox" checked={denied.includes(key(r))} onChange={() => toggle(key(r))} />
+          <span className="mono">{r.server}__{r.tool}</span>
+        </label>
+      ))}
+      <div className="row">
+        <button className="primary" onClick={save}>Save denies</button>
+      </div>
+    </div>
   )
 }

@@ -9,8 +9,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 
+from tests import KEY  # noqa: E402
 from app.main import Settings, create_app
-from tests.test_gateway import ADMIN, NOTES_KEY, _free_port, gateway_client, http_app, serve
+from tests.test_gateway import (
+    ADMIN, NOTES_KEY, SETUP, FakeGateways, _free_port, add_gateway, add_team, edge_settings,
+    gateway_client, http_app, serve, setup_admin, wait_tools,
+)
 from tests.test_stores import login
 
 from demo_mcp import build_fx, build_notes  # noqa: E402  (tests.test_gateway puts it on sys.path)
@@ -20,24 +24,25 @@ VERIFIER = "v" * 64
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).decode().rstrip("=")
 
 
-def test_oauth_flow(tmp_path):
+def test_oauth_flow(db_url):
     port = _free_port()
     gw = f"http://127.0.0.1:{port}"
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1],
-                        refresh_interval_s=0.5, public_url=gw)
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP, refresh_interval_s=0.5)
 
     async def run():
         with (
             serve(http_app(build_notes(), "X-API-Key", NOTES_KEY)) as notes,
             serve(http_app(build_fx())) as fx,
-            serve(create_app(settings), port=port),
+            serve(create_app(settings, gateways=FakeGateways())) as ctl,
+            serve(create_app(edge_settings(db_url, "main", public_url=gw)), port=port),
         ):
-            admin = await login(gw, *ADMIN)
+            admin = await setup_admin(ctl)
             bob_id = (await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})).json()["id"]
             nid = (await admin.post("/api/servers", json={"name": "notes", "url": f"{notes}/mcp",
                    "auth": {"type": "header", "name": "X-API-Key", "value": NOTES_KEY}})).json()["id"]
             await admin.post("/api/servers", json={"name": "fx", "url": f"{fx}/mcp"})
-            await admin.put(f"/api/users/{bob_id}/servers", json={"server_ids": [nid]})
+            await add_gateway(admin, "main", [nid])
+            await add_team(admin, "notes", [bob_id], "main", [(nid, "save_note"), (nid, "list")])
             c = httpx2.AsyncClient(base_url=gw, timeout=10)
 
             # Discovery: 401 points at the resource metadata, which points at the issuer.
@@ -95,9 +100,7 @@ def test_oauth_flow(tmp_path):
             assert (await c.post("/token", data={**grant, "code_verifier": VERIFIER})).status_code == 400
 
             # The token is bob's: only his granted server.
-            async with gateway_client(gw, tokens["access_token"]) as mcp:
-                names = {t.name for t in (await mcp.list_tools()).tools}
-            assert names == {"notes__save_note", "notes__list"}
+            assert await wait_tools(gw, tokens["access_token"], 2) == {"notes__save_note", "notes__list"}
 
             # Refresh rotates.
             refresh = {**creds, "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]}
@@ -106,10 +109,9 @@ def test_oauth_flow(tmp_path):
             new = r.json()
             assert (await c.post("/token", data=refresh)).status_code == 400
 
-            assert (await admin.get("/api/connect")).json() == {"oauth": True, "mcp_url": f"{gw}/mcp"}
 
             # Dashboard: bob sees his connection; the admin sees everyone's.
-            bob = await login(gw, "bob", "bob-password-123")
+            bob = await login(ctl, "bob", "bob-password-123")
             conns = (await bob.get("/api/oauth/connections")).json()
             assert [(x["username"], x["client_name"]) for x in conns] == [("bob", "Claude")]
             assert len((await admin.get("/api/oauth/connections")).json()) == 1
@@ -129,27 +131,27 @@ def test_oauth_flow(tmp_path):
     asyncio.run(run())
 
 
-def test_oauth_off_without_public_url(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
-
+def test_oauth_off_without_public_url(db_url):
     async def run():
-        with serve(create_app(settings)) as gw:
+        with (
+            serve(create_app(Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP))),
+            serve(create_app(edge_settings(db_url, "main"))) as gw,
+        ):
             c = httpx2.AsyncClient(base_url=gw)
             assert (await c.post("/register", json={})).status_code == 404
             assert (await c.get("/oauth/login")).status_code == 404
             r = await c.post("/mcp", json={})
             assert r.status_code == 401 and r.headers["www-authenticate"] == "Bearer"
-            admin = await login(gw, *ADMIN)
-            assert (await admin.get("/api/connect")).json() == {"oauth": False, "mcp_url": None}
 
     asyncio.run(run())
 
 
-def test_wrong_passwords_lock_the_username(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+def test_wrong_passwords_lock_the_username(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
         with serve(create_app(settings)) as gw:
+            await setup_admin(gw)
             c = httpx2.AsyncClient(base_url=gw)
             for _ in range(5):
                 r = await c.post("/api/login", json={"username": "admin", "password": "wrong-password"})
@@ -161,3 +163,43 @@ def test_wrong_passwords_lock_the_username(tmp_path):
             assert r.status_code == 401
 
     asyncio.run(run())
+
+
+def test_a_code_is_redeemed_once_even_concurrently(db_url):
+    import threading
+    import time
+    import types
+
+    from mcp.server.auth.provider import AuthorizationCode, TokenError
+
+    from app import db as store, oauth
+
+    conn = store.connect(db_url)
+    uid = store.create_user(conn, "bob", "bob-password-123", "member")
+    conn.execute("INSERT INTO oauth_clients (client_id, info, created_at) VALUES ('c1', '{}', 0)")
+    code = "the-one-code"
+    conn.execute(
+        "INSERT INTO oauth_codes (code_hash, client_id, user_id, params, expires_at) VALUES (?, 'c1', ?, '{}', ?)",
+        (store.sha256(code), uid, time.time() + 300),
+    )
+    grant = AuthorizationCode(
+        code=code, scopes=[], expires_at=time.time() + 300, client_id="c1", code_challenge=CHALLENGE,
+        redirect_uri=CALLBACK, redirect_uri_provided_explicitly=True, resource=None, subject=str(uid),
+    )
+    results, barrier = [], threading.Barrier(2)
+
+    def redeem():
+        provider = oauth.Provider(store.connect(db_url, create_schema=False), "http://gw", ())
+        barrier.wait()  # both start together
+        try:
+            asyncio.run(provider.exchange_authorization_code(types.SimpleNamespace(client_id="c1"), grant))
+            results.append("ok")
+        except TokenError:
+            results.append("refused")
+
+    threads = [threading.Thread(target=redeem) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert sorted(results) == ["ok", "refused"]

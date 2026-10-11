@@ -27,11 +27,97 @@ from mcp.server.mcpserver import MCPServer
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "demo-mcp"))
 from demo_mcp import TokenGuard, build_fx, build_notes  # noqa: E402
 
-from app.main import ConfigError, Settings, create_app  # noqa: E402
+from tests import KEY  # noqa: E402
+from app.main import Settings, create_app  # noqa: E402
 
 ADMIN = ("admin", "admin-password-123")
 NOTES_KEY = "notes-key-0123456789abcdefghij"
 FX_TOKEN = "fx-token-0123456789abcdefghijk"
+SETUP = "setup-token-0123456789"
+
+
+async def setup_admin(gw: str) -> httpx2.AsyncClient:
+    """Run first-run setup; the client comes back logged in as ADMIN."""
+    c = httpx2.AsyncClient(base_url=gw, timeout=10)
+    r = await c.post("/api/setup", json={"setup_token": SETUP, "org_name": "Acme",
+                                         "username": ADMIN[0], "password": ADMIN[1]})
+    assert r.status_code == 201, r.text
+    return c
+
+
+class FakeGateways:
+    """In-memory stand-in for the McpGateway resources in the Kubernetes API."""
+
+    def __init__(self, fail: bool = False, lose_response: bool = False):
+        self.items: dict[str, dict] = {}
+        self.fail = fail
+        self.lose_response = lose_response  # create it, then fail as if the answer got lost
+
+    async def list(self, owner_id=None):
+        return list(self.items.values())
+
+    async def get(self, name):
+        return self.items.get(name)
+
+    async def create_object(self, obj):
+        from app.kube import AlreadyExists
+
+        if self.fail:
+            raise RuntimeError("the cluster said no")
+        name = obj["metadata"]["name"]
+        if name in self.items:
+            raise AlreadyExists(name)
+        self.items[name] = obj
+        if self.lose_response:
+            raise TimeoutError("read timed out")
+        return obj
+
+    async def delete(self, name):
+        self.items.pop(name, None)
+
+
+async def add_gateway(admin: httpx2.AsyncClient, slug: str, server_ids: list[int]) -> None:
+    r = await admin.post("/api/gateways", json={"slug": slug, "name": slug.title()})
+    assert r.status_code == 201, r.text
+    r = await admin.put(f"/api/gateways/{slug}/servers", json={"server_ids": server_ids})
+    assert r.status_code == 200, r.text
+
+
+async def add_team(admin: httpx2.AsyncClient, name: str, user_ids: list[int], gateway: str,
+                   tools: list[tuple[int, str]]) -> int:
+    """A team with these members, allowed these (server id, upstream tool) pairs on one gateway."""
+    r = await admin.post("/api/teams", json={"name": name})
+    assert r.status_code == 201, r.text
+    tid = r.json()["id"]
+    r = await admin.put(f"/api/teams/{tid}/members", json={"user_ids": user_ids})
+    assert r.status_code == 200, r.text
+    r = await admin.put(f"/api/teams/{tid}/gateways/{gateway}/tools",
+                        json={"tools": [{"server_id": s, "tool": t} for s, t in tools]})
+    assert r.status_code == 200, r.text
+    return tid
+
+
+async def add_denies(admin: httpx2.AsyncClient, user_id: int, gateway: str, tools: list[tuple[int, str]]) -> None:
+    """Replace this user's denied (server id, upstream tool) pairs on one gateway."""
+    r = await admin.put(f"/api/users/{user_id}/gateways/{gateway}/denies",
+                        json={"tools": [{"server_id": s, "tool": t} for s, t in tools]})
+    assert r.status_code == 200, r.text
+
+
+def edge_settings(db_url: str, slug: str, **kw) -> Settings:
+    return Settings(mode="edge", gateway_slug=slug, database_url=db_url, credentials_key=KEY, **{"refresh_interval_s": 0.5, **kw})
+
+
+async def wait_tools(url: str, key: str, n: int, timeout: float = 5) -> set[str]:
+    """An edge lists a newly attached server once its own health loop has checked it."""
+    deadline = time.time() + timeout
+    while True:
+        async with gateway_client(url, key) as mcp:
+            names = {t.name for t in (await mcp.list_tools()).tools}
+        if len(names) >= n:
+            return names
+        assert time.time() < deadline, names
+        await asyncio.sleep(0.1)
 
 
 def _free_port() -> int:
@@ -88,19 +174,10 @@ def text(result) -> str:
     return " ".join(c.text for c in result.content if hasattr(c, "text"))
 
 
-def test_refuses_to_start_without_a_first_admin(tmp_path):
-    try:
-        create_app(Settings(database_path=str(tmp_path / "g.db")))
-    except ConfigError:
-        return
-    raise AssertionError("started with no way to log in")
-
-
-def test_the_whole_gateway(tmp_path):
+def test_the_whole_gateway(db_url):
     settings = Settings(
-        database_path=str(tmp_path / "g.db"),
-        admin_username=ADMIN[0],
-        admin_password=ADMIN[1],
+        database_url=db_url, credentials_key=KEY,
+        setup_token=SETUP,
         call_timeout_s=1,
         list_timeout_s=1,
         refresh_interval_s=0.5,
@@ -111,8 +188,10 @@ def test_the_whole_gateway(tmp_path):
             serve(http_app(build_notes(), "X-API-Key", NOTES_KEY)) as notes,
             serve(http_app(build_fx(), "Authorization", f"Bearer {FX_TOKEN}")) as fx,
             serve(http_app(build_slow())) as slow,
-            serve(create_app(settings)) as gw,
+            serve(create_app(settings, gateways=FakeGateways())) as gw,
+            serve(create_app(edge_settings(db_url, "main", call_timeout_s=1, list_timeout_s=1))) as edge,
         ):
+            await setup_admin(gw)
             admin = httpx2.AsyncClient(base_url=gw)
             member = httpx2.AsyncClient(base_url=gw)
 
@@ -148,8 +227,6 @@ def test_the_whole_gateway(tmp_path):
                 r = await admin.post("/api/servers", json=body)
                 assert r.status_code == 201, r.text
                 ids[body["name"]] = r.json()["id"]
-            r = await admin.put(f"/api/users/{bob_id}/servers", json={"server_ids": list(ids.values())})
-            assert r.status_code == 200
             assert (await admin.post("/api/servers", json=add[0])).status_code == 409
             bad = await admin.post("/api/servers", json={"name": "a__b", "url": "http://x"})
             assert bad.status_code == 400
@@ -167,14 +244,21 @@ def test_the_whole_gateway(tmp_path):
             assert st["notes"]["status"] == st["fx"]["status"] == st["slow"]["status"] == "ok"
             assert st["dead"]["status"] == "unreachable" and "unreachable" in st["dead"]["error"]
 
+            await add_gateway(admin, "main", list(ids.values()))
+            await add_team(admin, "everyone", [bob_id], "main", [
+                (ids["notes"], "save_note"), (ids["notes"], "list"),
+                (ids["fx"], "convert"), (ids["fx"], "list"), (ids["slow"], "list")])
+
             # Credentials never leave the server.
             for client in (admin, member):
                 raw = (await client.get("/api/servers")).text
                 assert NOTES_KEY not in raw and FX_TOKEN not in raw
                 assert '"has_credential":true' in raw.replace(" ", "")
 
+            await wait_tools(edge, key, 5)
+
             # One MCP endpoint: every enabled server's tools, prefixed.
-            async with gateway_client(gw, key) as mcp:
+            async with gateway_client(edge, key) as mcp:
                 names = {t.name for t in (await mcp.list_tools()).tools}
                 assert names == {
                     "notes__save_note", "notes__list",
@@ -234,16 +318,17 @@ def test_the_whole_gateway(tmp_path):
             assert (await member.delete(f"/api/keys/{key_id}")).status_code == 200
             async with httpx2.AsyncClient() as raw:
                 r = await raw.post(
-                    f"{gw}/mcp",
+                    f"{edge}/mcp",
                     json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                     headers={"Authorization": f"Bearer {key}"},
                 )
                 assert r.status_code == 401
 
             # The dashboard sees the same tools and can try one, audited as the admin.
-            tools = {t["name"] for t in (await admin.get("/api/tools")).json()}
-            assert "fx__convert" in tools and "inputSchema" in (await admin.get("/api/tools")).json()[0]
-            r = await admin.post("/api/tools/call", json={"name": "fx__convert", "arguments": {"amount_inr": 100, "to": "EUR"}})
+            tools = {t["name"] for t in (await admin.get("/api/tools?gateway=main")).json()}
+            assert "fx__convert" in tools and "inputSchema" in (await admin.get("/api/tools?gateway=main")).json()[0]
+            r = await admin.post("/api/tools/call", json={"gateway": "main", "name": "fx__convert",
+                                                          "arguments": {"amount_inr": 100, "to": "EUR"}})
             assert r.status_code == 200 and r.json()["structuredContent"]["amount"] == 1.1
             assert (await admin.get("/api/audit")).json()[0]["username"] == "admin"
 
@@ -253,59 +338,21 @@ def test_the_whole_gateway(tmp_path):
     asyncio.run(run())
 
 
-def test_rate_limit_per_user(tmp_path):
+def test_rate_limit_per_user(db_url):
     from app import db as store
     from app.upstream import Upstreams
 
-    ups = Upstreams(store.connect(str(tmp_path / "g.db")), call_timeout=1, list_timeout=1, refresh_interval=30, calls_per_minute=2)
+    ups = Upstreams(store.connect(db_url), call_timeout=1, list_timeout=1, refresh_interval=30, calls_per_minute=2)
     alice = {"id": 1, "username": "alice", "role": "admin"}
     bob = {"id": 2, "username": "bob", "role": "admin"}
 
     async def run():
         for _ in range(2):
-            assert "Unknown tool" in text(await ups.call_tool(alice, "x__y", {}))
-        assert "Too many calls" in text(await ups.call_tool(alice, "x__y", {}))
-        assert "Unknown tool" in text(await ups.call_tool(bob, "x__y", {}))
+            assert "Unknown tool" in text(await ups.call_tool(alice, "main", "x__y", {}))
+        assert "Too many calls" in text(await ups.call_tool(alice, "main", "x__y", {}))
+        assert "Unknown tool" in text(await ups.call_tool(bob, "main", "x__y", {}))
 
     asyncio.run(run())
-
-
-def test_customer_role_is_removed_from_an_old_database(tmp_path):
-    import sqlite3
-
-    from app import db as store
-
-    path = str(tmp_path / "old.db")
-    old = sqlite3.connect(path)
-    old.executescript(
-        """
-        PRAGMA foreign_keys = ON;
-        CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'customer')), created_at REAL NOT NULL, customer_id INTEGER);
-        CREATE TABLE api_keys (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, created_at REAL NOT NULL, revoked_at REAL);
-        CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL, auth_header TEXT,
-            auth_value TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL, customer_tools TEXT NOT NULL DEFAULT '');
-        INSERT INTO users VALUES (1, 'admin', 'h', 'admin', 0, NULL), (2, 'alice', 'h', 'customer', 0, 7);
-        INSERT INTO api_keys VALUES (1, 1, 'k', 'h1', 'mcpg_', 0, NULL), (2, 2, 'k', 'h2', 'mcpg_', 0, NULL);
-        INSERT INTO servers (name, url, created_at, customer_tools) VALUES ('woo', 'http://w', 0, 'my_orders');
-        """
-    )
-    old.commit()
-    old.close()
-
-    conn = store.connect(path)
-    assert [r["username"] for r in conn.execute("SELECT username FROM users")] == ["admin"]
-    assert [r["user_id"] for r in conn.execute("SELECT user_id FROM api_keys")] == [1]
-    assert "customer_tools" not in {r["name"] for r in conn.execute("PRAGMA table_info(servers)")}
-    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-    try:
-        store.create_user(conn, "bob", "pw-bob-12345", "customer")
-        raise AssertionError("customer role still accepted")
-    except sqlite3.IntegrityError:
-        pass
-    conn.close()
-    store.connect(path)  # second start is a no-op
 
 
 def fake_llm(seen: list):
@@ -328,7 +375,7 @@ def fake_llm(seen: list):
     return Starlette(routes=[Route("/v1/chat/completions", complete, methods=["POST"])])
 
 
-def test_chat_agent_calls_tools_as_the_logged_in_user(tmp_path):
+def test_chat_agent_calls_tools_as_the_logged_in_user(db_url):
     seen = []
 
     async def run():
@@ -337,24 +384,27 @@ def test_chat_agent_calls_tools_as_the_logged_in_user(tmp_path):
             serve(fake_llm(seen)) as llm,
         ):
             settings = Settings(
-                database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1],
+                database_url=db_url, credentials_key=KEY, setup_token=SETUP,
                 refresh_interval_s=0.5, openrouter_api_key="test-llm-key", llm_url=f"{llm}/v1/chat/completions",
             )
-            with serve(create_app(settings)) as gw:
+            with serve(create_app(settings, gateways=FakeGateways())) as gw:
+                await setup_admin(gw)
                 admin = httpx2.AsyncClient(base_url=gw, timeout=10)
                 await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
                 notes_id = (await admin.post("/api/servers", json={
                     "name": "notes", "url": f"{notes}/mcp",
                     "auth": {"type": "header", "name": "X-API-Key", "value": NOTES_KEY}})).json()["id"]
-                await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123", "server_ids": [notes_id]})
+                await add_gateway(admin, "main", [notes_id])
+                bob_id = (await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})).json()["id"]
+                await add_team(admin, "notes", [bob_id], "main", [(notes_id, "save_note"), (notes_id, "list")])
                 bob = httpx2.AsyncClient(base_url=gw, timeout=10)
                 await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
                 deadline = time.time() + 5
-                while not (await bob.get("/api/tools")).json():
+                while not (await bob.get("/api/tools?gateway=main")).json():
                     assert time.time() < deadline
                     await asyncio.sleep(0.1)
 
-                msg = {"messages": [{"role": "user", "content": "save a note"}]}
+                msg = {"gateway": "main", "messages": [{"role": "user", "content": "save a note"}]}
                 assert (await httpx2.AsyncClient(base_url=gw).post("/api/chat", json=msg)).status_code == 401
                 r = await bob.post("/api/chat", json=msg)
                 assert r.status_code == 200, r.text
@@ -374,105 +424,22 @@ def test_chat_agent_calls_tools_as_the_logged_in_user(tmp_path):
     asyncio.run(run())
 
 
-def test_grants_upgrade_keeps_members_on_their_servers(tmp_path):
-    from app import db as store
-
-    path = str(tmp_path / "g.db")
-    conn = store.connect(path)
-    store.create_user(conn, "root", "root-password-123", "admin")
-    bob = store.create_user(conn, "bob", "bob-password-123", "member")
-    conn.execute("INSERT INTO servers (name, url, created_at) VALUES ('notes', 'http://n', 0), ('fx', 'http://f', 0)")
-    conn.execute("DROP TABLE user_servers")  # a database from before grants
-    conn.close()
-
-    conn = store.connect(path)
-    granted = conn.execute(
-        "SELECT u.username, s.name FROM user_servers g JOIN users u ON u.id = g.user_id"
-        " JOIN servers s ON s.id = g.server_id ORDER BY s.name"
-    ).fetchall()
-    assert [tuple(r) for r in granted] == [("bob", "fx"), ("bob", "notes")]
-
-    root = conn.execute("SELECT * FROM users WHERE username = 'root'").fetchone()
-    member = conn.execute("SELECT * FROM users WHERE id = ?", (bob,)).fetchone()
-    assert store.granted_server_ids(conn, root) is None
-    assert len(store.granted_server_ids(conn, member)) == 2
-
-    store.set_grants(conn, bob, [])
-    conn.close()
-    conn = store.connect(path)  # a later start does not grant again
-    assert store.granted_server_ids(conn, member) == set()
-
-
-def test_members_see_only_granted_servers(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0],
-                        admin_password=ADMIN[1], refresh_interval_s=0.5)
+def test_admin_deletes_a_user(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
-        with (
-            serve(http_app(build_notes(), "X-API-Key", NOTES_KEY)) as notes,
-            serve(http_app(build_fx(), "Authorization", f"Bearer {FX_TOKEN}")) as fx,
-            serve(create_app(settings)) as gw,
-        ):
-            admin = httpx2.AsyncClient(base_url=gw, timeout=10)
-            await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
-            ids = {}
-            for body in (
-                {"name": "notes", "url": f"{notes}/mcp", "auth": {"type": "header", "name": "X-API-Key", "value": NOTES_KEY}},
-                {"name": "fx", "url": f"{fx}/mcp", "auth": {"type": "bearer", "token": FX_TOKEN}},
-            ):
-                ids[body["name"]] = (await admin.post("/api/servers", json=body)).json()["id"]
-
-            bad = await admin.post("/api/users", json={"username": "eve", "password": "eve-password-123", "server_ids": [999]})
-            assert bad.status_code == 400
-            r = await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123", "server_ids": [ids["notes"]]})
-            assert r.status_code == 201 and r.json()["server_ids"] == [ids["notes"]]
-            bob_id = r.json()["id"]
-            users = {u["username"]: u for u in (await admin.get("/api/users")).json()}
-            assert users["bob"]["server_ids"] == [ids["notes"]] and users["admin"]["server_ids"] == []
-
-            bob = httpx2.AsyncClient(base_url=gw, timeout=10)
-            await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
-            key = (await bob.post("/api/keys", json={"name": "k"})).json()["key"]
-            deadline = time.time() + 5
-            while len((await admin.get("/api/tools")).json()) < 4:
-                assert time.time() < deadline
-                await asyncio.sleep(0.1)
-
-            assert {t["name"] for t in (await bob.get("/api/tools")).json()} == {"notes__save_note", "notes__list"}
-            assert [s["name"] for s in (await bob.get("/api/servers")).json()] == ["notes"]
-            async with gateway_client(gw, key) as mcp:
-                assert {t.name for t in (await mcp.list_tools()).tools} == {"notes__save_note", "notes__list"}
-                r = await mcp.call_tool("fx__list", {})
-                assert r.is_error and "Unknown tool" in text(r)
-            log = (await admin.get("/api/audit")).json()
-            assert (log[0]["username"], log[0]["tool"], log[0]["ok"]) == ("bob", "fx__list", 0)
-
-            assert (await bob.put(f"/api/users/{bob_id}/servers", json={"server_ids": []})).status_code == 403
-            admin_id = users["admin"]["id"]
-            assert (await admin.put(f"/api/users/{admin_id}/servers", json={"server_ids": []})).status_code == 400
-            r = await admin.put(f"/api/users/{bob_id}/servers", json={"server_ids": [ids["fx"]]})
-            assert r.status_code == 200
-            assert {t["name"] for t in (await bob.get("/api/tools")).json()} == {"fx__convert", "fx__list"}
-
-            # Removing a server removes its grants.
-            await admin.delete(f"/api/servers/{ids['fx']}")
-            users = {u["username"]: u for u in (await admin.get("/api/users")).json()}
-            assert users["bob"]["server_ids"] == []
-
-    asyncio.run(run())
-
-
-def test_admin_deletes_a_user(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
-
-    async def run():
-        with serve(create_app(settings)) as gw:
+        with serve(create_app(settings)) as gw, serve(create_app(edge_settings(db_url, "main"))) as edge:
+            await setup_admin(gw)
             admin = httpx2.AsyncClient(base_url=gw, timeout=10)
             me = (await admin.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})).json()
             bob_id = (await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})).json()["id"]
             bob = httpx2.AsyncClient(base_url=gw, timeout=10)
             await bob.post("/api/login", json={"username": "bob", "password": "bob-password-123"})
             key = (await bob.post("/api/keys", json={"name": "k"})).json()["key"]
+            from app import db as store
+            conn = store.connect(db_url, create_schema=False)
+            sid = conn.execute("INSERT INTO servers (name, url, created_at) VALUES ('s', 'http://x', 0) RETURNING id").fetchone()["id"]
+            conn.execute("INSERT INTO user_credentials (user_id, server_id, secret, updated_at) VALUES (?, ?, 'x', 0)", (bob_id, sid))
 
             assert (await bob.delete(f"/api/users/{me['id']}")).status_code == 403
             assert (await admin.delete(f"/api/users/{me['id']}")).status_code == 400
@@ -480,9 +447,11 @@ def test_admin_deletes_a_user(tmp_path):
             assert (await admin.delete(f"/api/users/{bob_id}")).status_code == 200
 
             assert (await bob.get("/api/me")).status_code == 401
-            r = await httpx2.AsyncClient(base_url=gw).post(
+            r = await httpx2.AsyncClient(base_url=edge).post(
                 "/mcp", headers={"Authorization": f"Bearer {key}"}, json={})
             assert r.status_code == 401
             assert [u["username"] for u in (await admin.get("/api/users")).json()] == ["admin"]
+            assert conn.execute("SELECT count(*) AS n FROM user_credentials").fetchone()["n"] == 0
+            conn.close()
 
     asyncio.run(run())

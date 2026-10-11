@@ -89,3 +89,24 @@ def test_store_pods_cannot_reach_cloud_metadata():
             for to in rule["to"]:
                 if "ipBlock" in to:
                     assert "169.254.0.0/16" in to["ipBlock"]["except"]
+
+
+def test_edge_values():
+    assert m.edge_release("prod") == "gw-prod"
+    assert m.edge_url("prod") == "http://prod.gw.localhost"
+    v = m.edge_values("prod", {"displayName": "Production", "publicUrl": ""}, "0.2.0")
+    assert v == {
+        "mode": "edge", "slug": "prod", "replicas": 2, "image": {"tag": "0.2.0"},
+        "ingress": {"host": "prod.gw.localhost"}, "stores": {"enabled": False},
+    }
+    v = m.edge_values("ext", {"displayName": "External", "publicUrl": "https://gw.example.com"}, "0.2.0")
+    assert v["publicUrl"] == "https://gw.example.com"
+    # The public host gets its own Ingress rule; the local one stays.
+    assert v["ingress"] == {"host": "ext.gw.localhost", "extraHosts": ["gw.example.com"]}
+
+
+def test_edge_timeout_is_shorter():
+    now = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+    six_min_ago = (now - timedelta(minutes=6)).isoformat()
+    assert m.timed_out(six_min_ago, now, m.EDGE_TIMEOUT_S)
+    assert not m.timed_out(six_min_ago, now)  # stores get 15 minutes

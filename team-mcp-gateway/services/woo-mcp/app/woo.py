@@ -18,12 +18,17 @@ import hashlib
 import hmac
 import secrets
 import time
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx2
 
 from .config import Settings
+
+# The caller's own WooCommerce key for this request (X-Woo-Credentials, see main.py).
+# Set, it is used instead of the key in our env, so WooCommerce acts as that person.
+PERSONAL_KEY: ContextVar[tuple[str, str] | None] = ContextVar("personal_key", default=None)
 
 API_PREFIX = "/wp-json/wc/v3"
 
@@ -105,18 +110,16 @@ class WooClient:
         url = f"{self._s.woo_internal_url}{API_PREFIX}{path}"
         headers = {"Host": self._host_header, "Accept": "application/json"}
         auth = None
+        key, secret = PERSONAL_KEY.get() or (
+            self._s.woo_consumer_key,
+            self._s.woo_consumer_secret,
+        )
         if self._s.woo_auth_mode == "oauth1":
             clean = sign_oauth1(
-                method,
-                f"{self._sign_origin}{API_PREFIX}{path}",
-                clean,
-                self._s.woo_consumer_key,
-                self._s.woo_consumer_secret,
+                method, f"{self._sign_origin}{API_PREFIX}{path}", clean, key, secret
             )
         else:
-            auth = httpx2.BasicAuth(
-                self._s.woo_consumer_key, self._s.woo_consumer_secret
-            )
+            auth = httpx2.BasicAuth(key, secret)
 
         try:
             response = await self._http.request(

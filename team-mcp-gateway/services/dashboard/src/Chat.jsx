@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from './api.js'
+import { GatewayPicker, useGateway } from './Gateways.jsx'
 
 // Kept in memory only: a reload starts a new chat. Tool calls run as you and are audited.
 export default function Chat({ user }) {
@@ -7,10 +8,11 @@ export default function Chat({ user }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [gateway, gateways, chooseGateway] = useGateway()
 
   async function send(e) {
     e.preventDefault()
-    if (!text.trim() || busy) return
+    if (!text.trim() || busy || !gateway) return
     const next = [...turns, { role: 'user', content: text.trim() }]
     setTurns(next)
     setText('')
@@ -18,7 +20,7 @@ export default function Chat({ user }) {
     setBusy(true)
     try {
       const messages = next.map(({ role, content }) => ({ role, content }))
-      const r = await api('/chat', { method: 'POST', body: { messages } })
+      const r = await api('/chat', { method: 'POST', body: { gateway: gateway.slug, messages } })
       setTurns([...next, { role: 'assistant', content: r.reply, calls: r.calls }])
     } catch (err) {
       setError(err.message)
@@ -30,7 +32,9 @@ export default function Chat({ user }) {
   return (
     <>
       <div className="card hint">
-        The agent calls gateway tools as <b>{user.username}</b>; every call is in the audit log under your name.
+        The agent calls gateway tools as <b>{user.username}</b>, with the tools your teams allow on the gateway
+        below; every call is in the audit log under your name.
+        <GatewayPicker current={gateway} gateways={gateways} onChange={chooseGateway} />
       </div>
       <div className="card chat">
         {turns.length === 0 && <p className="muted">Ask something, e.g. "what orders came in today?"</p>}

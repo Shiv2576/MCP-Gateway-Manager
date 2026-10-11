@@ -16,6 +16,7 @@ COPY services/store-operator/store_operator ./store_operator
 # The charts every store is installed from (Bitnami WordPress is vendored in charts/store/charts).
 COPY charts/store /charts/store
 COPY charts/woo-mcp /charts/woo-mcp
+COPY charts/gateway /charts/gateway
 ENV PATH="/srv/.venv/bin:$PATH"
 
 USER 10001:10001

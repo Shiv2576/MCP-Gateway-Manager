@@ -14,7 +14,6 @@ from __future__ import annotations
 import html
 import json
 import secrets
-import sqlite3
 import time
 from urllib.parse import urlsplit
 
@@ -41,7 +40,7 @@ REFRESH_TTL_S = 30 * 24 * 3600
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 
-def user_for_oauth_token(conn: sqlite3.Connection, token: str, resource: str) -> sqlite3.Row | None:
+def user_for_oauth_token(conn: store.Db, token: str, resource: str) -> dict | None:
     """The user an access token belongs to, if it is live and was issued for this gateway."""
     return conn.execute(
         "SELECT u.* FROM oauth_tokens t JOIN users u ON u.id = t.user_id"
@@ -52,9 +51,9 @@ def user_for_oauth_token(conn: sqlite3.Connection, token: str, resource: str) ->
 
 
 class Provider:
-    """OAuthAuthorizationServerProvider backed by the gateway's SQLite file."""
+    """OAuthAuthorizationServerProvider backed by the gateway's database."""
 
-    def __init__(self, conn: sqlite3.Connection, public_url: str, redirect_uris: tuple[str, ...]):
+    def __init__(self, conn: store.Db, public_url: str, redirect_uris: tuple[str, ...]):
         self.conn, self.public_url, self.redirect_uris = conn, public_url.rstrip("/"), redirect_uris
 
     # ------------------------------------------------------------ clients
@@ -207,7 +206,7 @@ def _page(body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(PAGE.format(body=body), status_code=status, headers=HEADERS)
 
 
-def _pending(conn: sqlite3.Connection, login_id: str):
+def _pending(conn: store.Db, login_id: str):
     return conn.execute(
         "SELECT c.*, k.info FROM oauth_codes c JOIN oauth_clients k ON k.client_id = c.client_id"
         " WHERE c.code_hash = ? AND c.user_id IS NULL AND c.expires_at > ?",

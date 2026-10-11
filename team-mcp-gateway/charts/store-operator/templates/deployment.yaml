@@ -21,6 +21,7 @@ spec:
           env:
             - { name: STORES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: GATEWAY_URL, value: {{ .Values.gatewayUrl | quote }} }
+            - { name: EDGE_IMAGE_TAG, value: {{ .Values.edgeImageTag | quote }} }
           envFrom:
             - secretRef:
                 name: {{ required "existingSecret is required" .Values.existingSecret }}

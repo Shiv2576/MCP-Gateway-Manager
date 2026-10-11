@@ -1,7 +1,8 @@
 """Chat agent: an LLM that calls gateway tools as the logged-in user.
 
-Every tool call goes through Upstreams.call_tool with the session's user, so it
-is rate limited and audited under that user exactly like a call from /mcp.
+Every tool call goes through Upstreams.call_tool with the session's user and the
+chosen gateway, so it gets that gateway's policy and is rate limited and audited
+exactly like a call from that gateway's /mcp.
 Nothing is stored: the browser sends the conversation with each request.
 """
 
@@ -14,7 +15,7 @@ import httpx2
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from .api import HTTPError, body, current_user, handler
+from .api import HTTPError, body, current_user, gateway_param, handler
 
 MAX_ROUNDS = 6
 MAX_MESSAGES = 20
@@ -67,6 +68,8 @@ async def _complete(settings, messages: list[dict], tools: list[dict]) -> dict:
 @handler
 async def chat(request: Request) -> Response:
     user = current_user(request)
+    data = await body(request)
+    gateway = gateway_param(request, data.get("gateway"))
     settings = request.app.state.settings
     if not settings.openrouter_api_key:
         raise HTTPError(503, "chat is not configured: OPENROUTER_API_KEY is not set")
@@ -80,12 +83,12 @@ async def chat(request: Request) -> Response:
                 "and ask the user to confirm, unless they already asked for exactly that."
             ),
         },
-        *_messages(await body(request)),
+        *_messages(data),
     ]
     upstreams = request.app.state.upstreams
     tools = [
         {"type": "function", "function": {"name": t.name, "description": t.description or "", "parameters": t.input_schema}}
-        for t in upstreams.list_tools(user)
+        for t in upstreams.list_tools(user, gateway)
         if FUNCTION_NAME.match(t.name)
     ]
 
@@ -105,7 +108,7 @@ async def chat(request: Request) -> Response:
             if not isinstance(args, dict):
                 ok, text, args = False, "arguments were not a JSON object", {}
             else:
-                result = await upstreams.call_tool(user, name, args)
+                result = await upstreams.call_tool(user, gateway, name, args)
                 ok, text = not result.is_error, _result_text(result)
             text = text[:8000]
             calls.append({"name": name, "arguments": args, "ok": ok, "result": text[:2000]})

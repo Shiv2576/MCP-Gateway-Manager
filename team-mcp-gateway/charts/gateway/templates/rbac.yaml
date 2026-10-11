@@ -1,4 +1,4 @@
-{{- if .Values.stores.enabled }}
+{{- if and (eq .Values.mode "control") .Values.stores.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -6,14 +6,14 @@ metadata:
   labels:
     {{- include "gateway.labels" . | nindent 4 }}
 ---
-# Only Store objects in this namespace. Provisioning rights stay with the operator.
+# Only Store and McpGateway objects in this namespace. Provisioning rights stay with the operator.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "gateway.name" . }}-stores
 rules:
   - apiGroups: ["mcpgateway.example.com"]
-    resources: ["stores"]
+    resources: ["stores", "mcpgateways"]
     verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

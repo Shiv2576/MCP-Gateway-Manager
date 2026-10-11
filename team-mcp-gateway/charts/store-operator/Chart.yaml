@@ -1,6 +1,6 @@
 apiVersion: v2
 name: store-operator
-description: Provisions WooCommerce stores from Store resources and registers their MCP servers in the gateway.
+description: Provisions WooCommerce stores and gateway edges from Store and McpGateway resources.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"

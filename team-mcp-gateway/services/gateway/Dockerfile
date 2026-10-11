@@ -20,8 +20,6 @@ COPY app ./app
 ENV PATH="/srv/.venv/bin:$PATH"
 
 # Run as an unprivileged, numeric user so Kubernetes can verify runAsNonRoot.
-# The SQLite file lives on the volume mounted at /data.
-ENV DATABASE_PATH=/data/gateway.db
 
 USER 10001:10001
 EXPOSE 8000

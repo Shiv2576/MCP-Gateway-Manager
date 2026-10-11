@@ -1,0 +1,17 @@
+image:
+  repository: postgres
+  tag: "17-alpine"
+  pullPolicy: IfNotPresent
+# Secret in this namespace with POSTGRES_PASSWORD (the postgres superuser; only
+# this pod reads it), APP_PASSWORD (the gateway role) and DATABASE_URL (read by
+# the gateway pods).
+existingSecret: gateway-db
+# Created by the init script as a plain LOGIN role owning this database: no superuser.
+database: gateway
+appUser: gateway
+persistence:
+  size: 2Gi
+  storageClass: ""
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 512Mi }

@@ -288,3 +288,9 @@ button.tiny { padding: 2px 8px; font-size: 12px; }
 .switch[aria-checked='true'] { background: var(--ok); border-color: var(--ok); }
 .switch[aria-checked='true']::after { transform: translateX(16px); }
 @media (prefers-reduced-motion: reduce) { .switch, .switch::after { transition: none; } }
+
+.attach { margin-top: 12px; display: grid; gap: 6px; }
+.pw { position: relative; display: block; }
+.pw input { padding-right: 36px; }
+.pw-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 4px 6px; background: transparent; color: var(--muted-foreground); display: flex; }
+.pw-eye:hover { color: var(--foreground); }

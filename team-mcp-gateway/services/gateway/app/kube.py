@@ -1,6 +1,7 @@
-"""Store custom resources in the Kubernetes API, with the pod's ServiceAccount.
+"""Store and McpGateway custom resources in the Kubernetes API, with the pod's
+ServiceAccount.
 
-The gateway only creates, lists and deletes Store objects; the store operator
+The control plane only creates, lists and deletes these objects; the operator
 does the provisioning. Its Role allows nothing else.
 """
 
@@ -16,8 +17,17 @@ OWNER_LABEL = f"{GROUP}/owner-id"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
-class StoreExists(Exception):
+class AlreadyExists(Exception):
     pass
+
+
+def gateway_resource(slug: str, name: str, public_url: str | None) -> dict:
+    return {
+        "apiVersion": f"{GROUP}/v1",
+        "kind": "McpGateway",
+        "metadata": {"name": slug},
+        "spec": {"displayName": name, "publicUrl": public_url or ""},
+    }
 
 
 def store_resource(name: str, template: str, owner_id: int, owner: str) -> dict:
@@ -30,9 +40,9 @@ def store_resource(name: str, template: str, owner_id: int, owner: str) -> dict:
 
 
 class Kube:
-    def __init__(self, namespace: str):
+    def __init__(self, namespace: str, plural: str = "stores"):
         host, port = os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
-        self.url = f"https://{host}:{port}/apis/{GROUP}/v1/namespaces/{namespace}/stores"
+        self.url = f"https://{host}:{port}/apis/{GROUP}/v1/namespaces/{namespace}/{plural}"
         self.tls = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
 
     async def _request(self, method: str, path: str = "", **kw) -> httpx2.Response:
@@ -55,12 +65,15 @@ class Kube:
         r.raise_for_status()
         return r.json()
 
-    async def create(self, name: str, template: str, owner_id: int, owner: str) -> dict:
-        r = await self._request("POST", json=store_resource(name, template, owner_id, owner))
+    async def create_object(self, obj: dict) -> dict:
+        r = await self._request("POST", json=obj)
         if r.status_code == 409:
-            raise StoreExists(name)
+            raise AlreadyExists(obj["metadata"]["name"])
         r.raise_for_status()
         return r.json()
+
+    async def create(self, name: str, template: str, owner_id: int, owner: str) -> dict:
+        return await self.create_object(store_resource(name, template, owner_id, owner))
 
     async def delete(self, name: str) -> None:
         r = await self._request("DELETE", f"/{name}")

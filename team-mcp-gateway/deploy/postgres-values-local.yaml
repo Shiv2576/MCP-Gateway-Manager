@@ -1,0 +1,4 @@
+# k3d on your laptop:
+#   helm upgrade --install db charts/postgres -n mercora -f deploy/postgres-values-local.yaml
+persistence:
+  size: 1Gi

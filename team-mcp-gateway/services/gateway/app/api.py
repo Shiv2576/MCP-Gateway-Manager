@@ -10,7 +10,6 @@ from __future__ import annotations
 import collections
 import re
 import secrets
-import sqlite3
 import time
 from urllib.parse import urlsplit
 
@@ -26,6 +25,8 @@ SESSION_TTL_S = 12 * 3600
 SERVER_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
+# Set by the HTTP or MCP transport; a member's credential must not replace them.
+RESERVED_HEADERS = {"host", "content-length", "content-type", "accept", "connection", "transfer-encoding"}
 
 
 class HTTPError(Exception):
@@ -66,7 +67,7 @@ class LoginThrottle:
         self._fails.pop(username.lower(), None)
 
 
-def check_password(request: Request, username: str, password: str) -> sqlite3.Row:
+def check_password(request: Request, username: str, password: str) -> dict:
     """The user, if the password is right. Shared by the dashboard and OAuth logins."""
     throttle: LoginThrottle = request.app.state.login_throttle
     if throttle.blocked(username):
@@ -80,7 +81,7 @@ def check_password(request: Request, username: str, password: str) -> sqlite3.Ro
     return user
 
 
-def user_for_api_key(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+def user_for_api_key(conn: store.Db, key: str) -> dict | None:
     return conn.execute(
         "SELECT u.* FROM api_keys k JOIN users u ON u.id = k.user_id"
         " WHERE k.key_hash = ? AND k.revoked_at IS NULL",
@@ -88,7 +89,7 @@ def user_for_api_key(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def current_user(request: Request) -> sqlite3.Row:
+def current_user(request: Request) -> dict:
     conn = request.app.state.db
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -105,7 +106,7 @@ def current_user(request: Request) -> sqlite3.Row:
     return user
 
 
-def require_admin(request: Request) -> sqlite3.Row:
+def require_admin(request: Request) -> dict:
     user = current_user(request)
     if user["role"] != "admin":
         raise HTTPError(403, "admins only")
@@ -131,15 +132,25 @@ def _str(data: dict, key: str, *, required: bool = True) -> str | None:
     return value.strip()
 
 
+def org_ready(request: Request) -> bool:
+    state = request.app.state
+    if not getattr(state, "org_ready", False):  # cached once true: setup never undoes itself
+        state.org_ready = state.db.execute("SELECT 1 FROM org").fetchone() is not None
+    return state.org_ready
+
+
 def handler(fn):
-    """Turn HTTPError into a JSON error response."""
+    """Turn HTTPError into a JSON error response. Until first-run setup is done,
+    only /api/setup answers."""
 
     async def wrapped(request: Request) -> Response:
         try:
+            if not request.url.path.startswith("/api/setup") and not org_ready(request):
+                raise HTTPError(503, "setup needed: open the dashboard to set up the organization")
             return await fn(request)
         except HTTPError as e:
             return JSONResponse({"error": e.message}, status_code=e.status)
-        except sqlite3.IntegrityError:
+        except store.IntegrityError:
             return JSONResponse({"error": "already exists"}, status_code=409)
 
     return wrapped
@@ -148,10 +159,8 @@ def handler(fn):
 # ------------------------------------------------------------------- session
 
 
-@handler
-async def login(request: Request) -> Response:
-    data = await body(request)
-    user = check_password(request, _str(data, "username"), _str(data, "password"))
+def session_response(request: Request, user: dict, status: int = 200) -> JSONResponse:
+    """Start a browser session for this user: the HttpOnly cookie and the user as JSON."""
     conn = request.app.state.db
     token = secrets.token_urlsafe(32)
     conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
@@ -159,7 +168,7 @@ async def login(request: Request) -> Response:
         "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
         (store.sha256(token), user["id"], time.time() + SESSION_TTL_S),
     )
-    response = JSONResponse(_user(user))
+    response = JSONResponse(_user(user), status_code=status)
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -169,6 +178,13 @@ async def login(request: Request) -> Response:
         secure=request.app.state.settings.cookie_secure,
     )
     return response
+
+
+@handler
+async def login(request: Request) -> Response:
+    data = await body(request)
+    user = check_password(request, _str(data, "username"), _str(data, "password"))
+    return session_response(request, user)
 
 
 @handler
@@ -185,26 +201,27 @@ async def me(request: Request) -> Response:
     return JSONResponse(_user(current_user(request)))
 
 
-@handler
-async def connect_info(request: Request) -> Response:
-    """How MCP clients can sign in to /mcp, for the dashboard."""
-    current_user(request)
-    public_url = request.app.state.settings.public_url
-    return JSONResponse({"oauth": bool(public_url), "mcp_url": f"{public_url}/mcp" if public_url else None})
+def gateway_param(request: Request, slug) -> str:
+    """The gateway a dashboard request acts through: its policy applies, as on its edge."""
+    if not isinstance(slug, str) or not slug:
+        raise HTTPError(400, "'gateway' is required: tools are used through a gateway")
+    if request.app.state.db.execute("SELECT 1 FROM gateways WHERE slug = ?", (slug,)).fetchone() is None:
+        raise HTTPError(404, "no such gateway")
+    return slug
 
 
-def _user(u: sqlite3.Row) -> dict:
+def _user(u: dict) -> dict:
     return {"id": u["id"], "username": u["username"], "role": u["role"]}
 
 
 # --------------------------------------------------------------------- users
 
 
-def _server_ids(conn: sqlite3.Connection, data: dict) -> list[int]:
+def _server_ids(conn: store.Db, data: dict) -> list[int]:
     ids = data.get("server_ids", [])
     if not isinstance(ids, list) or not all(type(i) is int for i in ids):
         raise HTTPError(400, "server_ids must be a list of server ids")
-    known = {r[0] for r in conn.execute("SELECT id FROM servers")}
+    known = {r["id"] for r in conn.execute("SELECT id FROM servers")}
     if not set(ids) <= known:
         raise HTTPError(400, "server_ids contains an unknown server")
     return sorted(set(ids))
@@ -214,11 +231,25 @@ def _server_ids(conn: sqlite3.Connection, data: dict) -> list[int]:
 async def list_users(request: Request) -> Response:
     require_admin(request)
     conn = request.app.state.db
-    grants = collections.defaultdict(list)
-    for g in conn.execute("SELECT user_id, server_id FROM user_servers ORDER BY server_id"):
-        grants[g["user_id"]].append(g["server_id"])
+    teams = collections.defaultdict(list)
+    for t in conn.execute(
+        "SELECT tm.user_id, t.name FROM team_members tm JOIN teams t ON t.id = tm.team_id ORDER BY t.name"
+    ):
+        teams[t["user_id"]].append(t["name"])
+    denies = collections.defaultdict(lambda: collections.defaultdict(list))
+    for d in conn.execute(
+        "SELECT ud.user_id, g.slug, s.id AS server_id, s.name AS server, ud.tool FROM user_denies ud"
+        " JOIN gateways g ON g.id = ud.gateway_id JOIN servers s ON s.id = ud.server_id ORDER BY g.slug, s.name, ud.tool"
+    ):
+        denies[d["user_id"]][d["slug"]].append({"server_id": d["server_id"], "server": d["server"], "tool": d["tool"]})
+    creds = collections.defaultdict(list)  # which servers, never the values
+    for c in conn.execute(
+        "SELECT uc.user_id, s.name, uc.updated_at FROM user_credentials uc JOIN servers s ON s.id = uc.server_id ORDER BY s.name"
+    ):
+        creds[c["user_id"]].append({"server": c["name"], "updated_at": c["updated_at"]})
     rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
-    return JSONResponse([{**_user(u), "server_ids": grants[u["id"]]} for u in rows])
+    return JSONResponse([{**_user(u), "teams": teams[u["id"]], "denies": denies[u["id"]], "credentials": creds[u["id"]]}
+                         for u in rows])
 
 
 @handler
@@ -227,36 +258,15 @@ async def create_user(request: Request) -> Response:
     data = await body(request)
     username, password = _str(data, "username"), _str(data, "password")
     role = data.get("role", "member")
-    if not USERNAME.match(username):
-        raise HTTPError(400, "username: 2-32 of a-z 0-9 . _ -")
-    if len(password) < 10:
-        raise HTTPError(400, "password must be at least 10 characters")
     if role not in ("admin", "member"):
         raise HTTPError(400, "role must be admin or member")
-    conn = request.app.state.db
-    server_ids = _server_ids(conn, data) if role == "member" else []
-    uid = store.create_user(conn, username, password, role)
-    store.set_grants(conn, uid, server_ids)
-    return JSONResponse({"id": uid, "username": username, "role": role, "server_ids": server_ids}, status_code=201)
-
-
-@handler
-async def set_user_servers(request: Request) -> Response:
-    require_admin(request)
-    conn = request.app.state.db
-    user = conn.execute("SELECT * FROM users WHERE id = ?", (request.path_params["id"],)).fetchone()
-    if user is None:
-        raise HTTPError(404, "no such user")
-    if user["role"] == "admin":
-        raise HTTPError(400, "admins use every server")
-    server_ids = _server_ids(conn, await body(request))
-    store.set_grants(conn, user["id"], server_ids)
-    return JSONResponse({"ok": True, "server_ids": server_ids})
+    uid = store.create_user(request.app.state.db, username, password, role)
+    return JSONResponse({"id": uid, "username": username, "role": role}, status_code=201)
 
 
 @handler
 async def delete_user(request: Request) -> Response:
-    """Keys, sessions and grants go with the user; audit rows keep the username.
+    """Keys, sessions and team memberships go with the user; audit rows keep the username.
     The caller is an admin and cannot delete themself, so an admin always remains."""
     me = require_admin(request)
     conn = request.app.state.db
@@ -306,12 +316,12 @@ async def create_key(request: Request) -> Response:
     user = current_user(request)
     name = _str(await body(request), "name")
     key = "mcpg_" + secrets.token_urlsafe(32)
-    cur = request.app.state.db.execute(
-        "INSERT INTO api_keys (user_id, name, key_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)",
+    kid = request.app.state.db.execute(
+        "INSERT INTO api_keys (user_id, name, key_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
         (user["id"], name, store.sha256(key), key[:12], time.time()),
-    )
+    ).fetchone()["id"]
     # The only time the key is ever shown. Only its hash is kept.
-    return JSONResponse({"id": cur.lastrowid, "name": name, "key": key}, status_code=201)
+    return JSONResponse({"id": kid, "name": name, "key": key}, status_code=201)
 
 
 @handler
@@ -337,11 +347,11 @@ async def list_connections(request: Request) -> Response:
     """Apps signed in through OAuth: one row per user and app with a live refresh token."""
     user = current_user(request)
     rows = request.app.state.db.execute(
-        "SELECT t.user_id, u.username, t.client_id, json_extract(c.info, '$.client_name') AS client_name,"
+        "SELECT t.user_id, u.username, t.client_id, c.info::json ->> 'client_name' AS client_name,"
         " MAX(t.created_at) AS last_used"
         " FROM oauth_tokens t JOIN users u ON u.id = t.user_id JOIN oauth_clients c ON c.client_id = t.client_id"
         " WHERE t.kind = 'refresh' AND t.expires_at > ? AND (? OR t.user_id = ?)"
-        " GROUP BY t.user_id, t.client_id ORDER BY last_used DESC",
+        " GROUP BY t.user_id, u.username, t.client_id, c.info ORDER BY last_used DESC",
         (time.time(), user["role"] == "admin", user["id"]),
     ).fetchall()
     return JSONResponse([dict(r) for r in rows])
@@ -364,7 +374,7 @@ async def delete_connection(request: Request) -> Response:
 # ------------------------------------------------------------------- servers
 
 
-def _server(row: sqlite3.Row, status: Status | None) -> dict:
+def _server(row: dict, status: Status | None, gateways=()) -> dict:
     status = status or Status(state="disabled" if not row["enabled"] else "pending")
     return {
         "id": row["id"],
@@ -372,9 +382,13 @@ def _server(row: sqlite3.Row, status: Status | None) -> dict:
         "url": row["url"],
         "enabled": bool(row["enabled"]),
         "created_at": row["created_at"],
+        "store": row["store"],
+        "gateways": list(gateways),
         # Which header carries the credential, never its value.
         "auth_header": row["auth_header"],
         "has_credential": bool(row["auth_value"]),
+        # Where a member's own credential goes on personal connections; None = not offered.
+        "personal_header": row["personal_header"],
         "status": status.state,
         "error": status.error,
         "checked_at": status.checked_at,
@@ -402,6 +416,17 @@ def _auth_fields(data: dict) -> tuple[str | None, str | None]:
     raise HTTPError(400, "auth.type must be none, bearer or header")
 
 
+def personal_header(value) -> str | None:
+    """The header a member's own credential goes in; None = personal identity off."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not HEADER_NAME.match(value):
+        raise HTTPError(400, "personal_header is not a valid header name")
+    if value.lower() in RESERVED_HEADERS or value.lower().startswith("mcp-"):
+        raise HTTPError(400, f"personal_header cannot be {value}: the transport sets it")
+    return value
+
+
 def _url(value: str) -> str:
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.netloc:
@@ -414,9 +439,23 @@ async def list_servers(request: Request) -> Response:
     user = current_user(request)
     ups: Upstreams = request.app.state.upstreams
     conn = request.app.state.db
-    allowed = store.granted_server_ids(conn, user)
+    allowed = None if user["role"] == "admin" else {
+        # Servers this member has at least one allowed tool on, through any gateway.
+        r["server_id"] for r in conn.execute(
+            "SELECT DISTINCT tt.server_id FROM team_members tm JOIN team_tools tt ON tt.team_id = tm.team_id"
+            " JOIN gateway_servers gs ON gs.gateway_id = tt.gateway_id AND gs.server_id = tt.server_id"
+            " WHERE tm.user_id = ?",
+            (user["id"],),
+        )
+    }
+    on = collections.defaultdict(list)
+    for r in conn.execute(
+        "SELECT gs.server_id, g.slug FROM gateway_servers gs JOIN gateways g ON g.id = gs.gateway_id ORDER BY g.slug"
+    ):
+        on[r["server_id"]].append(r["slug"])
     rows = conn.execute("SELECT * FROM servers ORDER BY name").fetchall()
-    return JSONResponse([_server(r, ups.status.get(r["id"])) for r in rows if allowed is None or r["id"] in allowed])
+    return JSONResponse([_server(r, ups.status.get(r["id"]), on[r["id"]])
+                         for r in rows if allowed is None or r["id"] in allowed])
 
 
 @handler
@@ -427,14 +466,16 @@ async def create_server(request: Request) -> Response:
     if not SERVER_NAME.match(name):
         raise HTTPError(400, "name: 1-32 of a-z 0-9 and -, used as the tool prefix")
     header, value = _auth_fields(data)
+    store_name = _str(data, "store", required=False)
     conn = request.app.state.db
-    cur = conn.execute(
-        "INSERT INTO servers (name, url, auth_header, auth_value, enabled, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (name, url, header, value, 1 if data.get("enabled", True) else 0, time.time()),
-    )
-    request.app.state.upstreams.refresh_soon(cur.lastrowid)
-    row = conn.execute("SELECT * FROM servers WHERE id = ?", (cur.lastrowid,)).fetchone()
+    sid = conn.execute(
+        "INSERT INTO servers (name, url, auth_header, auth_value, enabled, store, personal_header, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        (name, url, header, value, 1 if data.get("enabled", True) else 0, store_name,
+         personal_header(data.get("personal_header")), time.time()),
+    ).fetchone()["id"]
+    request.app.state.upstreams.refresh_soon(sid)
+    row = conn.execute("SELECT * FROM servers WHERE id = ?", (sid,)).fetchone()
     return JSONResponse(_server(row, None), status_code=201)
 
 
@@ -456,9 +497,14 @@ async def update_server(request: Request) -> Response:
     url = _url(_str(data, "url")) if "url" in data else row["url"]
     enabled = (1 if data["enabled"] else 0) if "enabled" in data else row["enabled"]
     header, value = _auth_fields(data) if "auth" in data else (row["auth_header"], row["auth_value"])
+    personal = personal_header(data["personal_header"]) if "personal_header" in data else row["personal_header"]
+    if personal is None and conn.execute(
+        "SELECT 1 FROM gateway_servers WHERE server_id = ? AND identity = 'personal'", (sid,)
+    ).fetchone():
+        raise HTTPError(400, "a gateway uses this server with personal identity; switch it to shared first")
     conn.execute(
-        "UPDATE servers SET url = ?, enabled = ?, auth_header = ?, auth_value = ? WHERE id = ?",
-        (url, enabled, header, value, sid),
+        "UPDATE servers SET url = ?, enabled = ?, auth_header = ?, auth_value = ?, personal_header = ? WHERE id = ?",
+        (url, enabled, header, value, personal, sid),
     )
     request.app.state.upstreams.refresh_soon(sid)
     row = conn.execute("SELECT * FROM servers WHERE id = ?", (sid,)).fetchone()
@@ -481,9 +527,9 @@ async def delete_server(request: Request) -> Response:
 
 @handler
 async def list_tools(request: Request) -> Response:
-    """The same list MCP clients get from /mcp, for the dashboard."""
+    """The same list MCP clients get from that gateway's /mcp, for the dashboard."""
     user = current_user(request)
-    tools = request.app.state.upstreams.list_tools(user)
+    tools = request.app.state.upstreams.list_tools(user, gateway_param(request, request.query_params.get("gateway")))
     return JSONResponse([t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools])
 
 
@@ -495,7 +541,8 @@ async def call_tool(request: Request) -> Response:
     arguments = data.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise HTTPError(400, "'arguments' must be an object")
-    result = await request.app.state.upstreams.call_tool(user, _str(data, "name"), arguments)
+    gateway = gateway_param(request, data.get("gateway"))
+    result = await request.app.state.upstreams.call_tool(user, gateway, _str(data, "name"), arguments)
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
 
 
@@ -519,10 +566,8 @@ routes = [
     Route("/api/login", login, methods=["POST"]),
     Route("/api/logout", logout, methods=["POST"]),
     Route("/api/me", me, methods=["GET"]),
-    Route("/api/connect", connect_info, methods=["GET"]),
     Route("/api/users", list_users, methods=["GET"]),
     Route("/api/users", create_user, methods=["POST"]),
-    Route("/api/users/{id:int}/servers", set_user_servers, methods=["PUT"]),
     Route("/api/users/{id:int}", delete_user, methods=["DELETE"]),
     Route("/api/keys", list_keys, methods=["GET"]),
     Route("/api/keys", create_key, methods=["POST"]),

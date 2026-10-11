@@ -12,7 +12,7 @@ metadata:
   name: {{ .Release.Namespace }}-store-operator
 rules:
   - apiGroups: ["mcpgateway.example.com"]
-    resources: ["stores", "stores/status"]
+    resources: ["stores", "stores/status", "mcpgateways", "mcpgateways/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]

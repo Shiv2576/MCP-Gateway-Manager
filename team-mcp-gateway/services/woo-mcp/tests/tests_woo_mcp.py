@@ -23,6 +23,8 @@ from tests.fake_woo import (
     CONSUMER_KEY,
     CONSUMER_SECRET,
     PUBLIC_ORIGIN,
+    READ_KEY,
+    READ_SECRET,
     build_fake_woo,
     make_order,
 )
@@ -346,3 +348,50 @@ if __name__ == "__main__":
                 print(f"FAIL  {name}")
                 traceback.print_exc()
     sys.exit(1 if failed else 0)
+
+
+def test_personal_key_from_the_gateway():
+    """A personal call carries X-Woo-Credentials instead of the bearer token, and the
+    store sees that key, never the one in our env."""
+    fake = build_fake_woo()
+    fake.state.orders[7] = make_order(7, "2026-01-01T00:00:00")
+    personal = {"X-Woo-Credentials": f"{READ_KEY}:{READ_SECRET}"}
+
+    async def call(url, headers, tool, args):
+        async with httpx2.AsyncClient(headers=headers, timeout=10) as http:
+            async with Client(streamable_http_client(f"{url}/mcp", http_client=http)) as client:
+                return await client.call_tool(tool, args)
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            used = fake.state.used_keys
+            # No bearer token needed, and the read key is the one used.
+            assert not (await call(url, personal, "list_orders", {})).is_error
+            assert used == [READ_KEY]
+            # Read only: WooCommerce refuses the write.
+            r = await call(url, personal, "update_order_status", {"order_id": 7, "status": "completed"})
+            assert r.is_error and fake.state.orders[7]["status"] == "processing"
+            # Bearer and personal together: still the personal key.
+            used.clear()
+            both = {**personal, "Authorization": f"Bearer {TOKEN}"}
+            assert not (await call(url, both, "list_orders", {})).is_error
+            assert used == [READ_KEY]
+
+            async with httpx2.AsyncClient() as http:
+                rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                assert (await http.post(f"{url}/mcp", json=rpc)).status_code == 401
+                for bad in ("nocolon-secret", ":cs_x", "ck_x:"):
+                    r = await http.post(f"{url}/mcp", json=rpc, headers={"X-Woo-Credentials": bad})
+                    assert r.status_code == 400 and bad not in r.text
+
+            # Overlapping calls with different keys never borrow each other's.
+            used.clear()
+            writer = {"X-Woo-Credentials": f"{CONSUMER_KEY}:{CONSUMER_SECRET}"}
+            results = await asyncio.gather(*(
+                call(url, h, "update_order_status", {"order_id": 7, "status": "on-hold"})
+                for h in [personal, writer] * 10
+            ))
+            assert [r.is_error for r in results] == [True, False] * 10
+            assert sorted(used) == sorted([READ_KEY, CONSUMER_KEY] * 10)
+
+    asyncio.run(run())

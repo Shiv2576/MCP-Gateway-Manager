@@ -17,7 +17,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import Settings
 from .server import build_server
-from .woo import WooClient
+from .woo import PERSONAL_KEY, WooClient
 
 log = logging.getLogger("woo-mcp")
 # The HTTP library logs every outgoing URL at INFO. Ours carry the API key id
@@ -29,11 +29,16 @@ OPEN_PATHS = frozenset({"/healthz", "/readyz"})
 
 
 class BearerTokenGuard:
-    """Reject every request that does not carry the shared token.
+    """Reject every request that carries neither the shared token nor a personal key.
 
     This is the lock on the back door. The NetworkPolicy already limits who can
     reach this pod; the token means that even a pod that can reach it still
     needs the credential the gateway holds.
+
+    A personal call from the gateway carries X-Woo-Credentials: <key>:<secret>
+    instead: that person's own WooCommerce key, used for every store request
+    this MCP request makes, never the key in our env. It opens nothing new:
+    whoever holds a valid key could call WooCommerce with it directly.
     """
 
     def __init__(self, app: ASGIApp, token: str):
@@ -44,7 +49,25 @@ class BearerTokenGuard:
         if scope["type"] != "http" or scope["path"] in OPEN_PATHS:
             await self._app(scope, receive, send)
             return
-        supplied = dict(scope["headers"]).get(b"authorization", b"")
+        headers = dict(scope["headers"])
+        personal = headers.get(b"x-woo-credentials")
+        if personal is not None:
+            key, sep, secret = personal.decode("latin-1").strip().partition(":")
+            if not (sep and key and secret):
+                # Never echo the header: it may be a real key with a typo.
+                response = JSONResponse(
+                    {"error": "X-Woo-Credentials must be <consumer_key>:<consumer_secret>"},
+                    status_code=400,
+                )
+                await response(scope, receive, send)
+                return
+            token = PERSONAL_KEY.set((key, secret))
+            try:
+                await self._app(scope, receive, send)
+            finally:
+                PERSONAL_KEY.reset(token)
+            return
+        supplied = headers.get(b"authorization", b"")
         # compare_digest takes the same time whether the first or last byte is
         # wrong, so an attacker cannot guess the token one character at a time.
         if not hmac.compare_digest(supplied, self._expected):

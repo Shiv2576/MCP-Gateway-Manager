@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .api import HTTPError, _str, body, handler, require_admin
-from .kube import OWNER_LABEL, StoreExists
+from .kube import OWNER_LABEL, AlreadyExists
 
 MAX_STORES = 3
 TEMPLATES = ("catalog-a", "catalog-b", "blank")
@@ -81,7 +81,7 @@ async def create_store(request: Request) -> Response:
             raise HTTPError(400, f"store limit reached: at most {MAX_STORES} stores per admin")
         try:
             cr = await stores.create(name, template, me["id"], me["username"])
-        except StoreExists:
+        except AlreadyExists:
             raise HTTPError(409, f"a store named '{name}' already exists") from None
     return JSONResponse(_view(cr), status_code=201)
 

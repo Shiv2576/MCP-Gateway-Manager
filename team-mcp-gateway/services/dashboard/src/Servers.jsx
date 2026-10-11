@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
-import { Icon } from './App.jsx'
+import { Icon, PasswordInput } from './App.jsx'
 
-const EMPTY = { name: '', url: '', authType: 'none', token: '', header: '', value: '' }
+const EMPTY = { name: '', url: '', authType: 'none', token: '', header: '', value: '', personal: '' }
 
 function authBody(f) {
   if (f.authType === 'bearer') return { type: 'bearer', token: f.token }
@@ -22,10 +22,11 @@ export default function Servers({ user }) {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(null) // null | 'new' | server
   const [open, setOpen] = useState({})
-  const [connect, setConnect] = useState(null)
+  const [oauth, setOauth] = useState(false)
 
+  // OAuth sign-in exists only on gateways with a public URL; API keys work on every gateway.
   useEffect(() => {
-    api('/connect').then(setConnect).catch(() => {})
+    api('/gateways').then((gs) => setOauth(gs.some((g) => g.public_url))).catch(() => {})
   }, [])
 
   const load = useCallback(() => {
@@ -60,15 +61,11 @@ export default function Servers({ user }) {
         <Stat label="Tools exposed" value={tools} />
       </div>
 
-      {connect && (
-        <div className="row">
-          <span className={`pill ${connect.oauth ? 'ok' : ''}`}>OAuth {connect.oauth ? 'enabled' : 'disabled'}</span>
-          <span className="pill ok">API key enabled</span>
-        </div>
-      )}
-
       <div className="toolbar">
-        <h2>Upstream MCP servers</h2>
+        <h2>
+          Upstream MCP servers <span className="pill ok">API key</span>
+          {oauth && <> <span className="pill ok">OAuth</span></>}
+        </h2>
         {isAdmin && (
           <button className="primary" onClick={() => setEditing('new')}>
             + Add server
@@ -94,6 +91,8 @@ export default function Servers({ user }) {
             <tr>
               <th>Server</th>
               <th title="How the gateway signs in to this server">Upstream auth</th>
+              <th>Store</th>
+              <th>Gateways</th>
               <th>Tools</th>
               <th>Created</th>
               <th>Enabled</th>
@@ -103,7 +102,7 @@ export default function Servers({ user }) {
           <tbody>
             {servers.length === 0 && (
               <tr>
-                <td colSpan={isAdmin ? 6 : 5} className="muted">
+                <td colSpan={isAdmin ? 8 : 7} className="muted">
                   No servers yet.
                 </td>
               </tr>
@@ -124,6 +123,12 @@ export default function Servers({ user }) {
                     </div>
                   </td>
                   <td>{authLabel(s)}</td>
+                  <td>
+                    {s.store ? (
+                      <a href={`http://${s.store}.localhost`} target="_blank" rel="noreferrer">{s.store}</a>
+                    ) : '—'}
+                  </td>
+                  <td>{s.gateways.length ? s.gateways.join(', ') : '—'}</td>
                   <td>
                     <button
                       className="ghost tiny"
@@ -167,7 +172,7 @@ export default function Servers({ user }) {
                 </tr>
                 {open[s.id] && (
                   <tr>
-                    <td colSpan={isAdmin ? 6 : 5}>
+                    <td colSpan={isAdmin ? 8 : 7}>
                       <ul className="tools">
                         {s.tools.map((t) => (
                           <li key={t.name}>
@@ -200,7 +205,7 @@ function Stat({ label, value, tone }) {
 }
 
 function ServerForm({ server, onCancel, onSaved }) {
-  const [f, setF] = useState(server ? { ...EMPTY, name: server.name, url: server.url, authType: 'keep' } : EMPTY)
+  const [f, setF] = useState(server ? { ...EMPTY, name: server.name, url: server.url, authType: 'keep', personal: server.personal_header || '' } : EMPTY)
   const [error, setError] = useState('')
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
 
@@ -209,11 +214,11 @@ function ServerForm({ server, onCancel, onSaved }) {
     setError('')
     try {
       if (server) {
-        const body = { url: f.url }
+        const body = { url: f.url, personal_header: f.personal.trim() || null }
         if (f.authType !== 'keep') body.auth = authBody(f) // leaving auth out keeps the stored one
         await api(`/servers/${server.id}`, { method: 'PATCH', body })
       } else {
-        await api('/servers', { method: 'POST', body: { name: f.name, url: f.url, auth: authBody(f) } })
+        await api('/servers', { method: 'POST', body: { name: f.name, url: f.url, auth: authBody(f), personal_header: f.personal.trim() || null } })
       }
       onSaved()
     } catch (err) {
@@ -245,7 +250,7 @@ function ServerForm({ server, onCancel, onSaved }) {
         {f.authType === 'bearer' && (
           <label>
             Token
-            <input type="password" value={f.token} onChange={set('token')} required />
+            <PasswordInput value={f.token} onChange={set('token')} required />
           </label>
         )}
         {f.authType === 'header' && (
@@ -256,12 +261,19 @@ function ServerForm({ server, onCancel, onSaved }) {
             </label>
             <label>
               Header value
-              <input type="password" value={f.value} onChange={set('value')} required />
+              <PasswordInput value={f.value} onChange={set('value')} required />
             </label>
           </>
         )}
+        <label>
+          Personal credential header
+          <input value={f.personal} onChange={set('personal')} placeholder="e.g. X-Woo-Credentials (empty: shared only)" />
+        </label>
       </div>
-      <p className="muted small">The credential is stored on the gateway and never sent back to the browser.</p>
+      <p className="muted small">
+        The credential is stored on the gateway and never sent back to the browser. On a gateway set to personal
+        credentials, each member's own value goes in the personal header instead, and the shared credential is not sent.
+      </p>
       {error && <p className="error">{error}</p>}
       <div className="row end">
         <button type="button" className="ghost" onClick={onCancel}>

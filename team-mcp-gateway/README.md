@@ -97,8 +97,8 @@ Open http://store.localhost. Admin is `admin`; the password is in the
 Then the MCP server:
 
 ```
-docker build -t woo-mcp:0.1.0 services/woo-mcp
-k3d image import woo-mcp:0.1.0 -c <your-cluster>
+docker build -t woo-mcp:0.2.0 services/woo-mcp
+k3d image import woo-mcp:0.2.0 -c <your-cluster>
 
 helm lint charts/woo-mcp -f deploy/values-local.yaml
 helm upgrade --install woo-mcp charts/woo-mcp -n mercora -f deploy/values-local.yaml
@@ -140,9 +140,18 @@ to HTTPS, in-cluster calls will be redirected too. If that happens, set
 ## The gateway
 
 Admins log in, add upstream MCP servers (Streamable HTTP) with an optional
-static credential, and hand out API keys. MCP clients use one URL,
-`http://gateway.localhost/mcp`, with `Authorization: Bearer <api key>`, or
-sign in through OAuth when `PUBLIC_URL` is set (see below).
+static credential, and hand out API keys. One image runs in two modes: the
+control plane (`GATEWAY_MODE=control`, the `/api` behind the dashboard) and any
+number of gateway edges (`GATEWAY_MODE=edge`, `/mcp` for the servers attached
+to one gateway). MCP clients use a gateway's URL,
+`http://<slug>.gw.localhost/mcp`, with `Authorization: Bearer <api key>`, or
+sign in through OAuth when that gateway has a public URL (see below). Every pod
+uses one shared Postgres.
+
+Gateways: create one on the Gateways page; the operator installs `gw-<slug>`
+with two edge pods at `http://<slug>.gw.localhost/mcp`. Attach servers to it;
+each edge serves only its attached servers. `kubectl -n mercora get mgw` shows
+their phase.
 
 ### Tool names: the collision scheme
 
@@ -181,8 +190,13 @@ Headers from MCP clients are never forwarded upstream.
 
 ### Logins, keys, audit
 
-Users are `admin` (manage servers, users, audit) or `member` (use tools, manage
-their own keys). Browsers get an HttpOnly session cookie from `POST /api/login`.
+Users are `admin` (manage servers, users, teams, audit; every tool on every
+gateway) or `member` (use tools, manage their own keys). A member's tools on a
+gateway are the union of their teams' allow-lists for it: one row per upstream
+tool, no wildcards, so a tool an upstream adds later stays hidden until allowed.
+No team, no tools. A detached server's tools are refused whatever the policies
+say. The dashboard's Tools and Chat pages act through a chosen gateway and get
+exactly its policy. A hidden tool's call answers "Unknown tool" and is audited. Browsers get an HttpOnly session cookie from `POST /api/login`.
 API keys are shown once and only their hashes are stored. Every tool call writes
 an audit row with the user, tool, server, result and duration.
 Each user may make 60 tool calls per minute (`CALLS_PER_MINUTE`); refused
@@ -190,25 +204,34 @@ calls are audited too.
 
 | Endpoint | Who |
 | --- | --- |
+| `GET /api/setup`, `POST /api/setup` | anyone; POST needs `SETUP_TOKEN`, once |
 | `POST /api/login`, `POST /api/logout`, `GET /api/me` | anyone / logged in |
 | `GET, POST /api/users` | admin |
 | `GET, POST /api/keys`, `DELETE /api/keys/{id}` | own keys; admin sees all |
 | `GET /api/servers` | logged in |
 | `POST /api/servers`, `PATCH, DELETE /api/servers/{id}` | admin |
 | `GET /api/audit?limit=100` | admin |
+| `GET /api/teams` | admin: all; member: own |
+| `POST /api/teams`, `DELETE /api/teams/{id}` | admin |
+| `PUT /api/teams/{id}/members`, `PUT /api/teams/{id}/gateways/{slug}/tools` | admin |
+| `GET /api/tools?gateway=`, `POST /api/tools/call` (`gateway` in the body) | logged in; that gateway's policy |
+| `GET /api/gateways` | logged in |
+| `POST /api/gateways` | admin (safe to retry) |
+| `DELETE /api/gateways/{slug}` | admin |
+| `PUT /api/gateways/{slug}/servers` | admin |
 | `GET /api/oauth/connections`, `DELETE /api/oauth/connections/{user_id}/{client_id}` | own; admin sees all |
 
 ### OAuth (Claude custom connector)
 
-Set `PUBLIC_URL` (chart: `publicUrl`) to the gateway's public https URL and
-`/mcp` also accepts OAuth tokens, so members can add the gateway to Claude as a
+Give a gateway a public https URL (the "public URL" field when creating it;
+its edge gets `PUBLIC_URL`) and its `/mcp` also accepts OAuth tokens, so members can add the gateway to Claude as a
 custom connector and sign in with their gateway username and password. API keys
 keep working. The gateway is its own authorization server (`app/oauth.py`):
 the MCP SDK serves `/register`, `/authorize`, `/token`, `/revoke` and the
 `/.well-known/*` metadata; the gateway stores clients, codes and tokens (hashed)
-in SQLite and serves the login page at `/oauth/login`.
+in Postgres and serves the login page at `/oauth/login`.
 
-- A token belongs to the user who signed in: their server grants, rate limit
+- A token belongs to the user who signed in: their teams' tool policies, rate limit
   and audit rows apply as with an API key.
 - Access tokens last 1 hour, refresh tokens 30 days and work once (rotated).
 - Clients may register only Claude's callbacks (`OAUTH_REDIRECT_URIS`, default
@@ -221,35 +244,52 @@ Claude connects from Anthropic's servers, so the URL must be reachable from
 the internet. Trying it from k3d with ngrok:
 
 ```
-kubectl -n mercora port-forward svc/team-gateway 8000:8000
-ngrok http 8000                      # copy the https://….ngrok-free.app URL
-helm upgrade team charts/gateway -n mercora -f deploy/gateway-values-local.yaml \
-  --set publicUrl=https://<id>.ngrok-free.app
-# restart the port-forward after the pod rolls
+ngrok http 80                        # the k3d ingress; copy the https://….ngrok-free.app URL
+# Dashboard → Gateways → create one with public URL https://<id>.ngrok-free.app.
+# Its edge Ingress also answers that host, so ngrok's Host header routes to it.
 ```
 
 Then in Claude: Settings → Connectors → Add custom connector →
 `https://<id>.ngrok-free.app/mcp`, sign in as a member, and ask for that
 member's servers' tools. A free ngrok URL changes each run unless you use your
-free static domain, and `publicUrl` must match it. Stop ngrok when done: the
+free static domain, and the gateway's public URL must match it. Stop ngrok when done: the
 gateway is on the internet while it runs.
 
 ### Install (local k3d)
 
 ```
+APP_PW=$(openssl rand -hex 16)
+kubectl -n mercora create secret generic gateway-db \
+  --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
+  --from-literal=APP_PASSWORD=$APP_PW \
+  --from-literal=DATABASE_URL=postgresql://gateway:$APP_PW@db-postgres:5432/gateway
 kubectl -n mercora create secret generic gateway-admin \
-  --from-literal=ADMIN_USERNAME=admin --from-literal=ADMIN_PASSWORD="$(openssl rand -hex 12)"
+  --from-literal=SETUP_TOKEN=$(openssl rand -hex 16)      # add OPENROUTER_API_KEY for chat
+# Encrypts members' own upstream credentials (personal identity). Changing it later
+# makes every stored one unreadable: members enter theirs again.
+kubectl -n mercora create secret generic gateway-credentials \
+  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 kubectl -n mercora create secret generic notes-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 kubectl -n mercora create secret generic fx-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 
-docker build -t gateway:0.1.0 services/gateway
-docker build -t demo-mcp:0.1.0 services/demo-mcp
-k3d image import gateway:0.1.0 demo-mcp:0.1.0 -c <your-cluster>
-
+helm upgrade --install db charts/postgres -n mercora -f deploy/postgres-values-local.yaml --wait
+docker build -t gateway:0.4.0 services/gateway && k3d image import gateway:0.4.0 -c <cluster>
+docker build -t demo-mcp:0.1.0 services/demo-mcp && k3d image import demo-mcp:0.1.0 -c <cluster>
 helm upgrade --install notes charts/demo-mcp -n mercora -f deploy/notes-values-local.yaml
 helm upgrade --install fx    charts/demo-mcp -n mercora -f deploy/fx-values-local.yaml
-helm upgrade --install team  charts/gateway  -n mercora -f deploy/gateway-values-local.yaml
+helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-local.yaml
+# dashboard (team-ui) as before with tag 0.4.0; open http://dash.localhost and finish setup
+# with the SETUP_TOKEN, then make an admin API key and:
+kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY=<key>
+docker build -f services/store-operator/Dockerfile -t store-operator:0.3.0 . && k3d image import store-operator:0.3.0 -c <cluster>
+helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml
 ```
+
+Known limits: Postgres is one replica with no backups: it is the demo's single
+shared failure point (two edge replicas keep a gateway up, not the database).
+Production needs backups and an HA Postgres. Edges are stateless MCP (no
+sessions), so any replica answers any request; the rate limit is per user
+across the organization, in fixed one-minute windows.
 
 Then log in and add the three servers. In-cluster URLs:
 `http://woo-mcp-woo-mcp.mercora.svc.cluster.local:8000/mcp` (bearer = woo-mcp's
@@ -259,9 +299,25 @@ token is in that server's Secret.
 
 Gateway tests: `cd services/gateway && uv run pytest`.
 
+### Shared vs personal identity
+
+Each server attached to a gateway is either **shared** (calls carry the
+server's own credential, as set on the Servers page) or **personal** (each
+member's call carries that member's own credential and nothing of the shared
+one). To use personal identity, set the server's *personal credential header*
+(for `woo-mcp`: `X-Woo-Credentials`), switch the attachment to Personal on the
+Gateways page, and have each member add their own value under *My
+credentials* (for `woo-mcp`: `<consumer_key>:<consumer_secret>` of a
+WooCommerce REST key made while logged in as themselves). A member without
+one gets an error; the shared credential is never used in its place. Values
+are encrypted with `CREDENTIALS_KEY` and never shown again. Tool permissions
+(teams minus per-member denies on the Members page) are checked first; the
+identity only decides whose credential goes upstream.
+
 ## The dashboard
 
-http://dash.localhost. Log in as `admin` (password in Secret `gateway-admin`).
+http://dash.localhost. On a fresh install it asks for the `SETUP_TOKEN` (Secret
+`gateway-admin`), the organization name and the first admin; then log in.
 
 - **Servers:** health dot and status, refreshed every 3s; add, edit, disable or
   remove a server; expand a server to see its tools.
@@ -277,8 +333,8 @@ to `http://gateway.localhost`.
 Build and install:
 
 ```
-docker build -t dashboard:0.1.0 services/dashboard
-k3d image import dashboard:0.1.0 -c <your-cluster>
+docker build -t dashboard:0.4.0 services/dashboard
+k3d image import dashboard:0.4.0 -c <your-cluster>
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-local.yaml
 ```
 
@@ -298,7 +354,7 @@ NetworkPolicies) and its own woo-mcp, registered in the gateway as server
 - At most 3 stores per admin; a store not Ready in 15 minutes is marked Failed with the reason.
 - Deleting a store removes its gateway server first, then its namespace.
   Deleting an admin deletes their stores.
-- Members see only the servers an admin granted them (Members → Access).
+- Members use only the tools their teams allow on a gateway (Teams page).
 
 How it works: the gateway writes a `Store` resource; `services/store-operator`
 (kopf) provisions it with Helm (`charts/store`, `charts/woo-mcp`) and registers
@@ -307,8 +363,8 @@ the server through the gateway API.
 Install (once; from this folder):
 
 ```bash
-docker build -f services/store-operator/Dockerfile -t store-operator:0.1.0 .
-k3d image import store-operator:0.1.0 -c store-check
+docker build -f services/store-operator/Dockerfile -t store-operator:0.3.0 .
+k3d image import store-operator:0.3.0 -c store-check
 # An admin API key for the operator: dashboard → API keys → "store-operator".
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='<key>'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml

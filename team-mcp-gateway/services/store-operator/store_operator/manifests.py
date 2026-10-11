@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime
+from urllib.parse import urlsplit
 
 GROUP = "mcpgateway.example.com"
 VERSION = "v1"
 PLURAL = "stores"
+GATEWAY_PLURAL = "mcpgateways"
+EDGE_TIMEOUT_S = 5 * 60
 OWNER_LABEL = f"{GROUP}/owner-id"
 STORE_LABEL = f"{GROUP}/store"
 SETUP_LABEL = {f"{GROUP}/role": "store-setup"}
@@ -191,6 +194,31 @@ def progress(wordpress_ready: bool, job: str, woo_ready: bool) -> tuple[str, str
     return "ready", ""
 
 
-def timed_out(created_iso: str, now: datetime) -> bool:
+def timed_out(created_iso: str, now: datetime, limit_s: int = TIMEOUT_S) -> bool:
     created = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
-    return (now - created).total_seconds() > TIMEOUT_S
+    return (now - created).total_seconds() > limit_s
+
+
+def edge_release(slug: str) -> str:
+    return f"gw-{slug}"
+
+
+def edge_url(slug: str) -> str:
+    return f"http://{slug}.gw.localhost"
+
+
+def edge_values(slug: str, spec: dict, image_tag: str) -> dict:
+    """charts/gateway in edge mode: /mcp only, no Kubernetes rights, two replicas."""
+    values = {
+        "mode": "edge",
+        "slug": slug,
+        "replicas": 2,
+        "image": {"tag": image_tag},
+        "ingress": {"host": f"{slug}.gw.localhost"},
+        "stores": {"enabled": False},
+    }
+    if spec.get("publicUrl"):
+        values["publicUrl"] = spec["publicUrl"]
+        # A tunnel or proxy in front sends the public Host header; route it too.
+        values["ingress"]["extraHosts"] = [urlsplit(spec["publicUrl"]).hostname]
+    return values

@@ -6,9 +6,10 @@ import asyncio
 
 import httpx2
 
-from app.kube import OWNER_LABEL, StoreExists, store_resource
+from tests import KEY  # noqa: E402
+from app.kube import OWNER_LABEL, AlreadyExists, store_resource
 from app.main import Settings, create_app
-from tests.test_gateway import ADMIN, serve
+from tests.test_gateway import SETUP, serve, setup_admin
 
 
 class FakeStores:
@@ -24,7 +25,7 @@ class FakeStores:
 
     async def create(self, name, template, owner_id, owner):
         if name in self.items:
-            raise StoreExists(name)
+            raise AlreadyExists(name)
         cr = store_resource(name, template, owner_id, owner)
         cr["metadata"]["creationTimestamp"] = f"2026-10-10T10:00:0{len(self.items)}Z"
         self.items[name] = cr
@@ -40,13 +41,13 @@ async def login(gw, username, password):
     return c
 
 
-def test_store_api(tmp_path):
+def test_store_api(db_url):
     fake = FakeStores()
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
         with serve(create_app(settings, stores=fake)) as gw:
-            admin = await login(gw, *ADMIN)
+            admin = await setup_admin(gw)
             carol_id = (await admin.post("/api/users", json={"username": "carol", "password": "carol-password-1", "role": "admin"})).json()["id"]
             await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})
             carol = await login(gw, "carol", "carol-password-1")
@@ -92,12 +93,12 @@ def test_store_api(tmp_path):
     asyncio.run(run())
 
 
-def test_stores_off_outside_a_cluster(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+def test_stores_off_outside_a_cluster(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
         with serve(create_app(settings)) as gw:
-            admin = await login(gw, *ADMIN)
+            admin = await setup_admin(gw)
             r = await admin.get("/api/stores")
             assert r.status_code == 503 and "not configured" in r.json()["error"]
             bob_id = (await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123", "role": "admin"})).json()["id"]
@@ -112,13 +113,13 @@ class SlowStores(FakeStores):
         return await super().create(*args)
 
 
-def test_store_cap_holds_under_concurrent_creates(tmp_path):
+def test_store_cap_holds_under_concurrent_creates(db_url):
     fake = SlowStores()
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
         with serve(create_app(settings, stores=fake)) as gw:
-            admin = await login(gw, *ADMIN)
+            admin = await setup_admin(gw)
             for name in ("one", "two"):
                 assert (await admin.post("/api/stores", json={"name": name, "template": "blank"})).status_code == 201
             r1, r2 = await asyncio.gather(
@@ -131,12 +132,12 @@ def test_store_cap_holds_under_concurrent_creates(tmp_path):
     asyncio.run(run())
 
 
-def test_store_names_cannot_take_platform_hostnames(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "g.db"), admin_username=ADMIN[0], admin_password=ADMIN[1])
+def test_store_names_cannot_take_platform_hostnames(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 
     async def run():
         with serve(create_app(settings, stores=FakeStores())) as gw:
-            admin = await login(gw, *ADMIN)
+            admin = await setup_admin(gw)
             for name in ("gateway", "dash", "store"):
                 r = await admin.post("/api/stores", json={"name": name, "template": "blank"})
                 assert r.status_code == 400 and "reserved" in r.json()["error"], name

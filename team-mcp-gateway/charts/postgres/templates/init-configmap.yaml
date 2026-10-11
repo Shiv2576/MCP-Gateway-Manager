@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-postgres-init
+data:
+  01-app-role.sh: |
+    #!/bin/sh
+    # The gateway's own role: it owns its database (and so, on Postgres 15+, the
+    # public schema it creates tables in) and nothing else. Not a superuser.
+    set -e
+    psql -v ON_ERROR_STOP=1 -U postgres -v app_pw="$APP_PASSWORD" <<'SQL'
+    CREATE ROLE {{ .Values.appUser }} LOGIN PASSWORD :'app_pw';
+    CREATE DATABASE {{ .Values.database }} OWNER {{ .Values.appUser }};
+    REVOKE ALL ON DATABASE {{ .Values.database }} FROM PUBLIC;
+    SQL

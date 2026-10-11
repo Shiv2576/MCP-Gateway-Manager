@@ -1,0 +1,14 @@
+# Only gateway pods (control plane and every edge carry this label) may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: postgres, app.kubernetes.io/instance: {{ .Release.Name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: gateway } }
+      ports:
+        - { protocol: TCP, port: 5432 }

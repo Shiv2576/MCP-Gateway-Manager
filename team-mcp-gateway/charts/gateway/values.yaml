@@ -2,13 +2,23 @@
 
 image:
   repository: gateway
-  tag: "0.1.0"
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 
-# Name of a Secret that already exists in this namespace, with two keys:
-#   ADMIN_USERNAME, ADMIN_PASSWORD
-# Used only on first start, to create the first admin. The chart never holds them.
-# Optional key OPENROUTER_API_KEY turns on the dashboard chat agent.
+# control: the /api behind the dashboard (one replica). edge: /mcp for one
+# gateway's attached servers; the store operator installs edges as gw-<slug>.
+mode: control
+# Edge only: which gateway this release serves.
+slug: ""
+replicas: 1
+
+# Secret with DATABASE_URL (key) for the shared Postgres. Both modes.
+dbSecret: gateway-db
+# Secret with CREDENTIALS_KEY (key): the Fernet key that encrypts members' own
+# upstream credentials. Both modes; the gateway does not start without it.
+credentialsSecret: gateway-credentials
+# Control only. Secret with SETUP_TOKEN (first-run setup) and optionally
+# OPENROUTER_API_KEY (dashboard chat agent). The chart never holds them.
 existingSecret: gateway-admin
 
 callTimeoutSeconds: 10
@@ -26,15 +36,11 @@ oauthRedirectUris: ""
 # Chat agent model on OpenRouter.
 llmModel: openai/gpt-4.1-mini
 
-# SQLite on a volume. One replica only: SQLite is a single file with one writer.
-persistence:
-  size: 1Gi
-  storageClass: ""
-
 ingress:
   enabled: true
   className: traefik
   host: gateway.localhost
+  extraHosts: []  # e.g. the host of publicUrl; TLS comes from what fronts it (ngrok, cert-manager)
 
 service:
   port: 8000

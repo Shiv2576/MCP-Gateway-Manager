@@ -60,6 +60,7 @@ def test_upsert_and_delete_are_idempotent():
         assert len(servers) == 1
         s = servers[1]
         assert (s["name"], s["url"], s["auth"], s["enabled"]) == ("shop1", "http://b/mcp", {"type": "bearer", "token": "t2"}, True)
+        assert s["store"] == "shop1"
         assert ("PATCH", "/api/servers/1") in calls
 
         gw.delete_server("shop1")

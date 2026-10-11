@@ -22,6 +22,10 @@ from starlette.routing import Route
 CONSUMER_KEY = "ck_" + "a" * 40
 CONSUMER_SECRET = "cs_" + "b" * 40
 PUBLIC_ORIGIN = "http://store.localhost"
+# A second key, made by another WordPress user with Read permission only.
+READ_KEY = "ck_" + "c" * 40
+READ_SECRET = "cs_" + "d" * 40
+KEYS = {CONSUMER_KEY: (CONSUMER_SECRET, "read_write"), READ_KEY: (READ_SECRET, "read")}
 
 
 def build_fake_woo() -> Starlette:
@@ -39,11 +43,12 @@ def build_fake_woo() -> Starlette:
     orders: dict[int, dict] = {}
     seen_nonces: set[str] = set()
     state = {"next_id": 100, "slow": False}
+    used_keys: list[str] = []  # the key of every request that got in
 
     def authorised(request: Request) -> bool:
         params = dict(request.query_params)
         supplied = params.pop("oauth_signature", None)
-        if not supplied or params.get("oauth_consumer_key") != CONSUMER_KEY:
+        if not supplied or params.get("oauth_consumer_key") not in KEYS:
             return False
         if params.get("oauth_signature_method") != "HMAC-SHA256":
             return False
@@ -57,7 +62,7 @@ def build_fake_woo() -> Starlette:
         base = oauth_sig.signature_base_string(
             request.method, PUBLIC_ORIGIN + request.url.path, normalized
         )
-        expected = oauth_sig.sign_hmac_sha256(base, CONSUMER_SECRET, "")
+        expected = oauth_sig.sign_hmac_sha256(base, KEYS[params["oauth_consumer_key"]][0], "")
         return oauth_sig.safe_string_equals(expected, supplied)
 
     def guard(handler):
@@ -68,6 +73,13 @@ def build_fake_woo() -> Starlette:
                         "code": "woocommerce_rest_authentication_error",
                         "message": "Invalid signature - provided signature does not match.",
                     },
+                    status_code=401,
+                )
+            key = request.query_params["oauth_consumer_key"]
+            used_keys.append(key)
+            if request.method != "GET" and KEYS[key][1] == "read":
+                return JSONResponse(
+                    {"code": "woocommerce_rest_cannot_edit", "message": "Sorry, you are not allowed to edit this resource."},
                     status_code=401,
                 )
             if state["slow"]:
@@ -156,6 +168,7 @@ def build_fake_woo() -> Starlette:
     app.state.orders = orders
     app.state.products = products
     app.state.flags = state
+    app.state.used_keys = used_keys
     return app
 
 
