@@ -41,6 +41,7 @@ def _view(row: dict, servers: list[dict], cr: dict | None) -> dict:
         "slug": row["slug"],
         "name": row["name"],
         "public_url": row["public_url"],
+        "pii_protection": bool(row.get("pii_protection")),
         "url": url,
         "mcp_url": (row["public_url"] or url) + "/mcp",
         "phase": phase,
@@ -103,6 +104,9 @@ async def create_gateway(request: Request) -> Response:
     if not SLUG.match(slug):
         raise HTTPError(400, "slug: 2-20 of a-z 0-9 and -, starting with a letter")
     public_url = _url(_str(data, "public_url")).rstrip("/") if data.get("public_url") else None
+    pii = data.get("pii_protection", False)
+    if not isinstance(pii, bool):
+        raise HTTPError(400, "pii_protection must be true or false")
     conn = request.app.state.db
     taken = HTTPError(409, f"a gateway named '{slug}' already exists")
 
@@ -111,8 +115,8 @@ async def create_gateway(request: Request) -> Response:
     if inserted:
         try:
             row = conn.execute(
-                "INSERT INTO gateways (slug, name, public_url, created_at) VALUES (?, ?, ?, ?) RETURNING *",
-                (slug, name, public_url, time.time()),
+                "INSERT INTO gateways (slug, name, public_url, pii_protection, created_at) VALUES (?, ?, ?, ?, ?) RETURNING *",
+                (slug, name, public_url, pii, time.time()),
             ).fetchone()
         except store.IntegrityError:  # a concurrent create of the same slug
             raise taken from None
@@ -197,10 +201,23 @@ async def set_identity(request: Request) -> Response:
     return JSONResponse({"ok": True, "identity": identity})
 
 
+@handler
+async def set_pii(request: Request) -> Response:
+    """PII protection on or off. Edges read it on every call, so it applies at once."""
+    require_admin(request)
+    row = _row(request)
+    enabled = (await body(request)).get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPError(400, "enabled must be true or false")
+    request.app.state.db.execute("UPDATE gateways SET pii_protection = ? WHERE id = ?", (enabled, row["id"]))
+    return JSONResponse({"ok": True, "pii_protection": enabled})
+
+
 routes = [
     Route("/api/gateways", list_gateways, methods=["GET"]),
     Route("/api/gateways", create_gateway, methods=["POST"]),
     Route("/api/gateways/{slug}", delete_gateway, methods=["DELETE"]),
     Route("/api/gateways/{slug}/servers", set_gateway_servers, methods=["PUT"]),
     Route("/api/gateways/{slug}/servers/{id:int}/identity", set_identity, methods=["PUT"]),
+    Route("/api/gateways/{slug}/pii", set_pii, methods=["PUT"]),
 ]

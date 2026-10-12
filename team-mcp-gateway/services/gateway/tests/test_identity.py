@@ -24,14 +24,15 @@ UNREADABLE = "Your saved credential for server 'echo' cannot be read. Enter it a
 
 
 def build_echo(calls: list) -> MCPServer:
-    """Answers with the two headers a call arrived with, and counts calls."""
+    """Answers with the two headers a call arrived with, reversed so the gateway's
+    credential scrub leaves them readable, and counts calls."""
     server = MCPServer("echo")
 
     @server.tool(name="whoami")
     async def whoami(ctx: Context) -> str:
         headers = ctx.request_context.request.headers
         calls.append(1)
-        return f"{headers.get('x-person')}|{headers.get('x-api-key')}"
+        return f"{headers.get('x-person')}|{headers.get('x-api-key')}"[::-1]
 
     return server
 
@@ -81,7 +82,7 @@ def test_personal_identity(db_url):
             async def whoami(key):
                 async with gateway_client(edge, key) as mcp:
                     r = await mcp.call_tool("echo__whoami", {})
-                    return r.is_error, text(r)
+                    return r.is_error, text(r) if r.is_error else text(r)[::-1]
 
             with serve(create_app(edge_settings(db_url, "main"))) as edge:
                 await wait_tools(edge, bob, 1)
@@ -179,7 +180,7 @@ def test_credentials_api(db_url, caplog):
             with serve(create_app(edge_settings(db_url, "main"))) as edge:
                 await wait_tools(edge, bob_key, 1)
                 async with gateway_client(edge, bob_key) as mcp:
-                    assert text(await mcp.call_tool("echo__whoami", {})) == "bob-key-2|None"
+                    assert text(await mcp.call_tool("echo__whoami", {}))[::-1] == "bob-key-2|None"
 
             users = (await admin.get("/api/users")).json()
             assert [u["credentials"] for u in users if u["username"] == "bob"][0][0]["server"] == "echo"
@@ -198,5 +199,36 @@ def test_credentials_api(db_url, caplog):
             everything = str(log) + str(users) + str(conn.execute("SELECT * FROM audit_log").fetchall()) + caplog.text
             assert "bob-key" not in everything and "b-secret" not in everything
             conn.close()
+
+    asyncio.run(run())
+
+
+def test_shared_credential_is_encrypted_at_rest(db_url):
+    async def run():
+        settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP, refresh_interval_s=0.5)
+        with (
+            serve(http_app(build_echo([]), "X-API-Key", SHARED)) as echo,
+            serve(create_app(settings, gateways=FakeGateways())) as gw,
+        ):
+            admin = await setup_admin(gw)
+            sid = await echo_gateway(admin, echo)
+            key = (await admin.post("/api/keys", json={"name": "k"})).json()["key"]
+            conn = store.connect(db_url, create_schema=False)
+            stored = lambda: conn.execute("SELECT auth_value FROM servers WHERE id = ?", (sid,)).fetchone()["auth_value"]  # noqa: E731
+            assert SHARED not in stored() and Vault(KEY).open(stored()) == SHARED
+            with serve(create_app(edge_settings(db_url, "main"))) as edge:
+                await wait_tools(edge, key, 1)  # the echo's guard let the decrypted header in
+
+            # A row from before encryption is sealed when the control plane starts.
+            conn.execute("UPDATE servers SET auth_value = ? WHERE id = ?", (SHARED, sid))
+            create_app(settings, gateways=FakeGateways())
+            assert Vault(KEY).open(stored()) == SHARED
+
+            # Sealed with another key: refused, never sent as garbage.
+            conn.execute("UPDATE servers SET auth_value = ? WHERE id = ?", (Vault(Fernet.generate_key().decode()).seal(SHARED), sid))
+            with serve(create_app(edge_settings(db_url, "main"))) as edge:
+                async with gateway_client(edge, key) as mcp:
+                    r = await mcp.call_tool("echo__whoami", {})
+            assert r.is_error and "cannot be read" in text(r)
 
     asyncio.run(run())

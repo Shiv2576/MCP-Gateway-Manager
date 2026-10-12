@@ -466,6 +466,7 @@ async def create_server(request: Request) -> Response:
     if not SERVER_NAME.match(name):
         raise HTTPError(400, "name: 1-32 of a-z 0-9 and -, used as the tool prefix")
     header, value = _auth_fields(data)
+    value = value and request.app.state.vault.seal(value)
     store_name = _str(data, "store", required=False)
     conn = request.app.state.db
     sid = conn.execute(
@@ -496,7 +497,11 @@ async def update_server(request: Request) -> Response:
         raise HTTPError(400, "name cannot be changed; remove and re-add the server")
     url = _url(_str(data, "url")) if "url" in data else row["url"]
     enabled = (1 if data["enabled"] else 0) if "enabled" in data else row["enabled"]
-    header, value = _auth_fields(data) if "auth" in data else (row["auth_header"], row["auth_value"])
+    if "auth" in data:
+        header, value = _auth_fields(data)
+        value = value and request.app.state.vault.seal(value)
+    else:  # kept as stored, already sealed
+        header, value = row["auth_header"], row["auth_value"]
     personal = personal_header(data["personal_header"]) if "personal_header" in data else row["personal_header"]
     if personal is None and conn.execute(
         "SELECT 1 FROM gateway_servers WHERE server_id = ? AND identity = 'personal'", (sid,)
@@ -549,6 +554,10 @@ async def call_tool(request: Request) -> Response:
 # --------------------------------------------------------------------- audit
 
 
+AUDIT_LIST = ("id, at, user_id, username, tool, server, gateway, ok, duration_ms, error, identity,"
+              " pii, payload_masked_for_log")
+
+
 @handler
 async def audit(request: Request) -> Response:
     require_admin(request)
@@ -556,10 +565,22 @@ async def audit(request: Request) -> Response:
         limit = min(int(request.query_params.get("limit", 100)), 1000)
     except ValueError:
         raise HTTPError(400, "limit must be a number") from None
+    # Without payload: up to 64 KB each, fetched one row at a time by audit_entry.
     rows = request.app.state.db.execute(
-        "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT {AUDIT_LIST} FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     return JSONResponse([dict(r) for r in rows])
+
+
+@handler
+async def audit_entry(request: Request) -> Response:
+    require_admin(request)
+    row = request.app.state.db.execute(
+        "SELECT * FROM audit_log WHERE id = ?", (request.path_params["id"],)
+    ).fetchone()
+    if row is None:
+        raise HTTPError(404, "no such audit entry")
+    return JSONResponse(dict(row))
 
 
 routes = [
@@ -581,4 +602,5 @@ routes = [
     Route("/api/tools", list_tools, methods=["GET"]),
     Route("/api/tools/call", call_tool, methods=["POST"]),
     Route("/api/audit", audit, methods=["GET"]),
+    Route("/api/audit/{id:int}", audit_entry, methods=["GET"]),
 ]

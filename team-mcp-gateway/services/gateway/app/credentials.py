@@ -37,6 +37,15 @@ class Vault:
             return None
 
 
+def seal_shared_credentials(conn, vault: Vault) -> None:
+    """Encrypt servers' shared credentials still stored as plaintext. Safe on every
+    start: a Fernet token always begins with gAAAAA, a header value never does."""
+    for row in conn.execute("SELECT id, auth_value FROM servers WHERE auth_value IS NOT NULL").fetchall():
+        if not row["auth_value"].startswith("gAAAAA"):
+            conn.execute("UPDATE servers SET auth_value = ? WHERE id = ? AND auth_value = ?",
+                         (vault.seal(row["auth_value"]), row["id"], row["auth_value"]))
+
+
 def _audit(conn, user: dict, action: str, server: str) -> None:
     """Who changed which credential and when; never the value."""
     conn.execute(

@@ -1,13 +1,13 @@
 image:
   repository: store-operator
-  tag: "0.3.0"
+  tag: "0.3.1"
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
 # Secret in this namespace with GATEWAY_API_KEY: an admin API key from the dashboard.
 existingSecret: store-operator-gateway
 # Gateway image tag every edge (McpGateway) is installed with.
-edgeImageTag: "0.4.0"
+edgeImageTag: "0.5.0"
 resources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { memory: 512Mi }

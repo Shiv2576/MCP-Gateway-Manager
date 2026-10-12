@@ -395,3 +395,25 @@ def test_personal_key_from_the_gateway():
             assert sorted(used) == sorted([READ_KEY, CONSUMER_KEY] * 10)
 
     asyncio.run(run())
+
+
+def test_tools_advertise_output_schemas():
+    """The gateway's PII Protection tab lists each tool's fields from these schemas."""
+
+    async def run():
+        with (
+            serve(build_fake_woo()) as store,
+            serve(create_app(settings_for(store))) as url,
+        ):
+            async with mcp_client(url) as client:
+                tools = {t.name: t.output_schema for t in (await client.list_tools()).tools}
+        props = lambda name: set(tools[name]["properties"])
+        assert props("get_order") == {"id", "number", "status", "total", "currency", "created_utc", "customer",
+                                      "items", "payment_method", "customer_note", "ship_to"}
+        assert props("list_orders") == {"count", "orders"}
+        assert props("list_products") == {"count", "products"}
+        assert props("create_product") == props("delete_product") == {
+            "id", "name", "price", "status", "stock_status", "sku", "url"}
+        assert props("update_order_status") == props("get_order") - {"payment_method", "customer_note", "ship_to"}
+
+    asyncio.run(run())

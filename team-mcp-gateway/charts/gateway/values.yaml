@@ -2,7 +2,7 @@
 
 image:
   repository: gateway
-  tag: "0.4.0"
+  tag: "0.5.0"
   pullPolicy: IfNotPresent
 
 # control: the /api behind the dashboard (one replica). edge: /mcp for one

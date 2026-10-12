@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
 
 const DOT = { Ready: 'ok', Failed: 'unreachable', Missing: 'unreachable', Provisioning: 'pending', Deleting: 'pending' }
-const EMPTY = { slug: '', name: '', public_url: '' }
+const EMPTY = { slug: '', name: '', public_url: '', pii_protection: false }
 
 export default function Gateways({ user }) {
   const isAdmin = user.role === 'admin'
@@ -78,6 +78,11 @@ export default function Gateways({ user }) {
             onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <input className="grow" aria-label="Public URL" placeholder="public https URL (optional; turns on OAuth)"
             value={form.public_url} onChange={(e) => setForm({ ...form, public_url: e.target.value })} />
+          <label className="row small">
+            <input type="checkbox" checked={form.pii_protection}
+              onChange={(e) => setForm({ ...form, pii_protection: e.target.checked })} />
+            PII protection
+          </label>
           <button className="primary">Create gateway</button>
         </form>
       )}
@@ -91,6 +96,7 @@ export default function Gateways({ user }) {
               <div className="title">
                 {g.name} <span className="pill">{g.phase}</span>
                 {g.public_url && <span className="pill ok">OAuth</span>}
+                {g.pii_protection && <span className="pill ok">PII protected</span>}
               </div>
               <div className="muted mono small">
                 {g.mcp_url}{' '}
@@ -117,6 +123,11 @@ export default function Gateways({ user }) {
             </div>
             {isAdmin && (
               <>
+                <label className="row small" title="Mask PII in every tool result through this gateway">
+                  <input type="checkbox" checked={g.pii_protection}
+                    onChange={(e) => act(() => api(`/gateways/${g.slug}/pii`, { method: 'PUT', body: { enabled: e.target.checked } }))} />
+                  PII protection
+                </label>
                 <button className="ghost" onClick={() => edit(g)}>Servers</button>
                 <button className="ghost danger" onClick={() => remove(g)}>Delete</button>
               </>

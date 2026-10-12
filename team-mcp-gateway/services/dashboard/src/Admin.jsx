@@ -299,8 +299,19 @@ export function Users({ user }) {
   )
 }
 
+// A payload cut at the audit cap is no longer valid JSON: show it as stored.
+function pretty(s) {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return s
+  }
+}
+
 export function Audit() {
   const [rows, load, error] = useLoad('/audit?limit=200')
+  const [entry, setEntry] = useState(null)
+  const show = (id) => api(`/audit/${id}`).then(setEntry).catch(() => {})
   useEffect(() => {
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
@@ -324,23 +335,38 @@ export function Audit() {
             <th>Gateway</th>
             <th title="Whose credential the call carried upstream">Identity</th>
             <th>Result</th>
+            <th title="What PII protection masked in this result">PII</th>
             <th>Time</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id}>
+            <tr key={r.id} onClick={() => show(r.id)} style={{ cursor: 'pointer' }} title="Show the payload">
               <td>{when(r.at)}</td>
               <td>{r.username}</td>
               <td className="mono">{r.tool}</td>
               <td>{r.gateway || <span className="muted">—</span>}</td>
               <td>{r.identity || <span className="muted">—</span>}</td>
               <td>{r.ok ? <span className="pill ok">ok</span> : <span className="pill bad" title={r.error}>error</span>} <span className="muted small">{r.error}</span></td>
+              <td>
+                {r.pii ? Object.entries(JSON.parse(r.pii)).map(([n, c]) => <span key={n} className="pill">{n} {c}</span>) : <span className="muted">—</span>}
+                {r.payload_masked_for_log && <span className="pill bad" title="Member saw unmasked data; log copy masked">unmasked</span>}
+              </td>
               <td>{r.duration_ms} ms</td>
             </tr>
           ))}
         </tbody>
       </table>
+      {entry && (
+        <div className="card">
+          <div className="row">
+            <div className="title grow">Payload #{entry.id}: <span className="mono">{entry.tool}</span></div>
+            <button className="ghost" onClick={() => setEntry(null)}>Close</button>
+          </div>
+          {entry.payload_masked_for_log && <p className="muted small">Member saw unmasked data; log copy masked.</p>}
+          <pre className="mono small">{entry.payload ? pretty(entry.payload) : 'Not kept (the PII filter failed, or no result).'}</pre>
+        </div>
+      )}
     </>
   )
 }

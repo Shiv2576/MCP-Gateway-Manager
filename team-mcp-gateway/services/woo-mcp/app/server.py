@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from .woo import WooClient, WooError
 
@@ -59,19 +59,65 @@ def day_bounds_utc(
     )
 
 
-def _product(p: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": p.get("id"),
-        "name": p.get("name"),
-        "price": p.get("price"),
-        "status": p.get("status"),
-        "stock_status": p.get("stock_status"),
-        "sku": p.get("sku") or None,
-        "url": p.get("permalink"),
-    }
+# Typed results, so each tool advertises an outputSchema: the gateway's PII
+# Protection tab lists these fields for an admin to pick what to mask.
+class Product(BaseModel):
+    id: int | None = Field(None, description="Product id")
+    name: str | None = Field(None, description="Product name")
+    price: str | None = Field(None, description="Current price in the store currency")
+    status: str | None = Field(None, description="publish, draft, trash, ...")
+    stock_status: str | None = Field(None, description="instock, outofstock or onbackorder")
+    sku: str | None = Field(None, description="Stock code")
+    url: str | None = Field(None, description="Storefront link")
 
 
-def _order(o: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
+class LineItem(BaseModel):
+    product_id: int | None = Field(None, description="Product id")
+    name: str | None = Field(None, description="Product name at the time of the order")
+    quantity: int | None = Field(None, description="How many")
+    total: str | None = Field(None, description="Line total in the order currency")
+
+
+class OrderSummary(BaseModel):
+    id: int | None = Field(None, description="Order id")
+    number: str | None = Field(None, description="Order number shown to the customer")
+    status: str | None = Field(None, description="Order status")
+    total: str | None = Field(None, description="Order total")
+    currency: str | None = Field(None, description="Currency code")
+    created_utc: str | None = Field(None, description="When it was placed, UTC")
+    customer: str | None = Field(None, description="Billing first and last name")
+    items: list[LineItem] = Field(default_factory=list, description="Line items")
+
+
+class Order(OrderSummary):
+    payment_method: str | None = Field(None, description="Payment method title")
+    customer_note: str | None = Field(None, description="Note the customer wrote at checkout")
+    ship_to: str | None = Field(None, description="City, state and country shipped to")
+
+
+class ProductList(BaseModel):
+    count: int
+    products: list[Product]
+
+
+class OrderList(BaseModel):
+    count: int
+    orders: list[OrderSummary]
+
+
+def _product(p: dict[str, Any]) -> Product:
+    return Product(
+        id=p.get("id"),
+        name=p.get("name"),
+        price=p.get("price"),
+        status=p.get("status"),
+        stock_status=p.get("stock_status"),
+        sku=p.get("sku") or None,
+        url=p.get("permalink"),
+    )
+
+
+def _order(o: dict[str, Any], *, full: bool = False) -> OrderSummary:
     billing = o.get("billing") or {}
     out: dict[str, Any] = {
         "id": o.get("id"),
@@ -110,7 +156,7 @@ def _order(o: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
             )
             or None
         )
-    return out
+    return Order(**out) if full else OrderSummary(**out)
 
 
 def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
@@ -141,7 +187,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
             int, Field(ge=1, le=50, description="How many to return")
         ] = 10,
         page: Annotated[int, Field(ge=1, description="Page number, starting at 1")] = 1,
-    ) -> dict[str, Any]:
+    ) -> ProductList:
         """List products in the store, newest first. Use `search` to find one by name."""
         rows = await call(
             "GET",
@@ -154,7 +200,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
                 "order": "desc",
             },
         )
-        return {"count": len(rows), "products": [_product(p) for p in rows]}
+        return ProductList(count=len(rows), products=[_product(p) for p in rows])
 
     @server.tool(title="Create product", annotations=WRITE)
     async def create_product(
@@ -172,7 +218,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
         sku: Annotated[
             str | None, Field(max_length=64, description="Optional unique stock code")
         ] = None,
-    ) -> dict[str, Any]:
+    ) -> Product:
         """Create a simple product and publish it, so it appears on the storefront at once."""
         body: dict[str, Any] = {
             "name": name,
@@ -194,7 +240,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
     )
     async def delete_product(
         product_id: Annotated[int, Field(ge=1, description="The product's numeric id")],
-    ) -> dict[str, Any]:
+    ) -> Product:
         """Move a product to the trash, so it leaves the storefront. An admin can restore it."""
         return _product(await call("DELETE", f"/products/{product_id}"))
 
@@ -213,7 +259,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
         limit: Annotated[
             int, Field(ge=1, le=50, description="How many to return")
         ] = 20,
-    ) -> dict[str, Any]:
+    ) -> OrderList:
         """List orders, newest first. For "what came in today", pass on_date='today'."""
         params: dict[str, Any] = {
             "per_page": limit,
@@ -225,12 +271,12 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
             after, before = day_bounds_utc(on_date, store_timezone)
             params.update({"after": after, "before": before, "dates_are_gmt": "true"})
         rows = await call("GET", "/orders", params=params)
-        return {"count": len(rows), "orders": [_order(o) for o in rows]}
+        return OrderList(count=len(rows), orders=[_order(o) for o in rows])
 
     @server.tool(title="Get order", annotations=READ)
     async def get_order(
         order_id: Annotated[int, Field(ge=1, description="The order's numeric id")],
-    ) -> dict[str, Any]:
+    ) -> Order:
         """Get one order with its line items, payment method and destination."""
         return _order(await call("GET", f"/orders/{order_id}"), full=True)
 
@@ -238,7 +284,7 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
     async def update_order_status(
         order_id: Annotated[int, Field(ge=1, description="The order's numeric id")],
         status: Annotated[OrderStatus, Field(description="The new status")],
-    ) -> dict[str, Any]:
+    ) -> OrderSummary:
         """Move an order to a new status, for example 'processing' to 'completed'."""
         return _order(await call("PUT", f"/orders/{order_id}", json={"status": status}))
 

@@ -455,3 +455,36 @@ def test_admin_deletes_a_user(db_url):
             conn.close()
 
     asyncio.run(run())
+
+
+def test_audit_row_exists_while_the_call_is_in_flight(db_url):
+    """Written before the upstream answers, so a pod that dies mid-call leaves a trace."""
+    from app import db as store
+    from app.upstream import NO_RESULT
+
+    async def run():
+        with serve(http_app(build_slow())) as slow, serve(create_app(Settings(
+            database_url=db_url, credentials_key=KEY, setup_token=SETUP, refresh_interval_s=0.5),
+            gateways=FakeGateways())) as gw:
+            admin = await setup_admin(gw)
+            sid = (await admin.post("/api/servers", json={"name": "slow", "url": f"{slow}/mcp"})).json()["id"]
+            await add_gateway(admin, "ops", [sid])
+            key = (await admin.post("/api/keys", json={"name": "k"})).json()["key"]
+            conn = store.connect(db_url, create_schema=False)
+            last = lambda: conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()  # noqa: E731
+            with serve(create_app(edge_settings(db_url, "ops", call_timeout_s=10, list_timeout_s=10))) as ops:
+                await wait_tools(ops, key, 1, timeout=15)
+
+                async def call():
+                    async with gateway_client(ops, key) as mcp:
+                        return await mcp.call_tool("slow__list", {})
+
+                task = asyncio.create_task(call())
+                await asyncio.sleep(1)
+                row = last()
+                assert (row["tool"], row["ok"], row["error"]) == ("slow__list", 0, NO_RESULT)
+                assert text(await task) == "too late"
+                done = last()
+                assert done["id"] == row["id"] and done["ok"] == 1 and done["error"] is None
+
+    asyncio.run(run())

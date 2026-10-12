@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import time
@@ -24,6 +25,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent, Tool
 
 from .db import allowed_tools, connection_identity
+from .pii import FILTER_TIMEOUT, load_rules, redact_result
 
 log = logging.getLogger("gateway")
 
@@ -46,6 +48,35 @@ def error_result(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
 
+WITHHELD = {
+    "FILTER_ERROR": "Result withheld: the PII filter failed. An admin can check the gateway log.",
+    "FILTER_TIMEOUT": "Result withheld: the PII filter took too long. An admin can check the PII rules.",
+}
+NO_RESULT = "no result recorded: still running, or the gateway stopped mid-call"
+PAYLOAD_CAP = 65_536  # characters of a result kept in the audit log
+
+
+def _scrub(result: CallToolResult, headers: dict) -> CallToolResult:
+    """The result with the credentials this call sent replaced by [CREDENTIAL], so an
+    upstream that echoes its key cannot put it in the log. Done before the PII filter,
+    which could otherwise mask part of a key (its digits) and leave the rest; the bare
+    token too, for "Bearer <token>". Longest first so the whole value wins."""
+    secrets = {p for v in headers.values() for p in (v, v.split()[-1] if v.split() else v) if len(p) >= 8}
+    if not secrets:
+        return result
+    s = result.model_dump_json(by_alias=True)
+    for secret in sorted(secrets, key=len, reverse=True):
+        s = s.replace(json.dumps(secret)[1:-1], "[CREDENTIAL]")  # as it appears inside JSON strings
+    return CallToolResult.model_validate_json(s)
+
+
+def _payload(result: CallToolResult | None) -> str | None:
+    if result is None:
+        return None
+    s = result.model_dump_json(by_alias=True, exclude_none=True)
+    return s if len(s) <= PAYLOAD_CAP else s[:PAYLOAD_CAP] + f"…[truncated, {len(s)} bytes]"
+
+
 def _root_cause(exc: BaseException) -> BaseException:
     """The SDK runs transports in task groups, which wrap errors in groups."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -64,9 +95,16 @@ def describe_failure(name: str, exc: BaseException, timeout: float) -> str:
     return f"Upstream '{name}' failed: {type(exc).__name__}: {exc}"
 
 
-def shared_headers(row: dict) -> dict:
-    """The server's own credential: the health loop, and shared connections."""
-    return {row["auth_header"]: row["auth_value"]} if row["auth_header"] else {}
+UNREADABLE_SHARED = "the stored credential cannot be read (CREDENTIALS_KEY changed?); an admin must enter it again"
+
+
+def shared_headers(row: dict, vault) -> dict | None:
+    """The server's own credential: the health loop, and shared connections.
+    None when it is stored but cannot be decrypted."""
+    if not row["auth_header"]:
+        return {}
+    value = vault.open(row["auth_value"]) if vault and row["auth_value"] else None
+    return None if value is None else {row["auth_header"]: value}
 
 
 @contextlib.asynccontextmanager
@@ -119,9 +157,14 @@ class Upstreams:
 
     async def refresh_one(self, row: dict) -> None:
         status = Status(checked_at=time.time())
+        headers = shared_headers(row, self.vault)
+        if headers is None:
+            status.state, status.error = "unreachable", f"Server '{row['name']}': {UNREADABLE_SHARED}."
+            self.status[row["id"]] = status
+            return
         try:
             with anyio.fail_after(self.list_timeout):
-                async with connect(row, self.list_timeout, shared_headers(row)) as client:
+                async with connect(row, self.list_timeout, headers) as client:
                     tools, cursor = [], None
                     while True:
                         page = await client.list_tools(cursor=cursor)
@@ -172,6 +215,27 @@ class Upstreams:
             self.db.execute("DELETE FROM rate_limits WHERE user_id = ? AND minute < ?", (user_id, minute))
         return calls > self.calls_per_minute
 
+    def _protected(self, gateway_slug: str) -> bool:
+        row = self.db.execute("SELECT pii_protection FROM gateways WHERE slug = ?", (gateway_slug,)).fetchone()
+        return bool(row and row["pii_protection"])
+
+    async def _redact(self, result: CallToolResult, server_id: int | None, tool: str, name: str):
+        """The filtered result and its counts, or None and why. Only this call fails."""
+        rules = load_rules(self.db)
+        try:
+            with anyio.fail_after(FILTER_TIMEOUT):
+                # A worker thread, so the event loop keeps serving other calls. The
+                # filter stops itself at the same deadline (regex timeout); this limit
+                # is the backstop, and abandon_on_cancel lets it fire without waiting.
+                return await anyio.to_thread.run_sync(
+                    redact_result, result, rules, server_id, tool, abandon_on_cancel=True)
+        except TimeoutError:
+            log.error("PII filter timed out on %s", name)
+            return None, {"FILTER_TIMEOUT": 1}
+        except Exception:
+            log.exception("PII filter failed on %s", name)
+            return None, {"FILTER_ERROR": 1}
+
     def refresh_soon(self, server_id: int) -> None:
         """After an admin adds or edits a server, check it now instead of at the next tick."""
         self.status.pop(server_id, None)
@@ -190,6 +254,7 @@ class Upstreams:
         # every request, so any change applies at once.
         rows = self.db.execute("SELECT id, name FROM servers WHERE enabled = 1").fetchall()
         allowed = allowed_tools(self.db, user, gateway_slug)
+        protected = self._protected(gateway_slug)
         out = []
         for row in rows:
             if row["id"] not in allowed:
@@ -203,6 +268,8 @@ class Upstreams:
                         update={
                             "name": row["name"] + SEP + tool.name,
                             "description": f"[{row['name']}] {tool.description or ''}".strip(),
+                            # MCP clients check structuredContent against it; masked values may not fit.
+                            "output_schema": None if protected else tool.output_schema,
                         }
                     )
                 )
@@ -212,11 +279,18 @@ class Upstreams:
         self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None
     ) -> CallToolResult:
         """The one path for every tool call: route, check the gateway's policy,
-        call with a timeout, audit."""
+        call with a timeout, filter PII, audit."""
         server_name, sep, tool = name.partition(SEP)
         row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
         started = time.monotonic()
-        identity = None
+        identity, headers = None, {}
+        # Written before the upstream is called, so a pod that dies mid-call still
+        # leaves a row; the UPDATE below replaces this with the outcome.
+        audit_id = self.db.execute(
+            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?) RETURNING id",
+            (time.time(), user["id"], user["username"], name, row["name"] if row else None, gateway_slug, NO_RESULT),
+        ).fetchone()["id"]
         allowed = allowed_tools(self.db, user, gateway_slug)
         names = allowed.get(row["id"], set()) if row else set()
         if self._over_limit(user["id"]):
@@ -238,23 +312,30 @@ class Upstreams:
                 except Exception as exc:
                     result = error_result(describe_failure(server_name, exc, self.call_timeout))
 
+        result = _scrub(result, headers)  # for the caller too, whatever the PII setting
+        filtered, pii = await self._redact(result, row and row["id"], tool, name)
+        if self._protected(gateway_slug):
+            result = filtered or error_result(WITHHELD[next(iter(pii))])
+            logged, masked_for_log = result, False
+        else:  # the caller gets the unmasked result; the log still keeps only a masked copy
+            logged, masked_for_log = filtered, True
+
         error = None
         if result.is_error:
-            error = " ".join(c.text for c in result.content if isinstance(c, TextContent))[:500]
+            error = (" ".join(c.text for c in logged.content if isinstance(c, TextContent))[:500]
+                     if logged else "error text not kept: the PII filter failed")
         self.db.execute(
-            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error, identity)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, identity = ?,"
+            " pii = ?, payload = ?, payload_masked_for_log = ? WHERE id = ?",
             (
-                time.time(),
-                user["id"],
-                user["username"],
-                name,
-                row["name"] if row else None,
-                gateway_slug,
                 0 if result.is_error else 1,
                 int((time.monotonic() - started) * 1000),
                 error,
                 identity,
+                json.dumps(pii) if pii else None,
+                _payload(logged),
+                masked_for_log,
+                audit_id,
             ),
         )
         return result
@@ -264,7 +345,10 @@ class Upstreams:
         A personal connection never falls back to the shared credential."""
         kind = connection_identity(self.db, gateway_slug, row["id"])
         if kind == "shared":
-            return shared_headers(row), "shared", None
+            headers = shared_headers(row, self.vault)
+            if headers is None:
+                return {}, None, f"Server '{row['name']}': {UNREADABLE_SHARED}."
+            return headers, "shared", None
         stored = self.db.execute(
             "SELECT secret FROM user_credentials WHERE user_id = ? AND server_id = ?", (user["id"], row["id"])
         ).fetchone()

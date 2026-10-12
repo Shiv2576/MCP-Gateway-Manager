@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import api, chat, credentials, gateways as gateway_api, oauth, setup, stores as store_api, teams
+from . import api, chat, credentials, gateways as gateway_api, oauth, pii_api, setup, stores as store_api, teams
 from . import db as store
 from .kube import Kube
 from .upstream import Upstreams
@@ -200,6 +200,8 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
     conn = store.connect(settings.database_url, create_schema=not edge)
     if not edge and conn.execute("SELECT 1 FROM org").fetchone() is None and len(settings.setup_token) < 16:
         raise ConfigError("not set up yet: set SETUP_TOKEN (16+ chars) and finish setup in the dashboard")
+    if not edge:  # edges only read; the control plane owns the schema and its migrations
+        credentials.seal_shared_credentials(conn, vault)
 
     upstreams = Upstreams(
         conn,
@@ -237,6 +239,7 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
             *gateway_api.routes,
             *teams.routes,
             *credentials.routes,
+            *pii_api.routes,
             Route("/api/chat", chat.chat, methods=["POST"]),
         ])
     app.state.db = conn

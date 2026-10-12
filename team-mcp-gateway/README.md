@@ -97,8 +97,8 @@ Open http://store.localhost. Admin is `admin`; the password is in the
 Then the MCP server:
 
 ```
-docker build -t woo-mcp:0.2.0 services/woo-mcp
-k3d image import woo-mcp:0.2.0 -c <your-cluster>
+docker build -t woo-mcp:0.3.0 services/woo-mcp
+k3d image import woo-mcp:0.3.0 -c <your-cluster>
 
 helm lint charts/woo-mcp -f deploy/values-local.yaml
 helm upgrade --install woo-mcp charts/woo-mcp -n mercora -f deploy/values-local.yaml
@@ -273,15 +273,15 @@ kubectl -n mercora create secret generic notes-mcp-credentials --from-literal=AU
 kubectl -n mercora create secret generic fx-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 
 helm upgrade --install db charts/postgres -n mercora -f deploy/postgres-values-local.yaml --wait
-docker build -t gateway:0.4.0 services/gateway && k3d image import gateway:0.4.0 -c <cluster>
+docker build -t gateway:0.5.0 services/gateway && k3d image import gateway:0.5.0 -c <cluster>
 docker build -t demo-mcp:0.1.0 services/demo-mcp && k3d image import demo-mcp:0.1.0 -c <cluster>
 helm upgrade --install notes charts/demo-mcp -n mercora -f deploy/notes-values-local.yaml
 helm upgrade --install fx    charts/demo-mcp -n mercora -f deploy/fx-values-local.yaml
 helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-local.yaml
-# dashboard (team-ui) as before with tag 0.4.0; open http://dash.localhost and finish setup
+# dashboard (team-ui) as before with tag 0.5.0; open http://dash.localhost and finish setup
 # with the SETUP_TOKEN, then make an admin API key and:
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY=<key>
-docker build -f services/store-operator/Dockerfile -t store-operator:0.3.0 . && k3d image import store-operator:0.3.0 -c <cluster>
+docker build -f services/store-operator/Dockerfile -t store-operator:0.3.1 . && k3d image import store-operator:0.3.1 -c <cluster>
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml
 ```
 
@@ -333,8 +333,8 @@ to `http://gateway.localhost`.
 Build and install:
 
 ```
-docker build -t dashboard:0.4.0 services/dashboard
-k3d image import dashboard:0.4.0 -c <your-cluster>
+docker build -t dashboard:0.5.0 services/dashboard
+k3d image import dashboard:0.5.0 -c <your-cluster>
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-local.yaml
 ```
 
@@ -349,11 +349,28 @@ Secrets, Ingress `http://<name>.localhost`, ResourceQuota, LimitRange,
 NetworkPolicies) and its own woo-mcp, registered in the gateway as server
 `<name>`, so its tools are `<name>__list_orders` and so on.
 
+- The Stores tab lists each store with its status (Provisioning / Ready /
+  Failed, with the reason), its URL once Ready, owner and created time,
+  refreshing every 3 seconds. Several stores can provision at the same time;
+  the operator handles each `Store` resource independently.
 - Templates: `catalog-a` (300 products), `catalog-b` (300 products, other
   categories), `blank` (3 products). Each also seeds a few orders dated the day it is created.
 - At most 3 stores per admin; a store not Ready in 15 minutes is marked Failed with the reason.
-- Deleting a store removes its gateway server first, then its namespace.
+- Deleting a store removes its gateway server first, then its namespace, which
+  takes its PVCs (and their volumes), Secrets and Ingress with it.
   Deleting an admin deletes their stores.
+- Isolation: each store namespace starts from a default-deny NetworkPolicy and
+  allows only same-namespace paths: woo-mcp → its own WordPress, WordPress →
+  its own MariaDB, plus DNS and Traefik. woo-mcp accepts traffic only from the
+  gateway namespace and can send only to its own WordPress, so one store's MCP server
+  cannot reach another store's WordPress or database.
+- Recovery: every provisioning step is safe to repeat (namespace objects are
+  created-if-missing, Helm runs `upgrade --install`, a release left pending by a
+  killed Helm is rolled back, or uninstalled if it never succeeded, and then reinstalled). Failed steps are retried
+  (3 attempts, 20 s apart); after the last
+  attempt, or the 15-minute timeout, the store goes to Failed with the error.
+  If the operator restarts mid-provisioning, kopf re-runs the unfinished
+  handler and it converges or fails the same way.
 - Members use only the tools their teams allow on a gateway (Teams page).
 
 How it works: the gateway writes a `Store` resource; `services/store-operator`
@@ -363,8 +380,8 @@ the server through the gateway API.
 Install (once; from this folder):
 
 ```bash
-docker build -f services/store-operator/Dockerfile -t store-operator:0.3.0 .
-k3d image import store-operator:0.3.0 -c store-check
+docker build -f services/store-operator/Dockerfile -t store-operator:0.3.1 .
+k3d image import store-operator:0.3.1 -c store-check
 # An admin API key for the operator: dashboard → API keys → "store-operator".
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='<key>'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml
