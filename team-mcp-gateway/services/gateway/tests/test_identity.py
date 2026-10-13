@@ -84,7 +84,7 @@ def test_personal_identity(db_url):
                     r = await mcp.call_tool("echo__whoami", {})
                     return r.is_error, text(r) if r.is_error else text(r)[::-1]
 
-            with serve(create_app(edge_settings(db_url, "main"))) as edge:
+            with serve(create_app(edge_settings(db_url, "main", calls_per_minute=60))) as edge:
                 await wait_tools(edge, bob, 1)
                 # Shared: the server's credential, as before.
                 assert await whoami(bob) == (False, f"None|{SHARED}")

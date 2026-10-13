@@ -5,10 +5,10 @@ finished piece, the WooCommerce MCP server (layer 2), and the plan for the rest
 in [ROADMAP.md](ROADMAP.md).
 
 ```
-services/woo-mcp/     the MCP server: 6 tools over Streamable HTTP
+services/woo-mcp/     the MCP server: 12 tools over Streamable HTTP
   app/config.py       settings from environment variables
   app/woo.py          WooCommerce REST client, with OAuth 1.0a signing
-  app/server.py       the six tools
+  app/server.py       the tools: six actions, six reports
   app/main.py         web app: /mcp behind a bearer token, /healthz, /readyz
   app/check.py        one command to test auth against your real store
   tests/              a fake store plus end-to-end tests
@@ -29,7 +29,7 @@ charts/dashboard/     Helm chart: nginx Deployment, Service, Ingress at dash.loc
 deploy/               local and prod values for every chart
 ```
 
-## The six tools
+## The tools
 
 | Tool                  | What it does                                                          |
 | --------------------- | --------------------------------------------------------------------- |
@@ -39,6 +39,19 @@ deploy/               local and prod values for every chart
 | `list_orders`         | Newest first; `on_date` = today, yesterday or a date; optional status |
 | `get_order`           | One order with items, payment method and destination                  |
 | `update_order_status` | Moves an order to a new status                                        |
+
+Reports (read-only, days in the store's timezone, capped at 2,000 rows with `truncated: true` past that):
+
+| Tool                        | What it does                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `get_sales_summary`         | Gross, refunds, net, order count, average order value (processing, completed, on-hold, refunded) |
+| `get_refund_summary`        | Refunds by refund date, with order and reason                               |
+| `get_best_selling_products` | Ranked by units or revenue                                                   |
+| `get_low_stock_products`    | Stock-tracked products under a threshold (parent level, not variations)      |
+| `audit_product_quality`     | Missing description, image, price or category ("Uncategorized" counts)       |
+| `get_customer_timeline`     | One customer's orders, oldest first, by customer id or billing email         |
+
+Give teams access per tool in the dashboard's team policies (e.g. Finance gets the sales and refund summaries).
 
 ## How it talks to the store, and why
 
@@ -199,7 +212,7 @@ say. The dashboard's Tools and Chat pages act through a chosen gateway and get
 exactly its policy. A hidden tool's call answers "Unknown tool" and is audited. Browsers get an HttpOnly session cookie from `POST /api/login`.
 API keys are shown once and only their hashes are stored. Every tool call writes
 an audit row with the user, tool, server, result and duration.
-Each user may make 60 tool calls per minute (`CALLS_PER_MINUTE`); refused
+Each user may make 20 tool calls per minute (`CALLS_PER_MINUTE`); refused
 calls are audited too.
 
 | Endpoint | Who |

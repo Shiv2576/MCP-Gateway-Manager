@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import api, chat, credentials, gateways as gateway_api, oauth, pii_api, setup, stores as store_api, teams
+from . import api, approvals, chat, credentials, gateways as gateway_api, oauth, pii_api, setup, stores as store_api, teams
 from . import db as store
 from .kube import Kube
 from .upstream import Upstreams
@@ -49,7 +49,9 @@ class Settings:
     call_timeout_s: float = 10
     list_timeout_s: float = 5
     refresh_interval_s: float = 30
-    calls_per_minute: int = 60
+    calls_per_minute: int = 20
+    # Approved bulk jobs run longer than a normal call.
+    approval_call_timeout_s: float = 120
     cookie_secure: bool = False
     # Chat agent. Any OpenAI-compatible chat completions URL works.
     openrouter_api_key: str = field(default="", repr=False)
@@ -79,6 +81,7 @@ class Settings:
             list_timeout_s=float(env("LIST_TIMEOUT_S", cls.list_timeout_s)),
             refresh_interval_s=float(env("REFRESH_INTERVAL_S", cls.refresh_interval_s)),
             calls_per_minute=int(env("CALLS_PER_MINUTE", cls.calls_per_minute)),
+            approval_call_timeout_s=float(env("APPROVAL_CALL_TIMEOUT_S", cls.approval_call_timeout_s)),
             cookie_secure=env("COOKIE_SECURE", "false").lower() == "true",
             openrouter_api_key=env("OPENROUTER_API_KEY", "").strip(),
             llm_model=env("LLM_MODEL", cls.llm_model),
@@ -131,7 +134,9 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
         return ListToolsResult(tools=upstreams.list_tools(ctx.request.state.user, settings.gateway_slug))
 
     async def on_call_tool(ctx, params) -> CallToolResult:
-        return await upstreams.call_tool(ctx.request.state.user, settings.gateway_slug, params.name, params.arguments)
+        info = getattr(ctx.session.client_params, "client_info", None)  # None on stateless requests without initialize
+        return await upstreams.call_tool(ctx.request.state.user, settings.gateway_slug, params.name, params.arguments,
+                                         client=info and info.name)
 
     server = Server(
         "team-mcp-gateway",
@@ -211,6 +216,7 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
         calls_per_minute=settings.calls_per_minute,
         gateway_slug=settings.gateway_slug if edge else None,
         vault=vault,
+        approval_timeout=settings.approval_call_timeout_s,
     )
 
     async def healthz(_: Request) -> Response:
@@ -240,6 +246,7 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
             *teams.routes,
             *credentials.routes,
             *pii_api.routes,
+            *approvals.routes,
             Route("/api/chat", chat.chat, methods=["POST"]),
         ])
     app.state.db = conn

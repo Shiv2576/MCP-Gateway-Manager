@@ -128,9 +128,10 @@ class Upstreams:
         call_timeout: float,
         list_timeout: float,
         refresh_interval: float,
-        calls_per_minute: int = 60,
+        calls_per_minute: int = 20,
         gateway_slug: str | None = None,
         vault=None,
+        approval_timeout: float = 120,
     ):
         self.db = db
         self.call_timeout = call_timeout
@@ -139,6 +140,7 @@ class Upstreams:
         self.calls_per_minute = calls_per_minute
         self.gateway_slug = gateway_slug
         self.vault = vault
+        self.approval_timeout = approval_timeout
         self.status: dict[int, Status] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -273,44 +275,57 @@ class Upstreams:
                         }
                     )
                 )
-        return out
+        from . import approvals  # here, not at the top: approvals imports api, which imports this module
+
+        return out + (approvals.TOOLS if approvals.has_budget(self.db, user, gateway_slug) else [])
 
     async def call_tool(
-        self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None
+        self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None, *,
+        approval_id: int | None = None, timeout: float | None = None, client: str | None = None,
     ) -> CallToolResult:
-        """The one path for every tool call: route, check the gateway's policy,
-        call with a timeout, filter PII, audit."""
+        """The one path for every tool call: route, check the gateway's policy and the
+        caller's write budget, call with a timeout, filter PII, audit. An approved run
+        (approval_id set) skips the rate limit and the budget; nothing else."""
+        from . import approvals
+
         server_name, sep, tool = name.partition(SEP)
+        if server_name == approvals.BUILTIN:
+            return await self._builtin(user, gateway_slug, name, tool, arguments or {}, client)
+        timeout = timeout or self.call_timeout
         row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
         started = time.monotonic()
         identity, headers = None, {}
         # Written before the upstream is called, so a pod that dies mid-call still
         # leaves a row; the UPDATE below replaces this with the outcome.
         audit_id = self.db.execute(
-            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error)"
-            " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?) RETURNING id",
-            (time.time(), user["id"], user["username"], name, row["name"] if row else None, gateway_slug, NO_RESULT),
+            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error, approval_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?) RETURNING id",
+            (time.time(), user["id"], user["username"], name, row["name"] if row else None, gateway_slug, NO_RESULT,
+             approval_id),
         ).fetchone()["id"]
         allowed = allowed_tools(self.db, user, gateway_slug)
         names = allowed.get(row["id"], set()) if row else set()
-        if self._over_limit(user["id"]):
+        if approval_id is None and self._over_limit(user["id"]):
             result = error_result(f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly.")
         elif not sep or not tool or row is None or row["id"] not in allowed or (names is not None and tool not in names):
             # The same answer as for a tool that does not exist: hidden stays hidden.
             result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
         elif not row["enabled"]:
             result = error_result(f"Server '{server_name}' is disabled.")
+        elif approval_id is None and (over := approvals.charge(
+                self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
+            result = error_result(over)
         else:
             headers, identity, refusal = self._credential(user, gateway_slug, row)
             if refusal:
                 result = error_result(refusal)
             else:
                 try:
-                    with anyio.fail_after(self.call_timeout):
-                        async with connect(row, self.call_timeout, headers) as client:
-                            result = await client.call_tool(tool, arguments or {})
+                    with anyio.fail_after(timeout):
+                        async with connect(row, timeout, headers) as upstream:
+                            result = await upstream.call_tool(tool, arguments or {})
                 except Exception as exc:
-                    result = error_result(describe_failure(server_name, exc, self.call_timeout))
+                    result = error_result(describe_failure(server_name, exc, timeout))
 
         result = _scrub(result, headers)  # for the caller too, whatever the PII setting
         filtered, pii = await self._redact(result, row and row["id"], tool, name)
@@ -337,6 +352,29 @@ class Upstreams:
                 masked_for_log,
                 audit_id,
             ),
+        )
+        return result
+
+    async def _builtin(self, user, gateway_slug: str, name: str, tool: str, arguments: dict, client):
+        """gateway__request_approval and gateway__wait_for_approval. Waiting is not
+        rate limited; neither audits a tool's payload."""
+        from . import approvals
+
+        started = time.monotonic()
+        audit_id = self.db.execute(
+            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error)"
+            " VALUES (?, ?, ?, ?, NULL, ?, 0, 0, ?) RETURNING id",
+            (time.time(), user["id"], user["username"], name, gateway_slug, NO_RESULT),
+        ).fetchone()["id"]
+        if tool != "wait_for_approval" and self._over_limit(user["id"]):
+            result, aid, error = error_result(
+                f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly."), None, "rate limited"
+        else:
+            result, aid, error = await approvals.builtin(self, user, gateway_slug, tool, arguments, client)
+        self.db.execute(
+            "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, approval_id = ? WHERE id = ?",
+            (0 if result.is_error else 1, int((time.monotonic() - started) * 1000),
+             error or ("result not logged" if result.is_error else None), aid, audit_id),
         )
         return result
 

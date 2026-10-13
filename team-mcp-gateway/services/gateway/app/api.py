@@ -465,6 +465,8 @@ async def create_server(request: Request) -> Response:
     name, url = _str(data, "name"), _url(_str(data, "url"))
     if not SERVER_NAME.match(name):
         raise HTTPError(400, "name: 1-32 of a-z 0-9 and -, used as the tool prefix")
+    if name == "gateway":  # the prefix of the gateway's own tools (approvals.BUILTIN)
+        raise HTTPError(400, "name: 'gateway' is reserved for the gateway's own tools")
     header, value = _auth_fields(data)
     value = value and request.app.state.vault.seal(value)
     store_name = _str(data, "store", required=False)
@@ -580,7 +582,7 @@ async def audit_entry(request: Request) -> Response:
     ).fetchone()
     if row is None:
         raise HTTPError(404, "no such audit entry")
-    return JSONResponse(dict(row))
+    return JSONResponse({**row, "refund_total": row["refund_total"] and str(row["refund_total"])})
 
 
 routes = [

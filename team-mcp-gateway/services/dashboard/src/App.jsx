@@ -8,6 +8,7 @@ import Chat from './Chat.jsx'
 import Stores from './Stores.jsx'
 import Credentials from './Credentials.jsx'
 import Pii from './Pii.jsx'
+import Alerts from './Alerts.jsx'
 import { Audit, Keys, Users } from './Admin.jsx'
 
 // Lucide icon paths, 24x24 viewBox.
@@ -22,6 +23,7 @@ const ICONS = {
   teams: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75M19 8v6M22 11h-6',
   users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   pii: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
+  alerts: 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0',
   audit: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8',
   sun: 'M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
   moon: 'M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z',
@@ -61,6 +63,7 @@ const PAGES = [
   { id: 'stores', label: 'Stores', el: Stores, admin: true, group: 'Workspace' },
   { id: 'tools', label: 'Tools', el: Tools, group: 'Workspace' },
   { id: 'chat', label: 'Chat', el: Chat, group: 'Workspace' },
+  { id: 'alerts', label: 'Alerts', el: Alerts, admin: true, group: 'Workspace' },
   { id: 'keys', label: 'API keys', el: Keys, group: 'Settings' },
   { id: 'credentials', label: 'My credentials', el: Credentials, group: 'Settings' },
   { id: 'users', label: 'Members', el: Users, admin: true, group: 'Settings' },
@@ -89,6 +92,7 @@ export default function App() {
   const [setup, setSetup] = useState(undefined) // { needed, org }
   const [page, setPage] = useState('servers')
   const [dark, toggleTheme] = useTheme()
+  const [pending, setPending] = useState(0) // approvals waiting, for the Alerts badge
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar') === 'collapsed' } catch { return false }
   })
@@ -103,6 +107,14 @@ export default function App() {
     api('/setup').then(setSetup).catch((e) => setSetup({ error: e.message }))
     api('/me').then(setUser).catch(() => setUser(null))
   }, [])
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return
+    const poll = () => api('/approvals/count').then((r) => setPending(r.pending)).catch(() => {})
+    poll()
+    const t = setInterval(poll, 10000)
+    return () => clearInterval(t)
+  }, [user])
 
   if (user === undefined || setup === undefined) return null
   if (setup.error)
@@ -158,6 +170,9 @@ export default function App() {
                 title={collapsed ? p.label : undefined}
               >
                 <Icon name={p.id} /> <span className="label">{p.label}</span>
+                {p.id === 'alerts' && pending > 0 && (
+                  <span className="pill strong" aria-label={`${pending} pending`}>{pending}</span>
+                )}
               </button>
             </Fragment>
           ))}

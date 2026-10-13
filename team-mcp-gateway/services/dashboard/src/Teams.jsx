@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
 
 const key = (serverId, tool) => `${serverId}:${tool}`
+const REFUND_TOOL = 'bulk_refund_orders' // the one tool with a money budget too
+const budgetText = (b) =>
+  b && [b.max_items && `${b.max_items} items/h`, b.max_refund_total && `${b.max_refund_total} refunded/h`].filter(Boolean).join(', ')
 
 // One team, read-only: members and, per gateway, the tools it allows.
 function TeamView({ team }) {
@@ -12,12 +15,20 @@ function TeamView({ team }) {
         Members: {team.members.length ? team.members.map((m) => m.username).join(', ') : 'none'}
       </div>
       {gateways.length === 0 && <div className="muted small">No tools allowed on any gateway.</div>}
-      {gateways.map(([slug, tools]) => (
-        <div key={slug} className="small">
-          <b>{slug}</b>:{' '}
-          <span className="mono">{tools.map((t) => `${t.server}__${t.tool}`).join(', ')}</span>
-        </div>
-      ))}
+      {gateways.map(([slug, tools]) => {
+        const budgets = Object.fromEntries((team.budgets?.[slug] || []).map((b) => [key(b.server_id, b.tool), b]))
+        return (
+          <div key={slug} className="small">
+            <b>{slug}</b>:{' '}
+            <span className="mono">
+              {tools.map((t) => {
+                const b = budgetText(budgets[key(t.server_id, t.tool)])
+                return `${t.server}__${t.tool}${b ? ` (${b})` : ''}`
+              }).join(', ')}
+            </span>
+          </div>
+        )
+      })}
     </>
   )
 }
@@ -29,6 +40,19 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
     gateways.map((g) => [g.slug, new Set((team.policies[g.slug] || []).map((t) => key(t.server_id, t.tool)))]),
   )
   const [picks, setPicks] = useState(() => Object.fromEntries(gateways.map((g) => [g.slug, new Set(saved[g.slug])])))
+  // Write budgets, per gateway: tool key -> { max_items, max_refund_total } as typed. Empty = not budgeted.
+  const savedBudgets = Object.fromEntries(
+    gateways.map((g) => [
+      g.slug,
+      Object.fromEntries((team.budgets?.[g.slug] || []).map((b) => [
+        key(b.server_id, b.tool),
+        { max_items: b.max_items ? String(b.max_items) : '', max_refund_total: b.max_refund_total || '' },
+      ])),
+    ]),
+  )
+  const [budgets, setBudgets] = useState(savedBudgets)
+  const setBudget = (slug, k, field, value) =>
+    setBudgets({ ...budgets, [slug]: { ...budgets[slug], [k]: { ...budgets[slug][k], [field]: value } } })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -51,6 +75,23 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
           return { server_id: Number(k.slice(0, i)), tool: k.slice(i + 1) }
         })
         await api(`/teams/${team.id}/gateways/${g.slug}/tools`, { method: 'PUT', body: { tools } })
+      }
+      for (const g of gateways) {
+        // Only tools still allowed keep a budget.
+        const rows = Object.entries(budgets[g.slug])
+          .filter(([k, b]) => picks[g.slug].has(k) && (b?.max_items || b?.max_refund_total))
+          .map(([k, b]) => {
+            const i = k.indexOf(':')
+            return {
+              server_id: Number(k.slice(0, i)),
+              tool: k.slice(i + 1),
+              max_items: b.max_items ? Number(b.max_items) : null,
+              max_refund_total: b.max_refund_total || null,
+            }
+          })
+        const before = (team.budgets?.[g.slug] || []).length
+        if (rows.length === 0 && before === 0) continue
+        await api(`/teams/${team.id}/gateways/${g.slug}/budgets`, { method: 'PUT', body: { budgets: rows } })
       }
       onSaved()
     } catch (e) {
@@ -96,13 +137,31 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
                   {offered.length === 0 && stale.length === 0 && (
                     <span className="muted small">No tools listed yet (server down or still being checked).</span>
                   )}
-                  {[...offered, ...stale].map((t) => (
-                    <label key={t} className="pick">
-                      <input type="checkbox" checked={picks[g.slug].has(key(s.id, t))} onChange={() => toggle(g.slug, key(s.id, t))} />
-                      <span className="mono small">{t}</span>
-                      {stale.includes(t) && <span className="pill">no longer offered</span>}
-                    </label>
-                  ))}
+                  {[...offered, ...stale].map((t) => {
+                    const k = key(s.id, t)
+                    const b = budgets[g.slug][k] || {}
+                    return (
+                      <span key={t} className="pick">
+                        <label className="pick">
+                          <input type="checkbox" checked={picks[g.slug].has(k)} onChange={() => toggle(g.slug, k)} />
+                          <span className="mono small">{t}</span>
+                          {stale.includes(t) && <span className="pill">no longer offered</span>}
+                        </label>
+                        {picks[g.slug].has(k) && (
+                          <>
+                            <input className="budget" type="number" min="1" step="1" placeholder="items / hour"
+                              aria-label={`${t}: items per hour`} title="Write budget: items per member per rolling hour. Empty = no budget."
+                              value={b.max_items || ''} onChange={(e) => setBudget(g.slug, k, 'max_items', e.target.value)} />
+                            {t === REFUND_TOOL && (
+                              <input className="budget" type="number" min="0.01" step="0.01" placeholder="money / hour"
+                                aria-label={`${t}: money refunded per hour`} title="Refund money per member per rolling hour. Empty = no money budget."
+                                value={b.max_refund_total || ''} onChange={(e) => setBudget(g.slug, k, 'max_refund_total', e.target.value)} />
+                            )}
+                          </>
+                        )}
+                      </span>
+                    )
+                  })}
                 </div>
               </div>
             )

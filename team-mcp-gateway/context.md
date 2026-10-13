@@ -229,7 +229,7 @@ forwarded upstream.
 | admin | everything: servers, users, all keys, audit log, stores, every tool |
 | member | only the servers an admin granted (4.7), own keys |
 
-Rate limit: 60 tool calls per minute per user (`CALLS_PER_MINUTE`); every
+Rate limit: 20 tool calls per minute per user (`CALLS_PER_MINUTE`); every
 call, including refused ones, is audited.
 
 **REST API:**
@@ -251,7 +251,7 @@ call, including refused ones, is audited.
 
 **Settings (env):** `DATABASE_PATH`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`,
 `CALL_TIMEOUT_S` (10), `LIST_TIMEOUT_S` (5), `REFRESH_INTERVAL_S` (30),
-`CALLS_PER_MINUTE` (60), `COOKIE_SECURE`, `STORES_NAMESPACE` (turns the store API on;
+`CALLS_PER_MINUTE` (20), `COOKIE_SECURE`, `STORES_NAMESPACE` (turns the store API on;
 set by the chart when `stores.enabled`), `OPENROUTER_API_KEY`, `LLM_MODEL`,
 `PUBLIC_URL` (chart `publicUrl`; turns OAuth on), `OAUTH_REDIRECT_URIS` (chart `oauthRedirectUris`).
 

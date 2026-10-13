@@ -41,6 +41,7 @@ def build_fake_woo() -> Starlette:
         },
     }
     orders: dict[int, dict] = {}
+    refunds: dict[int, list[dict]] = {}  # order id -> its refunds, as /orders/{id}/refunds returns
     seen_nonces: set[str] = set()
     state = {"next_id": 100, "slow": False}
     used_keys: list[str] = []  # the key of every request that got in
@@ -94,7 +95,7 @@ def build_fake_woo() -> Starlette:
         q = (request.query_params.get("search") or "").lower()
         rows = [p for p in products.values() if q in p["name"].lower()]
         rows.sort(key=lambda p: -p["id"])
-        return JSONResponse(rows[: int(request.query_params.get("per_page", 10))])
+        return JSONResponse(page_of(rows, request))
 
     async def create_product(request: Request):
         body = await request.json()
@@ -107,6 +108,8 @@ def build_fake_woo() -> Starlette:
             "status": body.get("status", "draft"),
             "stock_status": "instock",
             "sku": body.get("sku", ""),
+            "manage_stock": body.get("manage_stock", False),
+            "stock_quantity": body.get("stock_quantity"),
             "permalink": f"{PUBLIC_ORIGIN}/p/{pid}",
         }
         return JSONResponse(products[pid], status_code=201)
@@ -131,8 +134,48 @@ def build_fake_woo() -> Starlette:
             rows = [
                 o for o in rows if qp["after"] <= o["date_created_gmt"] < qp["before"]
             ]
+        if qp.get("modified_after"):
+            assert qp.get("dates_are_gmt") == "true"
+            rows = [
+                o for o in rows
+                if qp["modified_after"] <= o.get("date_modified_gmt", o["date_created_gmt"])
+            ]
+        if qp.get("customer"):
+            rows = [o for o in rows if o.get("customer_id") == int(qp["customer"])]
+        if qp.get("search"):
+            rows = [o for o in rows if qp["search"].lower() in str(o).lower()]
         rows.sort(key=lambda o: o["date_created_gmt"], reverse=True)
-        return JSONResponse(rows[: int(qp.get("per_page", 10))])
+        return JSONResponse(page_of(rows, request))
+
+    async def order_refunds(request: Request):
+        oid = int(request.path_params["oid"])
+        if request.method == "POST":
+            body = await request.json()
+            assert body.get("api_refund") is False  # cash on delivery: record only
+            row = {"id": state["next_id"], "amount": body["amount"], "reason": body.get("reason", ""),
+                   "date_created_gmt": "2026-10-13T10:00:00"}
+            state["next_id"] += 1
+            refunds.setdefault(oid, []).append(row)
+            orders[oid].setdefault("refunds", []).append(
+                {"id": row["id"], "reason": row["reason"], "total": f"-{body['amount']}"}
+            )
+            return JSONResponse(row, status_code=201)
+        return JSONResponse(refunds.get(oid, []))
+
+    def batch_of(table: dict[int, dict], code: str):
+        # Like WooCommerce: one answer per item; a bad id gets an error, not a failed batch.
+        async def handler(request: Request):
+            out = []
+            for row in (await request.json()).get("update", []):
+                if row["id"] not in table:
+                    out.append({"id": row["id"], "error": {"code": code, "message": "Invalid ID."}})
+                    continue
+                for k, v in row.items():
+                    table[row["id"]][k] = {**table[row["id"]].get(k, {}), **v} if isinstance(v, dict) else v
+                out.append(table[row["id"]])
+            return JSONResponse({"update": out})
+
+        return handler
 
     async def one_order(request: Request):
         oid = int(request.path_params["oid"])
@@ -147,6 +190,11 @@ def build_fake_woo() -> Starlette:
         if request.method == "PUT":
             orders[oid]["status"] = (await request.json())["status"]
         return JSONResponse(orders[oid])
+
+    def page_of(rows: list, request: Request) -> list:
+        per_page = int(request.query_params.get("per_page", 10))
+        page = int(request.query_params.get("page", 1))
+        return rows[(page - 1) * per_page : page * per_page]
 
     app = Starlette(
         routes=[
@@ -163,10 +211,26 @@ def build_fake_woo() -> Starlette:
                 guard(one_order),
                 methods=["GET", "PUT"],
             ),
+            Route(
+                "/wp-json/wc/v3/orders/{oid:int}/refunds",
+                guard(order_refunds),
+                methods=["GET", "POST"],
+            ),
+            Route(
+                "/wp-json/wc/v3/products/batch",
+                guard(batch_of(products, "woocommerce_rest_product_invalid_id")),
+                methods=["POST"],
+            ),
+            Route(
+                "/wp-json/wc/v3/orders/batch",
+                guard(batch_of(orders, "woocommerce_rest_shop_order_invalid_id")),
+                methods=["POST"],
+            ),
         ]
     )
     app.state.orders = orders
     app.state.products = products
+    app.state.refunds = refunds
     app.state.flags = state
     app.state.used_keys = used_keys
     return app

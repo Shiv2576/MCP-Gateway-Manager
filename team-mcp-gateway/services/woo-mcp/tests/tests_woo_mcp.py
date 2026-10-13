@@ -180,7 +180,7 @@ def test_token_is_required_but_health_is_open():
     asyncio.run(run())
 
 
-def test_the_six_tools_are_listed_in_both_protocol_eras():
+def test_the_sixteen_tools_are_listed_in_both_protocol_eras():
     expected = {
         "list_products",
         "create_product",
@@ -188,6 +188,16 @@ def test_the_six_tools_are_listed_in_both_protocol_eras():
         "list_orders",
         "get_order",
         "update_order_status",
+        "get_sales_summary",
+        "get_refund_summary",
+        "get_best_selling_products",
+        "get_low_stock_products",
+        "audit_product_quality",
+        "get_customer_timeline",
+        "bulk_update_product_descriptions",
+        "bulk_update_product_prices",
+        "bulk_update_orders",
+        "bulk_refund_orders",
     }
 
     async def run():
@@ -218,10 +228,14 @@ def test_demo_flow_create_product_then_todays_orders():
             async with mcp_client(url) as client:
                 made = _payload(
                     await client.call_tool(
-                        "create_product", {"name": "Demo Mug", "price": "349"}
+                        "create_product", {"name": "Demo Mug", "price": "349", "stock_quantity": 1}
                     )
                 )
                 assert made["name"] == "Demo Mug" and made["status"] == "publish"
+                low = _payload(await client.call_tool("get_low_stock_products", {}))
+                assert [p["id"] for p in low["products"]] == [made["id"]]
+                no_stock = await client.call_tool("create_product", {"name": "Y", "price": "1"})
+                assert no_stock.is_error
 
                 found = _payload(
                     await client.call_tool("list_products", {"search": "mug"})
@@ -276,7 +290,7 @@ def test_bad_input_and_missing_order_give_readable_errors():
                 assert missing.is_error and "not found" in missing.content[0].text
 
                 bad_price = await client.call_tool(
-                    "create_product", {"name": "X", "price": "free"}
+                    "create_product", {"name": "X", "price": "free", "stock_quantity": 1}
                 )
                 assert bad_price.is_error
 
@@ -325,29 +339,12 @@ def test_store_problems_become_clear_errors_not_hangs():
         with serve(create_app(settings_for(dead))) as url:
             async with mcp_client(url) as client:
                 assert (
-                    len((await client.list_tools()).tools) == 6
+                    len((await client.list_tools()).tools) == 16
                 )  # listing still works
                 r = await client.call_tool("list_orders", {})
                 assert r.is_error and "Could not reach the store" in r.content[0].text
 
     asyncio.run(run())
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"PASS  {name}")
-            except Exception:
-                failed += 1
-                print(f"FAIL  {name}")
-                traceback.print_exc()
-    sys.exit(1 if failed else 0)
 
 
 def test_personal_key_from_the_gateway():
@@ -417,3 +414,204 @@ def test_tools_advertise_output_schemas():
         assert props("update_order_status") == props("get_order") - {"payment_method", "customer_note", "ship_to"}
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------- reports
+
+def _order_at(oid, created, status="completed", total="100.00", product=(1, "Trail Mix", 1), **extra):
+    o = make_order(oid, created, status=status, total=total)
+    o["line_items"] = [{"product_id": product[0], "name": product[1], "quantity": product[2], "total": total}]
+    o.update(extra)
+    return o
+
+
+def test_sales_refunds_and_best_sellers_follow_the_store_day():
+    # Store is Asia/Kolkata: 1 Oct 2026 there is 2026-09-30T18:30 .. 2026-10-01T18:30 UTC.
+    fake = build_fake_woo()
+    o = fake.state.orders
+    o[10] = _order_at(10, "2026-09-30T19:00:00", total="500.00", product=(1, "Trail Mix", 2))
+    o[11] = _order_at(11, "2026-10-01T18:00:00", "processing", "300.00", (2, "Mug", 5))
+    o[12] = _order_at(12, "2026-10-01T19:00:00", total="1000.00")  # 2 Oct in the store
+    o[13] = _order_at(13, "2026-10-01T10:00:00", "cancelled", "999.00")  # not a sale
+    o[14] = _order_at(14, "2026-10-01T11:00:00", "refunded", "200.00",
+                      refunds=[{"id": 1, "total": "-200.00"}], date_modified_gmt="2026-10-05T00:00:00")
+    # An August order, partly refunded on 1 Oct: counts for refunds, not for sales.
+    o[15] = _order_at(15, "2026-08-01T00:00:00", refunds=[{"id": 2, "total": "-40.00"}],
+                      date_modified_gmt="2026-10-01T05:00:00")
+    fake.state.refunds[14] = [{"id": 1, "amount": "200.00", "reason": "", "date_created_gmt": "2026-10-05T00:00:00"}]
+    fake.state.refunds[15] = [{"id": 2, "amount": "40.00", "reason": "damaged", "date_created_gmt": "2026-10-01T05:00:00"}]
+    day = {"start": "2026-10-01", "end": "2026-10-01"}
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                sales = _payload(await client.call_tool("get_sales_summary", day))
+                assert sales["order_count"] == 3  # 10, 11, 14
+                assert (sales["gross_sales"], sales["refunds"], sales["net_sales"]) == ("1000.00", "200.00", "800.00")
+                assert sales["average_order_value"] == "333.33" and not sales["truncated"]
+
+                refunds = _payload(await client.call_tool("get_refund_summary", day))
+                assert refunds["refund_count"] == 1 and refunds["refund_total"] == "40.00"
+                assert refunds["refunds"][0]["order_id"] == 15 and refunds["refunds"][0]["reason"] == "damaged"
+                week = _payload(await client.call_tool("get_refund_summary", {"start": "2026-10-01", "end": "2026-10-05"}))
+                assert (week["refund_total"], week["orders_affected"]) == ("240.00", 2)
+
+                by_units = _payload(await client.call_tool("get_best_selling_products", day))
+                assert [(p["product_id"], p["units"]) for p in by_units["products"]] == [(2, 5), (1, 3)]
+                by_rev = _payload(await client.call_tool("get_best_selling_products", {**day, "by": "revenue"}))
+                assert [(p["product_id"], p["revenue"]) for p in by_rev["products"]] == [(1, "700.00"), (2, "300.00")]
+
+                backwards = await client.call_tool("get_sales_summary", {"start": "2026-10-02", "end": "2026-10-01"})
+                assert backwards.is_error and "start must be" in str(backwards.content)
+
+    asyncio.run(run())
+
+
+def test_low_stock_and_product_quality():
+    fake = build_fake_woo()
+    good = {"description": "Crunchy", "images": [{"src": "x"}], "categories": [{"slug": "snacks"}]}
+    fake.state.products[2] = {**fake.state.products[1], "id": 2, "name": "Nuts", "manage_stock": True,
+                              "stock_quantity": 2, **good}
+    fake.state.products[3] = {**fake.state.products[1], "id": 3, "name": "Jar", "manage_stock": True,
+                              "stock_quantity": 10, "price": "", "categories": [{"slug": "uncategorized"}]}
+    # product 1 has no stock tracking, no description, image or category
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                low = _payload(await client.call_tool("get_low_stock_products", {}))
+                assert [(p["id"], p["stock_quantity"]) for p in low["products"]] == [(2, 2)]
+                low = _payload(await client.call_tool("get_low_stock_products", {"threshold": 11}))
+                assert [p["id"] for p in low["products"]] == [2, 3]
+
+                audit = _payload(await client.call_tool("audit_product_quality", {}))
+                assert audit["checked"] == 3
+                issues = {p["id"]: set(p["issues"]) for p in audit["products"]}
+                assert issues == {
+                    1: {"missing_description", "missing_image", "missing_category"},
+                    3: {"missing_description", "missing_image", "missing_price", "missing_category"},
+                }
+
+    asyncio.run(run())
+
+
+def test_customer_timeline_by_id_or_email():
+    fake = build_fake_woo()
+    o = fake.state.orders
+    o[30] = _order_at(30, "2026-10-02T00:00:00", customer_id=7)
+    o[31] = _order_at(31, "2026-10-01T00:00:00", "cancelled", customer_id=7)
+    o[32] = _order_at(32, "2026-10-03T00:00:00", customer_id=0)  # guest, same email
+    o[33] = _order_at(33, "2026-10-04T00:00:00", customer_id=9, customer_note="call priya@example.com")
+    o[33]["billing"] = {"first_name": "Ravi", "last_name": "K", "email": "ravi@example.com"}
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                by_id = _payload(await client.call_tool("get_customer_timeline", {"customer_id": 7}))
+                assert [x["id"] for x in by_id["orders"]] == [31, 30]  # oldest first
+                assert by_id["total_spent"] == "100.00"  # the cancelled one does not count
+                assert by_id["customer"] == "Priya Sharma"
+
+                by_email = _payload(await client.call_tool("get_customer_timeline", {"email": "Priya@Example.com"}))
+                assert [x["id"] for x in by_email["orders"]] == [31, 30, 32]  # not 33
+                assert "priya@example.com" not in str(by_email)
+
+                for args in ({}, {"customer_id": 7, "email": "priya@example.com"}):
+                    assert (await client.call_tool("get_customer_timeline", args)).is_error
+
+    asyncio.run(run())
+
+
+def test_reports_say_when_they_stopped_early():
+    import app.server as server_module
+
+    fake = build_fake_woo()
+    for pid in range(2, 102):
+        fake.state.products[pid] = {**fake.state.products[1], "id": pid}
+    saved = server_module.MAX_PAGES
+    server_module.MAX_PAGES = 1  # 101 products, one page of 100
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                audit = _payload(await client.call_tool("audit_product_quality", {}))
+                assert audit["checked"] == 100 and audit["truncated"]
+
+    try:
+        asyncio.run(run())
+    finally:
+        server_module.MAX_PAGES = saved
+
+
+def test_bulk_tools_report_per_item():
+    fake = build_fake_woo()
+    fake.state.orders[501] = make_order(501, "2026-10-13T08:00:00", total="500.00")
+    fake.state.orders[502] = make_order(502, "2026-10-13T09:00:00", total="100.00")
+
+    async def run():
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                desc = _payload(await client.call_tool("bulk_update_product_descriptions", {"items": [
+                    {"product_id": 1, "description": "Crunchy"},
+                    {"product_id": 999, "short_description": "x"},
+                ]}))
+                assert (desc["ok"], desc["failed"]) == (1, 1)
+                assert desc["results"][1] == {"id": 999, "ok": False, "error": "Invalid ID."}
+                assert fake.state.products[1]["description"] == "Crunchy"
+
+                prices = _payload(await client.call_tool("bulk_update_product_prices", {"items": [
+                    {"product_id": 1, "regular_price": "249", "sale_price": "199.50"},
+                ]}))
+                assert prices["ok"] == 1 and fake.state.products[1]["sale_price"] == "199.50"
+
+                orders = _payload(await client.call_tool("bulk_update_orders", {"items": [
+                    {"order_id": 501, "status": "completed", "shipping": {"city": "Mumbai"}},
+                    {"order_id": 404, "status": "completed"},
+                ]}))
+                assert [r["ok"] for r in orders["results"]] == [True, False]
+                assert fake.state.orders[501]["status"] == "completed"
+                assert fake.state.orders[501]["shipping"] == {"city": "Mumbai", "state": "MH", "country": "IN"}
+
+                refunds = _payload(await client.call_tool("bulk_refund_orders", {"items": [
+                    {"order_id": 501, "amount": "200", "reason": "damaged"},
+                    {"order_id": 502, "amount": "100.01"},
+                    {"order_id": 404, "amount": "1"},
+                ]}))
+                assert [r["ok"] for r in refunds["results"]] == [True, False, False]
+                assert "only 100.00 left" in refunds["results"][1]["error"]
+                assert fake.state.refunds[501][0]["amount"] == "200" and 502 not in fake.state.refunds
+                again = _payload(await client.call_tool("bulk_refund_orders", {"items": [
+                    {"order_id": 501, "amount": "300.01"},
+                ]}))
+                assert "only 300.00 left" in again["results"][0]["error"]
+
+                # Refused outright: too many items, nothing to change, extra fields, duplicates.
+                for tool, args in [
+                    ("bulk_update_product_prices", {"items": [{"product_id": 1, "regular_price": "1"}] * 101}),
+                    ("bulk_update_product_prices", {"items": []}),
+                    ("bulk_update_product_descriptions", {"items": [{"product_id": 1}]}),
+                    ("bulk_update_orders", {"items": [{"order_id": 501, "shipping": {"planet": "Mars"}}]}),
+                    ("bulk_refund_orders", {"items": [{"order_id": 501, "amount": "-5"}]}),
+                    ("bulk_refund_orders", {"items": [{"order_id": 502, "amount": "1"}] * 2}),
+                ]:
+                    assert (await client.call_tool(tool, args)).is_error, (tool, args)
+                assert 502 not in fake.state.refunds
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    import sys
+    import traceback
+
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print(f"PASS  {name}")
+            except Exception:
+                failed += 1
+                print(f"FAIL  {name}")
+                traceback.print_exc()
+    sys.exit(1 if failed else 0)
