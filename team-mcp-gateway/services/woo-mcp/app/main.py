@@ -86,7 +86,7 @@ def create_app(
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     woo = woo or WooClient(settings)
-    server = build_server(woo, settings.store_timezone)
+    server = build_server(woo, settings)
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> Response:

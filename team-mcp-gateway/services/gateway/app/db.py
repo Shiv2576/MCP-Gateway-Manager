@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS team_budgets (
     gateway_id       BIGINT NOT NULL,
     server_id        BIGINT NOT NULL,
     tool             TEXT NOT NULL,
-    max_items        INTEGER CHECK (max_items > 0),                -- per rolling hour
+    max_items        INTEGER CHECK (max_items >= 0),               -- per rolling hour; 0: every call needs approval
     max_refund_total NUMERIC(12, 2) CHECK (max_refund_total > 0),  -- per rolling hour, refunds only
     PRIMARY KEY (team_id, gateway_id, server_id, tool),
     FOREIGN KEY (gateway_id, server_id) REFERENCES gateway_servers (gateway_id, server_id) ON DELETE CASCADE,
@@ -226,6 +226,15 @@ CREATE TABLE IF NOT EXISTS approvals (
     audit_id         BIGINT            -- the audit row of the run
 );
 CREATE INDEX IF NOT EXISTS approvals_open ON approvals (user_id, gateway, tool, status);
+-- A budget of 0 (approval for every call) came later; older tables only allow > 0.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'team_budgets_max_items_check'
+               AND position('> 0' in pg_get_constraintdef(oid)) > 0) THEN
+        ALTER TABLE team_budgets DROP CONSTRAINT team_budgets_max_items_check;
+        ALTER TABLE team_budgets ADD CONSTRAINT team_budgets_max_items_check CHECK (max_items >= 0);
+    END IF;
+END $$;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS summary TEXT;  -- the requesting agent's own words, unverified
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS items INTEGER;
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS refund_total NUMERIC(12, 2);
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS approval_id BIGINT;

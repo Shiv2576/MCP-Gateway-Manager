@@ -32,7 +32,19 @@ function Summary({ a }) {
       {a.client && ` via ${a.client}`} on <span className="mono">{a.gateway}</span> · {when(a.requested_at)}
       <br />
       <span className="mono">{a.tool}</span> on <b>{a.items}</b> items
-      {a.refund_total && <> refunding <b>{a.refund_total}</b></>} · over the budget of {a.budget}
+      {a.refund_total && <> refunding <b>{a.refund_total}</b></>} ·{' '}
+      {a.budget === 'approval for every call' ? 'needs approval for every call' : `over the budget of ${a.budget}`}
+    </div>
+  )
+}
+
+// The requesting agent's own explanation: shown, but it is not what gets approved.
+function AgentSummary({ a }) {
+  if (!a.summary) return null
+  return (
+    <div className="small">
+      <div className="muted">Written by the requester's agent, not verified:</div>
+      <p style={{ whiteSpace: 'pre-wrap' }}>{a.summary}</p>
     </div>
   )
 }
@@ -64,6 +76,7 @@ function PendingCard({ a, onDone }) {
         </div>
       </div>
       <Preview a={a} />
+      <AgentSummary a={a} />
       {done ? (
         <div className="small">
           <span className={STATUS_PILL[done.status]}>{done.status}</span>{' '}

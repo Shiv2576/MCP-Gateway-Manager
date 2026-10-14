@@ -277,7 +277,9 @@ class Upstreams:
                 )
         from . import approvals  # here, not at the top: approvals imports api, which imports this module
 
-        return out + (approvals.TOOLS if approvals.has_budget(self.db, user, gateway_slug) else [])
+        # Every member gets them, budget or not: MCP clients keep the list they got at connect
+        # time, so tying it to budgets left agents without the tool when an admin added one later.
+        return out + (approvals.TOOLS if out and user["role"] != "admin" else [])
 
     async def call_tool(
         self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None, *,

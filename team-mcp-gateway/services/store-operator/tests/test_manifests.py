@@ -21,6 +21,7 @@ def test_credentials_secret_is_only_built_once_per_call():
     assert data["WOO_CONSUMER_KEY"].startswith("ck_") and len(data["WOO_CONSUMER_KEY"]) == 43
     assert data["WOO_CONSUMER_SECRET"].startswith("cs_") and len(data["WOO_CONSUMER_SECRET"]) == 43
     assert len(data["MCP_AUTH_TOKEN"]) >= 32
+    assert data["SHOPPER_PASSWORD"] == "test123"
     assert a["metadata"]["name"] == "woo-mcp-credentials"
     assert data != b["stringData"]  # fresh values: the caller must only create, never replace
 

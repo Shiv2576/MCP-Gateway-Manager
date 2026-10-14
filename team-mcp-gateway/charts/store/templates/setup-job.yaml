@@ -17,6 +17,8 @@ data:
 {{ .Files.Get "files/register-woo-key.php" | indent 4 }}
   seed.php: |-
 {{ .Files.Get "files/seed.php" | indent 4 }}
+  cart-recovery.php: |-
+{{ .Files.Get "files/cart-recovery.php" | indent 4 }}
   products: |
 {{- range .Values.setup.products }}
     {{ .name }}|{{ .price }}

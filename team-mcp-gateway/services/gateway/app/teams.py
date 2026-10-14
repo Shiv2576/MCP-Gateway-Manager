@@ -183,8 +183,8 @@ async def set_budgets(request: Request) -> Response:
         if b["server_id"] not in attached:
             raise HTTPError(400, "budgets names a server that is not attached to this gateway")
         items = b.get("max_items")
-        if items is not None and (type(items) is not int or items <= 0):
-            raise HTTPError(400, "max_items must be a positive whole number")
+        if items is not None and (type(items) is not int or items < 0):
+            raise HTTPError(400, "max_items must be a whole number, 0 or more (0: every call needs approval)")
         money = _limit_money(b.get("max_refund_total"))
         if money is not None and b["tool"] != REFUND_TOOL:
             raise HTTPError(400, f"max_refund_total applies to {REFUND_TOOL} only")

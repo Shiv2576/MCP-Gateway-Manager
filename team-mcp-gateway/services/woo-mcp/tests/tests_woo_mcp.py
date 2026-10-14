@@ -180,7 +180,7 @@ def test_token_is_required_but_health_is_open():
     asyncio.run(run())
 
 
-def test_the_sixteen_tools_are_listed_in_both_protocol_eras():
+def test_the_eighteen_tools_are_listed_in_both_protocol_eras():
     expected = {
         "list_products",
         "create_product",
@@ -198,6 +198,8 @@ def test_the_sixteen_tools_are_listed_in_both_protocol_eras():
         "bulk_update_product_prices",
         "bulk_update_orders",
         "bulk_refund_orders",
+        "get_abandoned_carts",
+        "create_cart_offers",
     }
 
     async def run():
@@ -339,7 +341,7 @@ def test_store_problems_become_clear_errors_not_hangs():
         with serve(create_app(settings_for(dead))) as url:
             async with mcp_client(url) as client:
                 assert (
-                    len((await client.list_tools()).tools) == 16
+                    len((await client.list_tools()).tools) == 18
                 )  # listing still works
                 r = await client.call_tool("list_orders", {})
                 assert r.is_error and "Could not reach the store" in r.content[0].text
@@ -556,7 +558,7 @@ def test_bulk_tools_report_per_item():
                     {"product_id": 999, "short_description": "x"},
                 ]}))
                 assert (desc["ok"], desc["failed"]) == (1, 1)
-                assert desc["results"][1] == {"id": 999, "ok": False, "error": "Invalid ID."}
+                assert desc["results"][1] == {"id": 999, "ok": False, "error": "Invalid ID.", "detail": None}
                 assert fake.state.products[1]["description"] == "Crunchy"
 
                 prices = _payload(await client.call_tool("bulk_update_product_prices", {"items": [
@@ -596,6 +598,112 @@ def test_bulk_tools_report_per_item():
                 ]:
                     assert (await client.call_tool(tool, args)).is_error, (tool, args)
                 assert 502 not in fake.state.refunds
+
+    asyncio.run(run())
+
+
+def _cart_store():
+    """Four products in carts: a hero, a thin margin, one without cost, one already on sale."""
+    fake = build_fake_woo()
+    now = time.time()
+
+    def product(pid, name, price, cogs, **extra):
+        fake.state.products[pid] = {"id": pid, "name": name, "regular_price": price, "price": price, "on_sale": False,
+                                    "cost_of_goods_sold": {"total_value": cogs}, **extra}
+
+    product(10, "Fresh Deodorant 150ml", "249", 110)
+    product(11, "Basmati Rice 5kg", "699", 640)
+    product(12, "Mystery Garden Box", "1499", 0)  # Woo reports an unset cost as 0
+    product(13, "Linen Shirt", "1499", 690, on_sale=True, sale_price="1199")
+    day = 86400
+    fake.state.carts.extend([
+        {"user_id": 1, "updated_at": now - 2 * day, "items": [{"product_id": 10, "quantity": 2}, {"product_id": 11, "quantity": 1}]},
+        {"user_id": 2, "updated_at": now - 5 * day, "items": [{"product_id": 10, "quantity": 1}, {"product_id": 12, "quantity": 1}]},
+        {"user_id": 3, "updated_at": now - 9 * day, "items": [{"product_id": 13, "quantity": 1}]},
+        {"user_id": 4, "updated_at": now - 25 * day, "items": [{"product_id": 10, "quantity": 5}, {"product_id": 1, "quantity": 1}]},
+    ])
+    return fake
+
+
+def test_abandoned_carts_give_facts_and_safe_limits():
+    async def run():
+        fake = _cart_store()
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                out = _payload(await client.call_tool("get_abandoned_carts", {"days": 20}))
+                # The 25-day-old cart is outside the window: its 5 deodorants and Trail Mix do not count.
+                assert (out["carts"], out["min_margin_pct"], out["truncated"]) == (3, 10.0, False)
+                by = {p["product_id"]: p for p in out["products"]}
+                assert set(by) == {10, 11, 12, 13}
+                deo = by[10]
+                assert (deo["carts"], deo["units"], deo["cart_value"], deo["cogs"]) == (2, 3, "747.00", "110.00")
+                assert deo["max_discount_pct"] == 51 - 11  # floor((1 - 121/249) * 100) = 51, capped at 40
+                assert deo["margin_pct"] == 55.8
+                assert by[11]["max_discount_pct"] == 0  # 640 * 1.1 > 699: already thin
+                assert (by[12]["cogs"], by[12]["max_discount_pct"], by[12]["margin_pct"]) == (None, 0, None)
+                assert by[13]["on_sale"] is True
+                assert [p["product_id"] for p in out["products"]] == [13, 12, 10, 11]  # by cart value
+                assert "email" not in str(out) and "user_id" not in str(out)
+                top = _payload(await client.call_tool("get_abandoned_carts", {"days": 30, "limit": 1}))
+                assert top["carts"] == 4 and top["truncated"] and len(top["products"]) == 1
+
+    asyncio.run(run())
+
+
+def test_cart_offers_check_every_number_against_the_store():
+    def offer(pid, name, price, cogs, pct, sale, days=7):
+        return {"product_id": pid, "name": name, "regular_price": price, "cogs": cogs,
+                "discount_pct": pct, "sale_price": sale, "ends_in_days": days}
+
+    deo = ("Fresh Deodorant 150ml", "249", "110")
+
+    async def run():
+        fake = _cart_store()
+        fake.state.products[14] = {"id": 14, "name": "Yoga Mat", "regular_price": "999", "on_sale": False,
+                                   "cost_of_goods_sold": {"total_value": 380}}  # in no cart
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                cases = [
+                    (offer(10, "Fresh Deo", "249", "110", 20, "199.20"), "name"),
+                    (offer(10, deo[0], "199", "110", 20, "159.20"), "regular price is 249.00"),
+                    (offer(10, *deo[:2], "100", 20, "199.20"), "cost of goods is 110.00"),
+                    (offer(12, "Mystery Garden Box", "1499", "500", 10, "1349.10"), "no cost of goods"),
+                    (offer(13, "Linen Shirt", "1499", "690", 10, "1349.10"), "already on sale"),
+                    (offer(14, "Yoga Mat", "999", "380", 10, "899.10"), "no cart changed in the last 20 days"),
+                    (offer(10, *deo, 20, "199.20", days=15), "ends_in_days must be 1 to 14"),
+                    (offer(10, *deo, 50, "120.00"), "under the floor 121.00"),
+                    (offer(10, *deo, 20, "249.00"), "below the regular price"),
+                    (offer(10, *deo, 10, "199.20"), "is a 20.0% discount, not 10%"),
+                    (offer(99, "Gone", "1", "1", 10, "0.90"), "product not found"),
+                ]
+                for item, why in cases:
+                    res = _payload(await client.call_tool("create_cart_offers", {"items": [item]}))
+                    assert res["failed"] == 1 and why in res["results"][0]["error"], (why, res)
+                assert not fake.state.products[10]["on_sale"]
+
+                # Over the store's 40% cap, though above the floor.
+                fake.state.products[15] = {"id": 15, "name": "Serum", "regular_price": "800", "on_sale": False,
+                                           "cost_of_goods_sold": {"total_value": 200}}
+                fake.state.carts[0]["items"].append({"product_id": 15, "quantity": 1})
+                res = _payload(await client.call_tool("create_cart_offers", {"items": [offer(15, "Serum", "800", "200", 50, "400.00")]}))
+                assert "over the store's limit of 40%" in res["results"][0]["error"]
+
+                # A mixed batch: the good item goes on sale, the bad one says why.
+                res = _payload(await client.call_tool("create_cart_offers", {"items": [
+                    offer(10, *deo, 20, "199.20", days=7), offer(11, "Basmati Rice 5kg", "699", "640", 5, "664.05"),
+                ]}))
+                assert [r["ok"] for r in res["results"]] == [True, False]
+                assert res["results"][0]["detail"].startswith("on sale at 199.20 until ")
+                assert "under the floor 704.00" in res["results"][1]["error"]
+                p = fake.state.products[10]
+                assert p["sale_price"] == "199.20" and p["on_sale"]
+                end = datetime.fromisoformat(p["date_on_sale_to_gmt"]).replace(tzinfo=timezone.utc)
+                assert timedelta(days=6, hours=23) < end - datetime.now(timezone.utc) <= timedelta(days=7)
+                # Approved twice: the second run does not stack.
+                res = _payload(await client.call_tool("create_cart_offers", {"items": [offer(10, *deo, 20, "199.20")]}))
+                assert "already on sale" in res["results"][0]["error"]
+                # Duplicates are refused outright.
+                assert (await client.call_tool("create_cart_offers", {"items": [offer(10, *deo, 20, "199.20")] * 2})).is_error
 
     asyncio.run(run())
 

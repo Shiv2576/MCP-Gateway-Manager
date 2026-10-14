@@ -24,7 +24,7 @@ from .gateway import Gateway
 NAMESPACE = os.environ.get("STORES_NAMESPACE", "mercora")
 CHARTS = os.environ.get("CHARTS_DIR", "/charts")
 MAX_ATTEMPTS = 3
-EDGE_IMAGE_TAG = os.environ.get("EDGE_IMAGE_TAG", "0.5.0")
+EDGE_IMAGE_TAG = os.environ.get("EDGE_IMAGE_TAG", "0.6.1")
 gateway = Gateway(os.environ.get("GATEWAY_URL", "http://team-gateway:8000"), os.environ.get("GATEWAY_API_KEY", ""))
 
 

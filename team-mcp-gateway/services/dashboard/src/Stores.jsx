@@ -3,7 +3,7 @@ import { api, when } from './api.js'
 
 const TEMPLATES = [
   { id: 'catalog-a', title: 'Catalog A', text: '300 products: electronics, books, home & kitchen, toys, office' },
-  { id: 'catalog-b', title: 'Catalog B', text: '300 products: fashion, sports, beauty, grocery, garden' },
+  { id: 'catalog-b', title: 'Catalog B', text: 'Cart recovery demo: 40 products with costs, 300 shoppers with abandoned carts' },
   { id: 'blank', title: 'Blank', text: '3 basic products' },
 ]
 const MAX = 3

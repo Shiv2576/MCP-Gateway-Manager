@@ -41,6 +41,7 @@ def build_fake_woo() -> Starlette:
         },
     }
     orders: dict[int, dict] = {}
+    carts: list[dict] = []  # the store plugin's carts: {user_id, updated_at, items}
     refunds: dict[int, list[dict]] = {}  # order id -> its refunds, as /orders/{id}/refunds returns
     seen_nonces: set[str] = set()
     state = {"next_id": 100, "slow": False}
@@ -94,6 +95,9 @@ def build_fake_woo() -> Starlette:
     async def list_products(request: Request):
         q = (request.query_params.get("search") or "").lower()
         rows = [p for p in products.values() if q in p["name"].lower()]
+        if request.query_params.get("include"):
+            wanted = {int(i) for i in request.query_params["include"].split(",")}
+            rows = [p for p in rows if p["id"] in wanted]
         rows.sort(key=lambda p: -p["id"])
         return JSONResponse(page_of(rows, request))
 
@@ -172,6 +176,8 @@ def build_fake_woo() -> Starlette:
                     continue
                 for k, v in row.items():
                     table[row["id"]][k] = {**table[row["id"]].get(k, {}), **v} if isinstance(v, dict) else v
+                if row.get("sale_price"):
+                    table[row["id"]]["on_sale"] = True
                 out.append(table[row["id"]])
             return JSONResponse({"update": out})
 
@@ -191,6 +197,10 @@ def build_fake_woo() -> Starlette:
             orders[oid]["status"] = (await request.json())["status"]
         return JSONResponse(orders[oid])
 
+    async def list_carts(request: Request):
+        since = time.time() - int(request.query_params.get("days", 20)) * 86400
+        return JSONResponse([c for c in carts if c["updated_at"] >= since and c["items"]])
+
     def page_of(rows: list, request: Request) -> list:
         per_page = int(request.query_params.get("per_page", 10))
         page = int(request.query_params.get("page", 1))
@@ -206,6 +216,7 @@ def build_fake_woo() -> Starlette:
                 methods=["DELETE"],
             ),
             Route("/wp-json/wc/v3/orders", guard(list_orders), methods=["GET"]),
+            Route("/wp-json/wc/v3/cart-recovery/carts", guard(list_carts), methods=["GET"]),
             Route(
                 "/wp-json/wc/v3/orders/{oid:int}",
                 guard(one_order),
@@ -230,6 +241,7 @@ def build_fake_woo() -> Starlette:
     )
     app.state.orders = orders
     app.state.products = products
+    app.state.carts = carts
     app.state.refunds = refunds
     app.state.flags = state
     app.state.used_keys = used_keys

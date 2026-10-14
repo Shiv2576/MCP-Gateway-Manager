@@ -1,6 +1,6 @@
 image:
   repository: dashboard
-  tag: "0.5.0"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 
 # The gateway Service that nginx forwards /api to.

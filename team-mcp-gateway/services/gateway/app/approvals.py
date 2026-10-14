@@ -38,6 +38,7 @@ POLL_SECONDS = 2
 REFUND_TOOL = "bulk_refund_orders"
 BUILTIN = "gateway"  # the server-name part of the built-in tools; no real server may take it
 NOTE_MAX = 500
+SUMMARY_MAX = 4000
 UNKNOWN_OUTCOME = ("The run did not finish (the gateway restarted?). Its outcome is unknown: "
                    "check the store before asking again.")
 
@@ -45,8 +46,9 @@ TOOLS = [
     Tool(
         name="gateway__request_approval",
         description=(
-            "[gateway] Ask an admin to approve one call that is over your hourly write budget. "
-            "Only for calls the budget refused; nothing changes until an admin approves. "
+            "[gateway] Ask an admin to approve one call that your write budget refused (over the hourly "
+            "budget, or a tool that needs approval for every call). Nothing changes until an admin approves; "
+            "then it runs by itself. "
             "Then call gateway__wait_for_approval with the id you get back."
         ),
         input_schema={
@@ -54,6 +56,11 @@ TOOLS = [
             "properties": {
                 "tool": {"type": "string", "description": "The full tool name, <server>__<tool>"},
                 "arguments": {"type": "object", "description": "The exact arguments to run it with"},
+                "summary": {
+                    "type": "string",
+                    "description": f"Optional, up to {SUMMARY_MAX} characters: your analysis and why this "
+                    "should run, shown to the admin next to the arguments",
+                },
             },
             "required": ["tool", "arguments"],
         },
@@ -103,14 +110,6 @@ def budget_for(conn, user: dict, gateway_slug: str, server_id: int, tool: str) -
     return row if row["n"] else None
 
 
-def has_budget(conn, user: dict, gateway_slug: str) -> bool:
-    """Whether the approval tools mean anything to this caller on this gateway."""
-    return user["role"] != "admin" and conn.execute(
-        "SELECT 1 FROM team_members tm JOIN team_budgets b ON b.team_id = tm.team_id"
-        " JOIN gateways g ON g.id = b.gateway_id WHERE tm.user_id = ? AND g.slug = ? LIMIT 1",
-        (user["id"], gateway_slug),
-    ).fetchone() is not None
-
 
 def measure(tool: str, arguments: dict) -> tuple[int, Decimal | None] | str:
     """Items this call changes, and the money it refunds; or why it cannot be counted."""
@@ -129,7 +128,9 @@ def measure(tool: str, arguments: dict) -> tuple[int, Decimal | None] | str:
 
 def describe(budget: dict) -> str:
     parts = []
-    if budget["max_items"] is not None:
+    if budget["max_items"] == 0:
+        parts.append("approval for every call")
+    elif budget["max_items"] is not None:
         parts.append(f"{budget['max_items']} items/hour")
     if budget["max_refund_total"] is not None:
         parts.append(f"{_money(budget['max_refund_total'])} refunded/hour")
@@ -184,6 +185,12 @@ def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool:
             over.append((f"{_money(max(limit - used, Decimal(0)))} of {_money(limit)} refund money",
                          _free_at(rows, "refund_total", used, total, limit), total > limit, "refunded"))
     if not over:
+        return out
+    if budget["max_items"] == 0:
+        out["refusal"] = (
+            f"{tool} needs an admin's approval for every call. Call gateway__request_approval with "
+            "{\"tool\": \"" + name + "\", \"arguments\": <the same arguments>, \"summary\": <why, for the admin>}."
+        )
         return out
     lines = []
     for left, free, never, unit in over:
@@ -253,9 +260,12 @@ async def builtin(ups, user: dict, gateway_slug: str, tool: str, arguments: dict
 
 def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | None):
     conn = ups.db
-    name, args = arguments.get("tool"), arguments.get("arguments")
+    name, args, summary = arguments.get("tool"), arguments.get("arguments"), arguments.get("summary")
     if not isinstance(name, str) or not isinstance(args, dict):
         return _text("Pass {\"tool\": \"<server>__<tool>\", \"arguments\": {...}}.", error=True), None, "bad input"
+    if summary is not None and not isinstance(summary, str):
+        return _text("summary must be text.", error=True), None, "bad input"
+    summary = (summary or "").strip()[:SUMMARY_MAX] or None
     server_name, sep, tool = name.partition(upstream.SEP)
     row = conn.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
     allowed = allowed_tools(conn, user, gateway_slug)
@@ -290,9 +300,9 @@ def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | N
                          error=True), locked["id"], "locked"
         aid = tx.execute(
             "INSERT INTO approvals (status, user_id, gateway, tool, arguments, items, refund_total, budget, client,"
-            " requested_at) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            " requested_at, summary) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (user["id"], gateway_slug, name, json.dumps(args), a["items"], a["refund_total"],
-             describe(a["budget"]), client, now),
+             describe(a["budget"]), client, now, summary),
         ).fetchone()["id"]
     money = f" refunding {_money(a['refund_total'])}" if a["refund_total"] is not None else ""
     return _text(
@@ -346,6 +356,7 @@ def _view(r: dict) -> dict:
         "items": r["items"], "refund_total": _money(r["refund_total"]), "budget": r["budget"],
         "preview": items[:20], "requested_at": r["requested_at"], "decided_by": r["decided_by_name"],
         "decided_at": r["decided_at"], "finished_at": r["finished_at"], "note": r["note"], "audit_id": r["audit_id"],
+        "summary": r["summary"],
         "outcome": _outcome(r["result"]),
     }
 

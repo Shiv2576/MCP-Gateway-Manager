@@ -40,6 +40,11 @@ class Settings:
     mcp_auth_token: str
     # Timezone used to turn "today" into a date range.
     store_timezone: str
+    # Cart recovery offers: limits enforced in code, whatever the agent proposes.
+    min_margin: float = 0.10  # a sale price must stay at least this far above cost
+    max_discount_pct: int = 40
+    max_offer_days: int = 14
+    cart_window_days: int = 20  # a product must sit in a cart changed this recently
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -69,4 +74,8 @@ class Settings:
             woo_timeout_s=float(os.environ.get("WOO_TIMEOUT_S", "10")),
             mcp_auth_token=token,
             store_timezone=os.environ.get("STORE_TIMEZONE", "Asia/Kolkata"),
+            min_margin=float(os.environ.get("MIN_MARGIN", cls.min_margin)),
+            max_discount_pct=int(os.environ.get("MAX_DISCOUNT_PCT", cls.max_discount_pct)),
+            max_offer_days=int(os.environ.get("MAX_OFFER_DAYS", cls.max_offer_days)),
+            cart_window_days=int(os.environ.get("CART_WINDOW_DAYS", cls.cart_window_days)),
         )

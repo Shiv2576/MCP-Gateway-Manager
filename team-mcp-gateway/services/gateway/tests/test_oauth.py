@@ -119,7 +119,7 @@ def test_oauth_flow(db_url):
             # API keys still work next to OAuth.
             key = (await bob.post("/api/keys", json={"name": "cli"})).json()["key"]
             async with gateway_client(gw, key) as mcp:
-                assert len((await mcp.list_tools()).tools) == 2
+                assert len((await mcp.list_tools()).tools) == 4  # 2 notes tools + the gateway's 2 approval tools
 
             # Disconnect ends access on the next call.
             r = await bob.delete(f"/api/oauth/connections/{bob_id}/{client['client_id']}")

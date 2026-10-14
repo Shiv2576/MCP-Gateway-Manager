@@ -135,6 +135,9 @@ def credentials_secret() -> dict:
             "WOO_CONSUMER_KEY": "ck_" + secrets.token_hex(20),
             "WOO_CONSUMER_SECRET": "cs_" + secrets.token_hex(20),
             "MCP_AUTH_TOKEN": secrets.token_urlsafe(32),
+            # Login for catalog-b's synthetic shoppers (seed.php), to see their carts.
+            # shortcut: one known demo password, replace with a random one before a public demo.
+            "SHOPPER_PASSWORD": "test123",
         },
     }
 

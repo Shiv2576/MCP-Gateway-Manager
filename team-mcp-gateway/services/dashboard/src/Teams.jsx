@@ -3,8 +3,10 @@ import { api } from './api.js'
 
 const key = (serverId, tool) => `${serverId}:${tool}`
 const REFUND_TOOL = 'bulk_refund_orders' // the one tool with a money budget too
+const isSet = (v) => v !== '' && v != null // 0 is a budget: approval for every call
 const budgetText = (b) =>
-  b && [b.max_items && `${b.max_items} items/h`, b.max_refund_total && `${b.max_refund_total} refunded/h`].filter(Boolean).join(', ')
+  b && [isSet(b.max_items) && (Number(b.max_items) === 0 ? 'approval for every call' : `${b.max_items} items/h`),
+    b.max_refund_total && `${b.max_refund_total} refunded/h`].filter(Boolean).join(', ')
 
 // One team, read-only: members and, per gateway, the tools it allows.
 function TeamView({ team }) {
@@ -46,7 +48,7 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
       g.slug,
       Object.fromEntries((team.budgets?.[g.slug] || []).map((b) => [
         key(b.server_id, b.tool),
-        { max_items: b.max_items ? String(b.max_items) : '', max_refund_total: b.max_refund_total || '' },
+        { max_items: isSet(b.max_items) ? String(b.max_items) : '', max_refund_total: b.max_refund_total || '' },
       ])),
     ]),
   )
@@ -79,13 +81,13 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
       for (const g of gateways) {
         // Only tools still allowed keep a budget.
         const rows = Object.entries(budgets[g.slug])
-          .filter(([k, b]) => picks[g.slug].has(k) && (b?.max_items || b?.max_refund_total))
+          .filter(([k, b]) => picks[g.slug].has(k) && (isSet(b?.max_items) || b?.max_refund_total))
           .map(([k, b]) => {
             const i = k.indexOf(':')
             return {
               server_id: Number(k.slice(0, i)),
               tool: k.slice(i + 1),
-              max_items: b.max_items ? Number(b.max_items) : null,
+              max_items: isSet(b.max_items) ? Number(b.max_items) : null,
               max_refund_total: b.max_refund_total || null,
             }
           })
@@ -149,9 +151,9 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
                         </label>
                         {picks[g.slug].has(k) && (
                           <>
-                            <input className="budget" type="number" min="1" step="1" placeholder="items / hour"
-                              aria-label={`${t}: items per hour`} title="Write budget: items per member per rolling hour. Empty = no budget."
-                              value={b.max_items || ''} onChange={(e) => setBudget(g.slug, k, 'max_items', e.target.value)} />
+                            <input className="budget" type="number" min="0" step="1" placeholder="items / hour"
+                              aria-label={`${t}: items per hour`} title="Write budget: items per member per rolling hour. 0 = every call needs approval. Empty = no budget."
+                              value={b.max_items ?? ''} onChange={(e) => setBudget(g.slug, k, 'max_items', e.target.value)} />
                             {t === REFUND_TOOL && (
                               <input className="budget" type="number" min="0.01" step="0.01" placeholder="money / hour"
                                 aria-label={`${t}: money refunded per hour`} title="Refund money per member per rolling hour. Empty = no money budget."

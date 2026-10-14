@@ -86,7 +86,7 @@ class World:
         ])
         self.edge = self._stack.enter_context(serve(create_app(edge_settings(self.db_url, "main", calls_per_minute=1000))))
         self.conn = store.connect(self.db_url, create_schema=False)
-        await wait_tools(self.edge, self.bob, 5)
+        await wait_tools(self.edge, self.bob, 3)
         return self
 
     async def __aexit__(self, *exc):
@@ -173,7 +173,12 @@ def test_strictest_budget_admins_and_unbudgeted(db_url):
             await put_budgets(w.admin, w.team, [])
             await put_budgets(w.admin, t2, [])
             assert not (await w.call(w.bob, DESC, items(100)))[0]
-            assert await wait_tools(w.edge, w.bob, 3) == {DESC, REFUND, STATUS}  # no budget, no approval tools
+            # No budget left, yet the approval tools stay listed: clients keep the list they connected with.
+            async with gateway_client(w.edge, w.bob) as mcp:
+                names = {t.name for t in (await mcp.list_tools()).tools}
+            assert names == {DESC, REFUND, STATUS, "gateway__request_approval", "gateway__wait_for_approval"}
+            err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": DESC, "arguments": items(100)})
+            assert err and "needs no approval" in msg
 
     asyncio.run(run())
 
@@ -315,12 +320,34 @@ def test_approve_rechecks_policy_and_who_decides(db_url):
     asyncio.run(run())
 
 
+def test_budget_zero_means_approval_for_every_call(db_url):
+    async def run():
+        async with World(db_url) as w:
+            await put_budgets(w.admin, w.team, [{"server_id": w.sid, "tool": "update_order_status", "max_items": 0}])
+            # Even one item is refused, from any client, and points at approval.
+            err, msg = await w.call(w.bob, STATUS, {"order_id": 1})
+            assert err and "needs an admin's approval for every call" in msg and "summary" in msg, msg
+            assert w.calls == []
+            err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": STATUS, "arguments": {"order_id": 1}, "summary": 7})
+            assert err and "summary must be text" in msg
+            err, msg = await w.call(w.bob, "gateway__request_approval",
+                                    {"tool": STATUS, "arguments": {"order_id": 1}, "summary": "  Deodorant: 80 carts.  "})
+            assert not err and "Approval #1 requested" in msg, msg
+            [card] = (await w.admin.get("/api/approvals?status=pending")).json()
+            assert (card["summary"], card["budget"]) == ("Deodorant: 80 carts.", "approval for every call")
+            r = await w.admin.post("/api/approvals/1/approve", json={})
+            assert r.json()["status"] == "executed" and w.calls == [("status", 1)]
+            [team] = (await w.admin.get("/api/teams")).json()
+            assert [b["max_items"] for b in team["budgets"]["main"]] == [0]
+
+    asyncio.run(run())
+
+
 def test_budgets_api_validates(db_url):
     async def run():
         async with World(db_url) as w:
             bad = [
                 {"server_id": 999, "tool": "bulk_update_product_descriptions", "max_items": 5},
-                {"server_id": w.sid, "tool": "bulk_update_product_descriptions", "max_items": 0},
                 {"server_id": w.sid, "tool": "bulk_update_product_descriptions", "max_items": -3},
                 {"server_id": w.sid, "tool": "bulk_update_product_descriptions", "max_items": 2.5},
                 {"server_id": w.sid, "tool": "bulk_update_product_descriptions", "max_refund_total": "100"},

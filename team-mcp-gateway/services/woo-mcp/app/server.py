@@ -1,4 +1,5 @@
-"""The MCP tools: six things an agent may do to the store, six reports, four bulk writes.
+"""The MCP tools: six things an agent may do to the store, six reports, four bulk writes,
+and cart recovery (abandoned-cart facts, and sale offers that need an admin's approval).
 
 The first six are thin, typed wrappers over one WooCommerce REST call. The
 reports page through orders or products and add them up here, so dates follow
@@ -9,9 +10,10 @@ reads when it decides which tool to call, so they are written for the model.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -22,6 +24,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, model_validator
 
+from .config import Settings
 from .woo import WooClient, WooError
 
 OrderStatus = Literal[
@@ -257,12 +260,51 @@ class ItemResult(BaseModel):
     id: int
     ok: bool
     error: str | None = None
+    detail: str | None = None
 
 
 class BulkResult(BaseModel):
     ok: int = Field(description="Items that succeeded")
     failed: int = Field(description="Items that failed")
     results: list[ItemResult]
+
+
+# Cart recovery. The store plugin (charts/store/files/cart-recovery.php) lists carts;
+# costs come from WooCommerce's own Cost of Goods Sold field.
+class CartProduct(BaseModel):
+    product_id: int
+    name: str | None
+    regular_price: str
+    cogs: str | None = Field(description="Cost of goods per unit; null when the store has none")
+    margin_pct: float | None = Field(description="(regular_price - cogs) / regular_price, in percent")
+    on_sale: bool = Field(description="Already on sale; create_cart_offers will not stack a second discount")
+    carts: int = Field(description="Abandoned carts holding it")
+    units: int = Field(description="Units across those carts")
+    cart_value: str = Field(description="regular_price x units")
+    max_discount_pct: int = Field(
+        description="Highest whole-percent discount that keeps the price at least min_margin_pct above cost, "
+        "capped by the store's limit; 0 when cost is unknown or the margin is already thin"
+    )
+
+
+class AbandonedCarts(BaseModel):
+    days: int
+    carts: int = Field(description="Abandoned carts in the window")
+    value: str = Field(description="Their total value at regular prices")
+    min_margin_pct: float = Field(description="A sale price must stay at least this far above cost")
+    products: list[CartProduct] = Field(description="Highest cart_value first")
+    truncated: bool = Field(description="True if more products were in carts than were listed")
+
+
+class OfferItem(BaseModel):
+    model_config = {"extra": "forbid"}
+    product_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=200, description="Copied from get_abandoned_carts")
+    regular_price: Money
+    cogs: Money
+    discount_pct: int = Field(ge=1, le=100, description="Whole percent off the regular price")
+    sale_price: Money
+    ends_in_days: int = Field(ge=1, le=90, description="The sale ends this many days from when it runs")
 
 
 def Items(model: type[BaseModel]) -> Any:
@@ -339,14 +381,16 @@ def _order(o: dict[str, Any], *, full: bool = False) -> OrderSummary:
     return Order(**out) if full else OrderSummary(**out)
 
 
-def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
+def build_server(woo: WooClient, settings: Settings) -> MCPServer:
+    store_timezone = settings.store_timezone
+    min_margin = Decimal(str(settings.min_margin))
     server = MCPServer(
         "woocommerce",
         title="WooCommerce store",
         instructions=(
             "Tools for one WooCommerce store: its products, its orders, and "
             "reports over them (sales, refunds, best sellers, stock, product quality, "
-            "customer history). "
+            "customer history), and cart recovery (abandoned carts and sale offers). "
             "Prices and totals are strings in the store currency."
         ),
         version="0.1.0",
@@ -787,5 +831,151 @@ def build_server(woo: WooClient, store_timezone: str) -> MCPServer:
             for i, it in enumerate(items):
                 tg.start_soon(run, i, it)
         return _bulk(results)
+
+    # ---------------------------------------------------------- cart recovery
+
+    async def products_by_id(ids: set[int]) -> dict[int, dict]:
+        out: dict[int, dict] = {}
+        ordered = sorted(ids)
+        for i in range(0, len(ordered), PER_PAGE):
+            chunk = ordered[i : i + PER_PAGE]
+            rows = await call("GET", "/products", params={"include": ",".join(map(str, chunk)), "per_page": PER_PAGE})
+            out.update({p["id"]: p for p in rows})
+        return out
+
+    def cogs_of(p: dict) -> Decimal | None:
+        value = (p.get("cost_of_goods_sold") or {}).get("total_value")
+        cost = Decimal(str(value)) if value not in (None, "") else None
+        return cost if cost and cost > 0 else None  # Woo reports an unset cost as 0
+
+    def floor_of(cost: Decimal) -> Decimal:
+        return cost * (1 + min_margin)
+
+    def max_discount(price: Decimal, cost: Decimal | None) -> int:
+        if cost is None or price <= 0:
+            return 0
+        return max(0, min(math.floor((1 - floor_of(cost) / price) * 100), settings.max_discount_pct))
+
+    @server.tool(title="Abandoned carts", annotations=READ)
+    async def get_abandoned_carts(
+        days: Annotated[int, Field(ge=1, le=90, description="Carts last changed within this many days")] = 20,
+        limit: Annotated[int, Field(ge=1, le=100, description="How many products to return")] = 20,
+    ) -> AbandonedCarts:
+        """Products sitting in logged-in customers' abandoned carts, with the facts to decide a
+        discount: price, cost of goods, margin, how many carts hold it, and max_discount_pct, the
+        highest discount that keeps the price at least min_margin_pct above cost. No customer data.
+        To discount products, call create_cart_offers; every offer needs an admin's approval."""
+        carts = await call("GET", "/cart-recovery/carts", params={"days": days})
+        n_carts: dict[int, int] = defaultdict(int)
+        units: dict[int, int] = defaultdict(int)
+        for cart in carts:
+            for line in cart.get("items") or []:
+                units[line["product_id"]] += line.get("quantity") or 0
+            for pid in {line["product_id"] for line in cart.get("items") or []}:
+                n_carts[pid] += 1
+        products = await products_by_id(set(n_carts))
+        rows = []
+        for pid, p in products.items():
+            price = Decimal(p.get("regular_price") or "0")
+            cost = cogs_of(p)
+            rows.append(CartProduct(
+                product_id=pid,
+                name=p.get("name"),
+                regular_price=_money(price),
+                cogs=cost and _money(cost),
+                margin_pct=round(float((price - cost) / price * 100), 1) if cost and price else None,
+                on_sale=bool(p.get("on_sale")),
+                carts=n_carts[pid],
+                units=units[pid],
+                cart_value=_money(price * units[pid]),
+                max_discount_pct=max_discount(price, cost),
+            ))
+        rows.sort(key=lambda r: Decimal(r.cart_value), reverse=True)
+        return AbandonedCarts(
+            days=days,
+            carts=len(carts),
+            value=_money(sum((Decimal(r.cart_value) for r in rows), Decimal(0))),
+            min_margin_pct=float(min_margin * 100),
+            products=rows[:limit],
+            truncated=len(rows) > limit,
+        )
+
+    @server.tool(title="Create cart recovery offers", annotations=WRITE)
+    async def create_cart_offers(items: Items(OfferItem)) -> BulkResult:
+        """Put products from abandoned carts on sale for a few days; the sale ends by itself.
+        Every call needs an admin's approval: when the gateway refuses it, call
+        gateway__request_approval with the same arguments and a `summary` of your analysis,
+        then tell the user the approval id (the offer runs when approved, whether or not you wait).
+        Per item: copy product_id, name, regular_price and cogs from get_abandoned_carts; pick
+        discount_pct <= max_discount_pct; sale_price = regular_price x (1 - discount_pct/100),
+        rounded UP to 2 decimals. When it runs, every number is checked against the store and an
+        item that does not match, is under the cost floor, is already on sale or is in no recent
+        cart is refused with the reason; the others still go on sale."""
+        ids = [it.product_id for it in items]
+        if len(set(ids)) != len(ids):
+            raise ToolError("Each product may appear only once per call")
+        window = settings.cart_window_days
+        in_carts = {
+            line["product_id"]
+            for cart in await call("GET", "/cart-recovery/carts", params={"days": window})
+            for line in cart.get("items") or []
+        }
+        store = await products_by_id(set(ids))
+
+        def refusal(it: OfferItem) -> str | None:
+            p = store.get(it.product_id)
+            if p is None:
+                return "product not found"
+            price, cost, sale = Decimal(p.get("regular_price") or "0"), cogs_of(p), Decimal(it.sale_price)
+            if p.get("name") != it.name:
+                return f"the store's name is {p.get('name')!r}, not {it.name!r}"
+            if price != Decimal(it.regular_price):
+                return f"the store's regular price is {_money(price)}, not {it.regular_price}"
+            if cost is None:
+                return "the product has no cost of goods in the store, so no price floor can be checked"
+            if cost != Decimal(it.cogs):
+                return f"the store's cost of goods is {_money(cost)}, not {it.cogs}"
+            if p.get("on_sale"):
+                return "already on sale; discounts are not stacked"
+            if it.product_id not in in_carts:
+                return f"no cart changed in the last {window} days holds it"
+            if it.ends_in_days > settings.max_offer_days:
+                return f"ends_in_days must be 1 to {settings.max_offer_days}"
+            if sale >= price:
+                return "sale_price must be below the regular price"
+            floor = floor_of(cost)
+            if sale < floor:
+                return f"sale_price is under the floor {floor.quantize(Decimal('0.01'), ROUND_CEILING)} (cost + {min_margin * 100:g}%)"
+            actual = (1 - sale / price) * 100
+            if actual > settings.max_discount_pct:
+                return f"a {actual:.1f}% discount is over the store's limit of {settings.max_discount_pct}%"
+            if abs(actual - it.discount_pct) > 1:
+                return f"sale_price {it.sale_price} is a {actual:.1f}% discount, not {it.discount_pct}%"
+            return None
+
+        results: dict[int, ItemResult] = {}
+        passing = []
+        for it in items:
+            why = refusal(it)
+            if why:
+                results[it.product_id] = ItemResult(id=it.product_id, ok=False, error=why)
+            else:
+                passing.append(it)
+        if passing:
+            now = datetime.now(timezone.utc)
+            ends = {it.product_id: (now + timedelta(days=it.ends_in_days)).strftime("%Y-%m-%dT%H:%M:%S") for it in passing}
+            sales = {it.product_id: it.sale_price for it in passing}
+            done = await batch(
+                "/products",
+                [it.product_id for it in passing],
+                # No start date: the sale starts at once. WooCommerce ends it on its own.
+                [{"id": it.product_id, "sale_price": it.sale_price, "date_on_sale_to_gmt": ends[it.product_id]}
+                 for it in passing],
+            )
+            for r in done.results:
+                if r.ok:
+                    r.detail = f"on sale at {sales[r.id]} until {ends[r.id]} UTC"
+                results[r.id] = r
+        return _bulk([results[i] for i in ids])
 
     return server

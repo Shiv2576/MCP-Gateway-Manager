@@ -1,3 +1,38 @@
 .context.html
 .superpowers
 .claude
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.log
+
+# Helm dependency archives
+team-mcp-gateway/charts/*/charts/
+*.local.yaml

@@ -17,6 +17,9 @@ wp rewrite structure '/%postname%/'
 
 wp plugin is-installed woocommerce || wp plugin install woocommerce
 wp plugin activate woocommerce
+# Abandoned carts for woo-mcp (see the file). Before seeding, which uses it.
+mkdir -p /app/wp-content/mu-plugins
+cp /setup/cart-recovery.php /app/wp-content/mu-plugins/cart-recovery.php
 wp wc tool run install_pages --user=1
 # Home page = the shop's product list.
 wp option update show_on_front page
@@ -24,6 +27,8 @@ wp option update page_on_front "$(wp option get woocommerce_shop_page_id)"
 # New WooCommerce stores start in "coming soon" mode and hide the shop.
 wp option update woocommerce_coming_soon no
 wp option update woocommerce_currency "$CURRENCY"
+# Cost of Goods Sold (WooCommerce 10+): the product cost field, used by the cart recovery tools.
+wp option update woocommerce_feature_cost_of_goods_sold_enabled yes
 wp option update woocommerce_default_country "$COUNTRY"
 wp option update woocommerce_cod_settings --format=json \
   '{"enabled":"yes","title":"Cash on delivery","description":"Pay with cash upon delivery.","instructions":"Pay with cash upon delivery.","enable_for_methods":[],"enable_for_virtual":"yes"}'

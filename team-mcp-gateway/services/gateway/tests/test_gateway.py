@@ -109,11 +109,12 @@ def edge_settings(db_url: str, slug: str, **kw) -> Settings:
 
 
 async def wait_tools(url: str, key: str, n: int, timeout: float = 5) -> set[str]:
-    """An edge lists a newly attached server once its own health loop has checked it."""
+    """An edge lists a newly attached server once its own health loop has checked it.
+    The gateway's own approval tools (listed to every member) are left out."""
     deadline = time.time() + timeout
     while True:
         async with gateway_client(url, key) as mcp:
-            names = {t.name for t in (await mcp.list_tools()).tools}
+            names = {t.name for t in (await mcp.list_tools()).tools if not t.name.startswith("gateway__")}
         if len(names) >= n:
             return names
         assert time.time() < deadline, names
@@ -264,6 +265,7 @@ def test_the_whole_gateway(db_url):
                     "notes__save_note", "notes__list",
                     "fx__convert", "fx__list",
                     "slow__list",
+                    "gateway__request_approval", "gateway__wait_for_approval",
                 }
 
                 # Routed to the right server, even with the same upstream name.
