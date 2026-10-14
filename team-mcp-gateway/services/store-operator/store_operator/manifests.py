@@ -3,6 +3,7 @@ decisions it makes. No Kubernetes calls here, so it is all unit tested."""
 
 from __future__ import annotations
 
+import os
 import secrets
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -24,6 +25,13 @@ TIMEOUT_S = 15 * 60
 # 169.254.0.0/16 is cloud instance metadata (node credentials).
 CLUSTER_CIDRS = ["10.42.0.0/16", "10.43.0.0/16", "169.254.0.0/16"]
 
+# Where stores (<name>.BASE) and edges (<slug>.gw.BASE) are served. Local k3d:
+# localhost over http. VPS: e.g. 203-0-113-7.sslip.io over https, each Ingress
+# getting its own certificate from this cert-manager ClusterIssuer.
+BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "localhost")
+SCHEME = os.environ.get("URL_SCHEME", "http")
+CLUSTER_ISSUER = os.environ.get("CLUSTER_ISSUER", "")
+
 WORDPRESS = {"app.kubernetes.io/name": "wordpress"}
 MARIADB = {"app.kubernetes.io/name": "mariadb"}
 WOO_MCP = {"app.kubernetes.io/name": "woo-mcp"}
@@ -34,7 +42,7 @@ def namespace_name(store: str) -> str:
 
 
 def store_url(store: str) -> str:
-    return f"http://{store}.localhost"
+    return f"{SCHEME}://{store}.{BASE_DOMAIN}"
 
 
 def mcp_url(store: str) -> str:
@@ -138,17 +146,20 @@ def credentials_secret() -> dict:
             # Login for catalog-b's synthetic shoppers (seed.php), to see their carts.
             # shortcut: one known demo password, replace with a random one before a public demo.
             "SHOPPER_PASSWORD": "test123",
+            # WordPress admin login; the Bitnami chart reads it via existingSecret.
+            "wordpress-password": secrets.token_urlsafe(12),
         },
     }
 
 
 def store_values(store: str, template: str) -> dict:
-    return {
+    values = {
         "setup": {"template": template, "hook": False},
         "wordpress": {
             "wordpressBlogName": store,
+            "existingSecret": "woo-mcp-credentials",
             "priorityClassName": STORE_PRIORITY,
-            "ingress": {"hostname": f"{store}.localhost"},
+            "ingress": {"hostname": f"{store}.{BASE_DOMAIN}"},
             # Bitnami's policies allow all ingress; allows add up, so they would undo ours.
             "networkPolicy": {"enabled": False},
             "persistence": {"size": "1Gi"},
@@ -162,6 +173,14 @@ def store_values(store: str, template: str) -> dict:
             },
         },
     }
+    wordpress = values["wordpress"]
+    if SCHEME == "https":
+        # Bitnami writes WP_HOME = <scheme>://<hostname> on first install; it must equal store_url.
+        wordpress["wordpressScheme"] = "https"
+    if CLUSTER_ISSUER:
+        # Bitnami adds tls: with secret <hostname>-tls; cert-manager fills it.
+        wordpress["ingress"].update(tls=True, annotations={"cert-manager.io/cluster-issuer": CLUSTER_ISSUER})
+    return values
 
 
 def woo_mcp_values(store: str, gateway_namespace: str) -> dict:
@@ -207,7 +226,7 @@ def edge_release(slug: str) -> str:
 
 
 def edge_url(slug: str) -> str:
-    return f"http://{slug}.gw.localhost"
+    return f"{SCHEME}://{slug}.gw.{BASE_DOMAIN}"
 
 
 def edge_values(slug: str, spec: dict, image_tag: str) -> dict:
@@ -217,11 +236,156 @@ def edge_values(slug: str, spec: dict, image_tag: str) -> dict:
         "slug": slug,
         "replicas": 2,
         "image": {"tag": image_tag},
-        "ingress": {"host": f"{slug}.gw.localhost"},
+        "ingress": {"host": f"{slug}.gw.{BASE_DOMAIN}"},
         "stores": {"enabled": False},
     }
+    if (BASE_DOMAIN, SCHEME) != ("localhost", "http"):
+        values.update(baseDomain=BASE_DOMAIN, urlScheme=SCHEME)
+    if CLUSTER_ISSUER:
+        values["ingress"]["clusterIssuer"] = CLUSTER_ISSUER
     if spec.get("publicUrl"):
         values["publicUrl"] = spec["publicUrl"]
         # A tunnel or proxy in front sends the public Host header; route it too.
-        values["ingress"]["extraHosts"] = [urlsplit(spec["publicUrl"]).hostname]
+        public_host = urlsplit(spec["publicUrl"]).hostname
+        if public_host != values["ingress"]["host"]:
+            values["ingress"]["extraHosts"] = [public_host]
     return values
+
+
+# ------------------------------------------------------------ hosted servers
+# A HostedServer is any MCP image speaking streamable HTTP, run in its own
+# namespace mcp-<name>: quota, deny-all NetworkPolicies, a Deployment and a
+# Service "mcp". Only gateway pods may connect; it may reach DNS and the internet.
+
+HOSTED_PLURAL = "hostedservers"
+HOSTED_LABEL = f"{GROUP}/hosted"
+HOSTED_APP = {"app.kubernetes.io/name": "hosted-mcp"}
+HOSTED_SECRET = "hosted-mcp-token"
+HOSTED_TIMEOUT_S = 5 * 60
+HOSTED_RESOURCES = {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "512Mi"}}
+
+
+def hosted_namespace_name(name: str) -> str:
+    return f"mcp-{name}"
+
+
+def hosted_url(name: str, spec: dict) -> str:
+    return f"http://mcp.{hosted_namespace_name(name)}.svc.cluster.local:{spec['port']}{spec['path']}"
+
+
+def hosted_namespace(name: str, owner_id: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": hosted_namespace_name(name), "labels": {OWNER_LABEL: owner_id, HOSTED_LABEL: name}},
+    }
+
+
+def owns_hosted_namespace(ns: dict, name: str) -> bool:
+    return (ns.get("metadata", {}).get("labels") or {}).get(HOSTED_LABEL) == name
+
+
+def hosted_quota() -> dict:
+    # One pod 50m/128Mi, room for a rolling restart.
+    return {
+        "apiVersion": "v1",
+        "kind": "ResourceQuota",
+        "metadata": {"name": "hosted-quota"},
+        "spec": {"hard": {
+            "requests.cpu": "500m", "requests.memory": "1Gi", "limits.memory": "2Gi",
+            "persistentvolumeclaims": "0", "pods": "4", "services.loadbalancers": "0", "services.nodeports": "0",
+        }},
+    }
+
+
+def hosted_network_policies(spec: dict, gateway_namespace: str) -> list[dict]:
+    kube_system = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}
+    from_gateway = {
+        "podSelector": {"matchLabels": {"app.kubernetes.io/name": "gateway"}},  # control plane and edges
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": gateway_namespace}},
+    }
+    internet = {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": CLUSTER_CIDRS}}], "ports": _tcp(80) + _tcp(443)}
+    return [
+        {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "default-deny"},
+         "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}},
+        _policy("allow-dns", {}, egress=[{"to": [kube_system], "ports": [{"protocol": "UDP", "port": 53}, *_tcp(53)]}]),
+        _policy("gateway-ingress", HOSTED_APP, ingress=[{"from": [from_gateway], "ports": _tcp(spec["port"])}]),
+        # Vendor servers call their own APIs (api.github.com, ...); never the cluster.
+        _policy("internet-egress", HOSTED_APP, egress=[internet]),
+    ]
+
+
+def hosted_limits() -> dict:
+    """What the namespace and container are held to, for the dashboard."""
+    return {"quota": hosted_quota()["spec"]["hard"], "container": HOSTED_RESOURCES}
+
+
+def hosted_secret(spec: dict) -> dict | None:
+    """The token the gateway sends and the container checks; None when the server takes none."""
+    if not spec.get("tokenEnv"):
+        return None
+    return {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": HOSTED_SECRET},
+            "stringData": {"token": secrets.token_urlsafe(32)}}
+
+
+def hosted_deployment(spec: dict) -> dict:
+    env = [{"name": k, "value": v} for k, v in sorted((spec.get("env") or {}).items())]
+    if spec.get("tokenEnv"):
+        env.append({"name": spec["tokenEnv"],
+                    "valueFrom": {"secretKeyRef": {"name": HOSTED_SECRET, "key": "token"}}})
+    container = {
+        "name": "mcp",
+        "image": spec["image"],
+        "args": spec.get("args") or [],
+        "env": env,
+        "ports": [{"name": "mcp", "containerPort": spec["port"]}],
+        # TCP, not HTTP: we know the port, not what each image answers on GET.
+        "readinessProbe": {"tcpSocket": {"port": spec["port"]}, "periodSeconds": 5},
+        "resources": HOSTED_RESOURCES,
+        # Not runAsNonRoot: many published images run as root and would never start.
+        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+    }
+    if not container["args"]:
+        del container["args"]  # keep the image's own CMD
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": "mcp", "labels": HOSTED_APP},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": HOSTED_APP},
+            "template": {
+                "metadata": {"labels": HOSTED_APP},
+                "spec": {
+                    "automountServiceAccountToken": False,  # third-party code gets no cluster API access
+                    "enableServiceLinks": False,
+                    "priorityClassName": STORE_PRIORITY,
+                    "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
+                    "containers": [container],
+                },
+            },
+        },
+    }
+
+
+def hosted_service(spec: dict) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "mcp", "labels": HOSTED_APP},
+        "spec": {"selector": HOSTED_APP, "ports": [{"name": "mcp", "port": spec["port"], "targetPort": spec["port"]}]},
+    }
+
+
+# Waiting reasons that will not fix themselves: report them instead of a bare timeout.
+STUCK = {"ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CrashLoopBackOff", "CreateContainerConfigError"}
+
+
+def hosted_progress(ready: bool, waiting: list[tuple[str, str]]) -> tuple[str, str]:
+    """waiting: (reason, message) of each waiting container."""
+    if ready:
+        return "ready", ""
+    for reason, message in waiting:
+        if reason in STUCK:
+            return "waiting", f"{reason}: {message}"[:300]
+    return "waiting", "waiting for the pod"

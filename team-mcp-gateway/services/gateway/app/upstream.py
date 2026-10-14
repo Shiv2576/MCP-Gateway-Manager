@@ -129,6 +129,7 @@ class Upstreams:
         list_timeout: float,
         refresh_interval: float,
         calls_per_minute: int = 20,
+        default_items_per_hour: int = 20,
         gateway_slug: str | None = None,
         vault=None,
         approval_timeout: float = 120,
@@ -138,6 +139,7 @@ class Upstreams:
         self.list_timeout = list_timeout
         self.refresh_interval = refresh_interval
         self.calls_per_minute = calls_per_minute
+        self.default_items_per_hour = default_items_per_hour
         self.gateway_slug = gateway_slug
         self.vault = vault
         self.approval_timeout = approval_timeout
@@ -202,8 +204,14 @@ class Upstreams:
                 log.exception("refresh failed")
             await asyncio.sleep(self.refresh_interval)
 
+    def read_only(self, server_id: int, tool: str) -> bool:
+        """The upstream marks this tool read-only (MCP readOnlyHint). Unknown or not yet
+        listed tools count as writes, so a budget never lapses while a server is down."""
+        return any(t.name == tool and t.annotations is not None and t.annotations.read_only_hint
+                   for t in self.status.get(server_id, Status()).tools)
+
     def _over_limit(self, user_id: int) -> bool:
-        """60 calls a minute per user across the whole organization: every pod,
+        """calls_per_minute calls a minute per user across the whole organization: every pod,
         gateway and key counts against the same row."""
         # shortcut: fixed one-minute windows, so up to 2x the limit can land around a
         # minute boundary; switch to a sliding window if that matters.
@@ -316,7 +324,10 @@ class Upstreams:
             result = error_result(f"Server '{server_name}' is disabled.")
         elif approval_id is None and (over := approvals.charge(
                 self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
-            result = error_result(over)
+            # Over budget: ask an admin right away. request() keeps one open request per member
+            # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
+            filed, _, code = approvals.request(self, user, gateway_slug, {"tool": name, "arguments": arguments or {}}, client)
+            result = error_result(over if code == "bad input" else f"{over} {filed.content[0].text}")
         else:
             headers, identity, refusal = self._credential(user, gateway_slug, row)
             if refusal:

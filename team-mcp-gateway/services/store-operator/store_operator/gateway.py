@@ -1,4 +1,4 @@
-"""Registers store MCP servers in the gateway through its admin API."""
+"""Registers store and hosted MCP servers in the gateway through its admin API."""
 
 from __future__ import annotations
 
@@ -27,13 +27,20 @@ class Gateway:
     def _find(self, name: str) -> dict | None:
         return next((s for s in self._call("GET", "/api/servers") if s["name"] == name), None)
 
-    def upsert_server(self, name: str, url: str, token: str) -> None:
-        body = {"url": url, "auth": {"type": "bearer", "token": token}, "enabled": True}
+    def upsert_server(self, name: str, url: str, token: str | None,
+                      header: str = "Authorization", store: str | None = None) -> None:
+        if token is None:
+            auth = {"type": "none"}
+        elif header.lower() == "authorization":
+            auth = {"type": "bearer", "token": token}
+        else:
+            auth = {"type": "header", "name": header, "value": token}
+        body = {"url": url, "auth": auth, "enabled": True}
         existing = self._find(name)
         if existing:
             self._call("PATCH", f"/api/servers/{existing['id']}", body)
         else:
-            self._call("POST", "/api/servers", {"name": name, "store": name, **body})
+            self._call("POST", "/api/servers", {"name": name, "store": store, **body})
 
     def delete_server(self, name: str) -> None:
         existing = self._find(name)

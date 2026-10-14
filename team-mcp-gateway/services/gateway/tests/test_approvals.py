@@ -8,6 +8,7 @@ import time
 
 import httpx2
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from tests import KEY
 from app import approvals
@@ -42,6 +43,11 @@ def build_shop(calls: list) -> MCPServer:
     async def status(order_id: int) -> str:
         calls.append(("status", 1))
         return "ok"
+
+    @server.tool(name="list_orders", annotations=ToolAnnotations(read_only_hint=True))
+    async def list_orders() -> str:
+        calls.append(("list", 1))
+        return "[]"
 
     return server
 
@@ -112,7 +118,9 @@ def test_budget_counts_items_in_a_rolling_hour(db_url):
             assert await w.call(w.bob, DESC, items(1)) == (False, "updated 1")
             err, msg = await w.call(w.bob, DESC, items(1))
             assert err and "Budget: 0 of 20 items left" in msg and "19 free up at" in msg, msg
-            assert "gateway__request_approval" in msg and w.approvals() == []
+            assert "Approval #1 requested" in msg and len(w.approvals()) == 1  # filed by the refusal itself
+            err, msg = await w.call(w.bob, DESC, items(1))  # retrying files nothing new
+            assert err and "Approval #1 for shop__bulk_update_product_descriptions is still open" in msg, msg
             assert w.calls == [("desc", 19), ("desc", 1)]
 
             # Carol has her own budget; another tool is counted apart.
@@ -153,6 +161,9 @@ def test_budget_counts_items_in_a_rolling_hour(db_url):
             row = w.conn.execute("SELECT items, refund_total FROM audit_log WHERE tool = ? AND ok = 1 AND user_id = ?",
                                  (REFUND, w.carol_id)).fetchone()
             assert (row["items"], str(row["refund_total"])) == (1, "600.00")
+            # One request per member and tool, however many refusals; bad input files none.
+            assert [(a["user_id"], a["tool"]) for a in w.approvals()] == [
+                (w.bob_id, DESC), (w.bob_id, STATUS), (w.carol_id, REFUND)]
 
     asyncio.run(run())
 
@@ -172,13 +183,16 @@ def test_strictest_budget_admins_and_unbudgeted(db_url):
 
             await put_budgets(w.admin, w.team, [])
             await put_budgets(w.admin, t2, [])
-            assert not (await w.call(w.bob, DESC, items(100)))[0]
-            # No budget left, yet the approval tools stay listed: clients keep the list they connected with.
+            # No team budget left: the default 20 items/hour applies instead.
+            assert (await w.call(w.bob, DESC, items(21)))[0]
+            assert not (await w.call(w.bob, DESC, items(20)))[0]
+            # No team budget left, yet the approval tools stay listed: clients keep the list they connected with.
             async with gateway_client(w.edge, w.bob) as mcp:
                 names = {t.name for t in (await mcp.list_tools()).tools}
             assert names == {DESC, REFUND, STATUS, "gateway__request_approval", "gateway__wait_for_approval"}
+            # bob's refused calls above already filed a request; asking again adds nothing.
             err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": DESC, "arguments": items(100)})
-            assert err and "needs no approval" in msg
+            assert err and "is still open" in msg, msg
 
     asyncio.run(run())
 
@@ -324,15 +338,16 @@ def test_budget_zero_means_approval_for_every_call(db_url):
     async def run():
         async with World(db_url) as w:
             await put_budgets(w.admin, w.team, [{"server_id": w.sid, "tool": "update_order_status", "max_items": 0}])
-            # Even one item is refused, from any client, and points at approval.
-            err, msg = await w.call(w.bob, STATUS, {"order_id": 1})
-            assert err and "needs an admin's approval for every call" in msg and "summary" in msg, msg
-            assert w.calls == []
+            # An agent may file first, with a summary for the admin.
             err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": STATUS, "arguments": {"order_id": 1}, "summary": 7})
             assert err and "summary must be text" in msg
             err, msg = await w.call(w.bob, "gateway__request_approval",
                                     {"tool": STATUS, "arguments": {"order_id": 1}, "summary": "  Deodorant: 80 carts.  "})
             assert not err and "Approval #1 requested" in msg, msg
+            # Even one item is refused, and points at the open request instead of filing another.
+            err, msg = await w.call(w.bob, STATUS, {"order_id": 1})
+            assert err and "needs an admin's approval for every call" in msg and "#1" in msg and "still open" in msg, msg
+            assert w.calls == [] and len(w.approvals()) == 1
             [card] = (await w.admin.get("/api/approvals?status=pending")).json()
             assert (card["summary"], card["budget"]) == ("Deodorant: 80 carts.", "approval for every call")
             r = await w.admin.post("/api/approvals/1/approve", json={})
@@ -365,5 +380,31 @@ def test_budgets_api_validates(db_url):
             assert w.conn.execute("SELECT COUNT(*) AS n FROM team_budgets").fetchone()["n"] == 0
             r = await w.admin.post("/api/servers", json={"name": "gateway", "url": "http://x/mcp"})
             assert r.status_code == 400 and "reserved" in r.text
+
+    asyncio.run(run())
+
+
+def test_read_only_tools_are_never_budgeted(db_url):
+    async def run():
+        async with World(db_url) as w:
+            for _ in range(50):  # the control plane lists the shop's tools on its own refresh
+                shop = next(x for x in (await w.admin.get("/api/servers")).json() if x["id"] == w.sid)
+                if shop["tools"]:
+                    break
+                await asyncio.sleep(0.1)
+            assert {t["name"]: t["read_only"] for t in shop["tools"]}["list_orders"] is True
+            assert {t["name"]: t["read_only"] for t in shop["tools"]}["update_order_status"] is False
+            r = await put_budgets(w.admin, w.team, [{"server_id": w.sid, "tool": "list_orders", "max_items": 1}], status=400)
+            assert "read-only" in r.text
+
+            await add_team(w.admin, "R", [w.bob_id], "main", [(w.sid, "list_orders")])
+            # A budget saved before this rule existed is ignored, not enforced.
+            w.conn.execute("INSERT INTO team_budgets (team_id, gateway_id, server_id, tool, max_items)"
+                           " SELECT tm.team_id, g.id, ?, 'list_orders', 0 FROM team_members tm, gateways g"
+                           " WHERE tm.user_id = ? AND g.slug = 'main' LIMIT 1", (w.sid, w.bob_id))
+            for _ in range(3):
+                assert not (await w.call(w.bob, "shop__list_orders", {}))[0]
+            err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": "shop__list_orders", "arguments": {}})
+            assert err and "needs no approval" in msg
 
     asyncio.run(run())

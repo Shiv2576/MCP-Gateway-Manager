@@ -1,8 +1,12 @@
-# VPS. Image from your registry; the gateway is served over https.
-image:
-  repository: REGISTRY/gateway
-  tag: "0.5.0"
-  pullPolicy: Always
+# VPS (k3s). Images are imported into k3s (docs/deploy-vps.md), so the chart's image defaults apply.
+#   helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-prod.yaml
+mode: control
 ingress:
   host: gateway.example.com
+# Served over https (TLS ends at Traefik), so the session cookie is https-only.
 cookieSecure: true
+stores:
+  enabled: true
+# Stores are <name>.example.com and edges <slug>.gw.example.com, over https.
+baseDomain: example.com
+urlScheme: https

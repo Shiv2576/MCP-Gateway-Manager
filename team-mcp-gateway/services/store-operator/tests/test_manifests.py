@@ -22,6 +22,7 @@ def test_credentials_secret_is_only_built_once_per_call():
     assert data["WOO_CONSUMER_SECRET"].startswith("cs_") and len(data["WOO_CONSUMER_SECRET"]) == 43
     assert len(data["MCP_AUTH_TOKEN"]) >= 32
     assert data["SHOPPER_PASSWORD"] == "test123"
+    assert len(data["wordpress-password"]) >= 16
     assert a["metadata"]["name"] == "woo-mcp-credentials"
     assert data != b["stringData"]  # fresh values: the caller must only create, never replace
 
@@ -106,8 +107,81 @@ def test_edge_values():
     assert v["ingress"] == {"host": "ext.gw.localhost", "extraHosts": ["gw.example.com"]}
 
 
+def test_vps_base_domain(monkeypatch):
+    monkeypatch.setattr(m, "BASE_DOMAIN", "203-0-113-7.sslip.io")
+    monkeypatch.setattr(m, "SCHEME", "https")
+    monkeypatch.setattr(m, "CLUSTER_ISSUER", "letsencrypt")
+    issuer = {"cert-manager.io/cluster-issuer": "letsencrypt"}
+    assert m.store_url("shop1") == "https://shop1.203-0-113-7.sslip.io"
+    wp = m.store_values("shop1", "blank")["wordpress"]
+    assert wp["wordpressScheme"] == "https"
+    assert wp["ingress"] == {"hostname": "shop1.203-0-113-7.sslip.io", "tls": True, "annotations": issuer}
+    assert m.woo_mcp_values("shop1", "mercora")["store"]["publicUrl"] == "https://shop1.203-0-113-7.sslip.io"
+    assert m.edge_url("prod") == "https://prod.gw.203-0-113-7.sslip.io"
+    # The public URL is the edge's own host: no duplicate Ingress rule.
+    v = m.edge_values("prod", {"publicUrl": "https://prod.gw.203-0-113-7.sslip.io"}, "0.6.1")
+    assert v["ingress"] == {"host": "prod.gw.203-0-113-7.sslip.io", "clusterIssuer": "letsencrypt"}
+    assert (v["baseDomain"], v["urlScheme"]) == ("203-0-113-7.sslip.io", "https")
+
+
+def test_local_values_have_no_vps_keys():
+    wp = m.store_values("shop1", "blank")["wordpress"]
+    assert "wordpressScheme" not in wp and wp["ingress"] == {"hostname": "shop1.localhost"}
+    assert "baseDomain" not in m.edge_values("prod", {}, "0.6.1")
+
+
 def test_edge_timeout_is_shorter():
     now = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
     six_min_ago = (now - timedelta(minutes=6)).isoformat()
     assert m.timed_out(six_min_ago, now, m.EDGE_TIMEOUT_S)
     assert not m.timed_out(six_min_ago, now)  # stores get 15 minutes
+
+
+SPEC = {"image": "me/demo-mcp:0.1.0", "args": [], "port": 8000, "path": "/mcp",
+        "env": {"DEMO_SERVER": "notes"}, "tokenEnv": "AUTH_TOKEN", "authHeader": "X-API-Key"}
+
+
+def test_hosted_names_and_url():
+    assert m.hosted_namespace_name("notes") == "mcp-notes"
+    assert m.hosted_url("notes", SPEC) == "http://mcp.mcp-notes.svc.cluster.local:8000/mcp"
+    ns = m.hosted_namespace("notes", "7")
+    assert m.owns_hosted_namespace(ns, "notes") and not m.owns_hosted_namespace(ns, "fx")
+    assert not m.owns_hosted_namespace(m.namespace("notes", "7"), "notes")  # a store namespace is not ours
+
+
+def test_hosted_deployment_and_secret():
+    secret = m.hosted_secret(SPEC)
+    assert len(secret["stringData"]["token"]) >= 32 and m.hosted_secret(SPEC) != secret
+    assert m.hosted_secret({**SPEC, "tokenEnv": None}) is None
+
+    pod = m.hosted_deployment(SPEC)["spec"]["template"]["spec"]
+    c = pod["containers"][0]
+    assert pod["automountServiceAccountToken"] is False
+    assert c["image"] == "me/demo-mcp:0.1.0" and "args" not in c  # image CMD kept
+    assert {"name": "DEMO_SERVER", "value": "notes"} in c["env"]
+    assert {"name": "AUTH_TOKEN", "valueFrom": {"secretKeyRef": {"name": m.HOSTED_SECRET, "key": "token"}}} in c["env"]
+    assert c["readinessProbe"]["tcpSocket"]["port"] == 8000
+    gh = m.hosted_deployment({"image": "ghcr.io/github/github-mcp-server", "args": ["http"], "port": 8082, "path": "/"})
+    gc = gh["spec"]["template"]["spec"]["containers"][0]
+    assert gc["args"] == ["http"] and gc["env"] == []
+    assert m.hosted_service(SPEC)["spec"]["ports"][0]["port"] == 8000
+    lim = m.hosted_limits()
+    assert lim["container"] == c["resources"] and lim["quota"]["pods"] == "4"
+
+
+def test_hosted_network_policies():
+    pols = {p["metadata"]["name"]: p["spec"] for p in m.hosted_network_policies(SPEC, "mercora")}
+    assert pols["default-deny"]["policyTypes"] == ["Ingress", "Egress"]
+    src = pols["gateway-ingress"]["ingress"][0]
+    assert src["ports"] == [{"protocol": "TCP", "port": 8000}]
+    assert src["from"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "mercora"}
+    assert src["from"][0]["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "gateway"}
+    block = pols["internet-egress"]["egress"][0]["to"][0]["ipBlock"]
+    assert "10.43.0.0/16" in block["except"] and "169.254.0.0/16" in block["except"]
+
+
+def test_hosted_progress():
+    assert m.hosted_progress(True, []) == ("ready", "")
+    assert m.hosted_progress(False, [("ContainerCreating", "")]) == ("waiting", "waiting for the pod")
+    state, msg = m.hosted_progress(False, [("ImagePullBackOff", "Back-off pulling image x")])
+    assert state == "waiting" and msg.startswith("ImagePullBackOff")

@@ -1,4 +1,4 @@
-"""Store and McpGateway custom resources in the Kubernetes API, with the pod's
+"""Store, McpGateway and HostedServer custom resources in the Kubernetes API, with the pod's
 ServiceAccount.
 
 The control plane only creates, lists and deletes these objects; the operator
@@ -36,6 +36,15 @@ def store_resource(name: str, template: str, owner_id: int, owner: str) -> dict:
         "kind": "Store",
         "metadata": {"name": name, "labels": {OWNER_LABEL: str(owner_id)}},
         "spec": {"template": template, "owner": owner},
+    }
+
+
+def hosted_resource(name: str, spec: dict, owner_id: int, owner: str) -> dict:
+    return {
+        "apiVersion": f"{GROUP}/v1",
+        "kind": "HostedServer",
+        "metadata": {"name": name, "labels": {OWNER_LABEL: str(owner_id)}},
+        "spec": {**spec, "owner": owner},
     }
 
 

@@ -6,6 +6,7 @@ import asyncio
 
 import httpx2
 from cryptography.fernet import Fernet
+from mcp.types import ToolAnnotations
 from mcp.server.mcpserver import Context, MCPServer
 
 from tests import KEY
@@ -28,7 +29,7 @@ def build_echo(calls: list) -> MCPServer:
     credential scrub leaves them readable, and counts calls."""
     server = MCPServer("echo")
 
-    @server.tool(name="whoami")
+    @server.tool(name="whoami", annotations=ToolAnnotations(read_only_hint=True))
     async def whoami(ctx: Context) -> str:
         headers = ctx.request_context.request.headers
         calls.append(1)

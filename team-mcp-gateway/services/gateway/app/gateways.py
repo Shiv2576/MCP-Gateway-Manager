@@ -19,7 +19,7 @@ from . import db as store
 from .api import HTTPError, _server_ids, _str, _url, body, current_user, handler, require_admin
 from .kube import AlreadyExists, gateway_resource
 
-# 2-20 chars: it is the release name gw-<slug> and the host <slug>.gw.localhost.
+# 2-20 chars: it is the release name gw-<slug> and the host <slug>.gw.<base domain>.
 SLUG = re.compile(r"^[a-z](?:[a-z0-9-]{0,18}[a-z0-9])$")
 
 
@@ -30,9 +30,10 @@ def _backend(request: Request):
     return kube
 
 
-def _view(row: dict, servers: list[dict], cr: dict | None) -> dict:
+def _view(request: Request, row: dict, servers: list[dict], cr: dict | None) -> dict:
     meta, status = (cr or {}).get("metadata") or {}, (cr or {}).get("status") or {}
-    url = status.get("url") or f"http://{row['slug']}.gw.localhost"
+    s = request.app.state.settings
+    url = status.get("url") or f"{s.url_scheme}://{row['slug']}.gw.{s.base_domain}"
     if meta.get("deletionTimestamp"):
         phase = "Deleting"
     else:
@@ -50,11 +51,11 @@ def _view(row: dict, servers: list[dict], cr: dict | None) -> dict:
     }
 
 
-def _orphan(cr: dict) -> dict:
+def _orphan(request: Request, cr: dict) -> dict:
     """An McpGateway with no row, e.g. its create response was lost and nobody retried."""
     spec = cr.get("spec") or {}
     row = {"slug": cr["metadata"]["name"], "name": spec.get("displayName", ""), "public_url": spec.get("publicUrl") or None}
-    return {**_view(row, [], cr), "phase": "Orphaned", "message": "running without a gateway row: retry the create or delete it"}
+    return {**_view(request, row, [], cr), "phase": "Orphaned", "message": "running without a gateway row: retry the create or delete it"}
 
 
 def _by_slug(conn, slug: str) -> dict | None:
@@ -87,8 +88,8 @@ async def list_gateways(request: Request) -> Response:
     rows = conn.execute("SELECT * FROM gateways ORDER BY created_at").fetchall()
     known = {g["slug"] for g in rows}
     return JSONResponse(
-        [_view(g, attached[g["id"]], crs.get(g["slug"])) for g in rows]
-        + [_orphan(cr) for slug, cr in sorted(crs.items()) if slug not in known]
+        [_view(request, g, attached[g["id"]], crs.get(g["slug"])) for g in rows]
+        + [_orphan(request, cr) for slug, cr in sorted(crs.items()) if slug not in known]
     )
 
 
@@ -139,7 +140,7 @@ async def create_gateway(request: Request) -> Response:
     except Exception as e:  # no row without a resource, so a retry starts clean
         undo()
         raise HTTPError(502, f"could not create the gateway deployment: {e}"[:300]) from None
-    return JSONResponse(_view(row, _attached(conn)[row["id"]], cr), status_code=201 if inserted else 200)
+    return JSONResponse(_view(request, row, _attached(conn)[row["id"]], cr), status_code=201 if inserted else 200)
 
 
 @handler

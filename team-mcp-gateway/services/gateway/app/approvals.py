@@ -1,9 +1,10 @@
 """Write budgets per member and tool, and explicit admin approval for jobs bigger than them.
 
 A budgeted tool may change at most N items (and, for refunds, an amount of money)
-per member in any rolling hour. Over it, the call is refused and nothing is
-created; the agent may wait, or call gateway__request_approval to ask an admin,
-then gateway__wait_for_approval for the decision. An admin approves on the
+per member in any rolling hour. Over it, the call is refused and an approval
+request is filed for it at once (one open request per member and tool, so retries
+add nothing); the agent calls gateway__wait_for_approval for the decision. An agent
+may also file one itself first, with a summary for the admin. An admin approves on the
 dashboard's Alerts page and the control pod runs the frozen call as the
 requester. Plain code decides everything here; there is no LLM in the path.
 """
@@ -46,9 +47,10 @@ TOOLS = [
     Tool(
         name="gateway__request_approval",
         description=(
-            "[gateway] Ask an admin to approve one call that your write budget refused (over the hourly "
-            "budget, or a tool that needs approval for every call). Nothing changes until an admin approves; "
-            "then it runs by itself. "
+            "[gateway] Ask an admin to approve one call that is over your write budget (over the hourly "
+            "budget, or a tool that needs approval for every call), with a summary for the admin. A direct "
+            "call over budget files this request by itself, without a summary. Nothing changes until an "
+            "admin approves; then it runs by itself. "
             "Then call gateway__wait_for_approval with the id you get back."
         ),
         input_schema={
@@ -96,8 +98,9 @@ def _money(d: Decimal | None) -> str | None:
 # ------------------------------------------------------------------ budgets
 
 
-def budget_for(conn, user: dict, gateway_slug: str, server_id: int, tool: str) -> dict | None:
-    """The strictest of the caller's teams' budgets for this tool; None = not budgeted."""
+def budget_for(conn, user: dict, gateway_slug: str, server_id: int, tool: str, default_items: int) -> dict | None:
+    """The strictest of the caller's teams' budgets for this tool, else the default
+    items/hour; None = not budgeted (admins). Callers skip read-only tools first."""
     if user["role"] == "admin":
         return None
     row = conn.execute(
@@ -107,7 +110,7 @@ def budget_for(conn, user: dict, gateway_slug: str, server_id: int, tool: str) -
         " WHERE tm.user_id = ? AND g.slug = ? AND b.server_id = ? AND b.tool = ?",
         (user["id"], gateway_slug, server_id, tool),
     ).fetchone()
-    return row if row["n"] else None
+    return row if row["n"] else {"max_items": default_items, "max_refund_total": None}
 
 
 
@@ -160,10 +163,10 @@ def _free_at(rows: list[dict], key: str, used, this, limit) -> tuple[float, Any]
 
 
 def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool: str,
-           arguments: dict, now: float) -> dict | None:
+           arguments: dict, now: float, default_items: int) -> dict | None:
     """None when the tool is not budgeted for this caller. Otherwise the budget, this
     call's size, and `refusal`: None when it fits what is left of the hour."""
-    budget = budget_for(conn, user, gateway_slug, server_id, tool)
+    budget = budget_for(conn, user, gateway_slug, server_id, tool, default_items)
     if budget is None:
         return None
     size = measure(tool, arguments)
@@ -187,10 +190,7 @@ def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool:
     if not over:
         return out
     if budget["max_items"] == 0:
-        out["refusal"] = (
-            f"{tool} needs an admin's approval for every call. Call gateway__request_approval with "
-            "{\"tool\": \"" + name + "\", \"arguments\": <the same arguments>, \"summary\": <why, for the admin>}."
-        )
+        out["refusal"] = f"{tool} needs an admin's approval for every call."
         return out
     lines = []
     for left, free, never, unit in over:
@@ -205,9 +205,7 @@ def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool:
         lines.append(f"{left} left; {line}")
     out["refusal"] = (
         f"Budget: {'; '.join(lines)} for {tool}. This call needs {items} items"
-        + (f" and {_money(total)} refunded" if total is not None else "")
-        + ". Wait and retry, or call gateway__request_approval with {\"tool\": \"" + name
-        + "\", \"arguments\": <the same arguments>} to ask an admin."
+        + (f" and {_money(total)} refunded" if total is not None else "") + "."
     )
     return out
 
@@ -215,11 +213,14 @@ def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool:
 def charge(ups, user: dict, gateway_slug: str, row: dict, tool: str, name: str,
            arguments: dict, audit_id: int) -> str | None:
     """The budget check of a direct call: why it is refused, or None to run it.
-    Records the call's size on its audit row, so it counts once it succeeds."""
+    Records the call's size on its audit row, so it counts once it succeeds.
+    Read-only tools are never budgeted: the per-minute rate limit covers them."""
+    if ups.read_only(row["id"], tool):
+        return None
     with ups.db.transaction() as tx:
         # One member's calls to one tool check and record one at a time, on every pod.
         tx.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"budget|{user['id']}|{gateway_slug}|{name}",))
-        a = assess(tx, user, gateway_slug, row["id"], name, tool, arguments, time.time())
+        a = assess(tx, user, gateway_slug, row["id"], name, tool, arguments, time.time(), ups.default_items_per_hour)
         if a is None:
             return None
         tx.execute("UPDATE audit_log SET items = ?, refund_total = ? WHERE id = ?",
@@ -273,7 +274,8 @@ def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | N
     if not sep or not tool or row is None or row["id"] not in allowed or (names is not None and tool not in names):
         return upstream.error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>."), None, "unknown tool"
     now = time.time()
-    a = assess(conn, user, gateway_slug, row["id"], name, tool, args, now)
+    a = None if ups.read_only(row["id"], tool) else assess(conn, user, gateway_slug, row["id"], name, tool, args, now,
+                                                           ups.default_items_per_hour)
     if a is None:
         return _text(f"{name} needs no approval; call it directly.", error=True), None, "not budgeted"
     if a["items"] is None:

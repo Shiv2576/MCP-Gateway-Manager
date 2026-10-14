@@ -82,6 +82,14 @@ def test_store_api(db_url):
             assert (await carol.post("/api/stores", json={"name": "shop9", "template": "catalog-b"})).status_code == 201
 
             assert {s["name"] for s in (await carol.get("/api/stores")).json()} == {"shop1", "shop2", "shop3", "shop9"}
+            # The WordPress admin password (set by the operator) is shown to the owner only.
+            fake.items["shop1"]["status"] = {"phase": "Provisioning", "adminPassword": "s3cret"}
+            assert (await admin.get("/api/stores")).json()[0]["admin_password"] == ""  # not until Ready
+            fake.items["shop1"]["status"] = {"phase": "Ready", "adminPassword": "s3cret"}
+            mine = {s["name"]: s for s in (await admin.get("/api/stores")).json()}["shop1"]
+            assert (mine["admin_url"], mine["admin_user"], mine["admin_password"]) == (
+                "http://shop1.localhost/wp-admin/", "admin", "s3cret")
+            assert {s["name"]: s for s in (await carol.get("/api/stores")).json()}["shop1"]["admin_password"] == ""
             assert (await carol.delete("/api/stores/shop1")).status_code == 404
             assert (await admin.delete("/api/stores/shop1")).status_code == 202
             assert "shop1" not in fake.items
@@ -143,3 +151,27 @@ def test_store_names_cannot_take_platform_hostnames(db_url):
                 assert r.status_code == 400 and "reserved" in r.json()["error"], name
 
     asyncio.run(run())
+
+
+def test_store_url_uses_base_domain(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP,
+                        base_domain="203-0-113-7.sslip.io", url_scheme="https")
+
+    async def run():
+        with serve(create_app(settings, stores=FakeStores())) as gw:
+            admin = await setup_admin(gw)
+            s = (await admin.post("/api/stores", json={"name": "shop1", "template": "blank"})).json()
+            assert s["url"] == "https://shop1.203-0-113-7.sslip.io"
+            r = await admin.post("/api/stores", json={"name": "dash", "template": "blank"})
+            assert "dash.203-0-113-7.sslip.io" in r.json()["error"]
+
+    asyncio.run(run())
+
+
+def test_edge_accepts_its_base_domain_host():
+    from app.main import _transport_security
+
+    t = _transport_security(Settings(mode="edge", gateway_slug="prod", base_domain="x.sslip.io", url_scheme="https"))
+    assert "prod.gw.x.sslip.io" in t.allowed_hosts and "https://prod.gw.x.sslip.io" in t.allowed_origins
+    local = _transport_security(Settings(mode="edge", gateway_slug="prod"))
+    assert "prod.gw.localhost" in local.allowed_hosts

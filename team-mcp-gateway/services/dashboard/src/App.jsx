@@ -9,10 +9,12 @@ import Stores from './Stores.jsx'
 import Credentials from './Credentials.jsx'
 import Pii from './Pii.jsx'
 import Alerts from './Alerts.jsx'
+import Reports from './Reports.jsx'
 import { Audit, Keys, Users } from './Admin.jsx'
 
 // Lucide icon paths, 24x24 viewBox.
 const ICONS = {
+  reports: 'M3 3v18h18M18 17V9M13 17V5M8 17v-3',
   servers: 'M2 4h20v6H2zM2 14h20v6H2zM6 7h.01M6 17h.01',
   gateways: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 22V12',
   stores: 'M3 9l1.5-5h15L21 9M3 9h18v11H3zM9 20v-6h6v6',
@@ -58,6 +60,7 @@ export function PasswordInput(props) {
 }
 
 const PAGES = [
+  { id: 'reports', label: 'Reports', el: Reports, admin: true, group: 'Workspace' },
   { id: 'servers', label: 'Servers', el: Servers, group: 'Workspace' },
   { id: 'gateways', label: 'Gateways', el: Gateways, group: 'Workspace' },
   { id: 'stores', label: 'Stores', el: Stores, admin: true, group: 'Workspace' },
@@ -90,7 +93,7 @@ function useTheme() {
 export default function App() {
   const [user, setUser] = useState(undefined) // undefined = still checking
   const [setup, setSetup] = useState(undefined) // { needed, org }
-  const [page, setPage] = useState('servers')
+  const [page, setPage] = useState('reports') // admin-only; members fall back to Servers below
   const [dark, toggleTheme] = useTheme()
   const [pending, setPending] = useState(0) // approvals waiting, for the Alerts badge
   const [collapsed, setCollapsed] = useState(() => {

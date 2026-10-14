@@ -2,7 +2,7 @@
 
 image:
   repository: gateway
-  tag: "0.6.1"
+  tag: "0.7.3"
   pullPolicy: IfNotPresent
 
 # control: the /api behind the dashboard (one replica). edge: /mcp for one
@@ -33,6 +33,10 @@ publicUrl: ""
 # Comma-separated redirect URIs OAuth clients may register, besides loopback
 # ones. Empty means Claude's callbacks (claude.ai and claude.com).
 oauthRedirectUris: ""
+# Where stores (<name>.baseDomain) and edges (<slug>.gw.baseDomain) are served,
+# over urlScheme. Same as the store operator's values.
+baseDomain: localhost
+urlScheme: http
 # Chat agent model on OpenRouter.
 llmModel: openai/gpt-4.1-mini
 
@@ -41,6 +45,8 @@ ingress:
   className: traefik
   host: gateway.localhost
   extraHosts: []  # e.g. the host of publicUrl; TLS comes from what fronts it (ngrok, cert-manager)
+  # A cert-manager ClusterIssuer: set, this Ingress gets its own certificate for its hosts.
+  clusterIssuer: ""
 
 service:
   port: 8000

@@ -60,6 +60,12 @@ spec:
               value: {{ .Values.refreshIntervalSeconds | quote }}
             - name: COOKIE_SECURE
               value: {{ .Values.cookieSecure | quote }}
+            {{- if or (ne .Values.baseDomain "localhost") (ne .Values.urlScheme "http") }}
+            - name: BASE_DOMAIN
+              value: {{ .Values.baseDomain | quote }}
+            - name: URL_SCHEME
+              value: {{ .Values.urlScheme | quote }}
+            {{- end }}
             - name: LLM_MODEL
               value: {{ .Values.llmModel | quote }}
             {{- with .Values.publicUrl }}

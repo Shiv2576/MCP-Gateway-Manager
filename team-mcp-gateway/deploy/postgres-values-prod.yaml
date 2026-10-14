@@ -1,0 +1,4 @@
+# helm upgrade --install db charts/postgres -n mercora -f deploy/postgres-values-prod.yaml --wait
+# k3s local-path volume on the VPS disk. Local uses 1Gi.
+persistence:
+  size: 5Gi

@@ -1,8 +1,8 @@
 # k3s on a VPS. Same chart, different values:
-#   helm upgrade --install mercora charts/store -n mercora --create-namespace -f deploy/store-values-prod.yaml --wait --timeout 15m
+#   helm upgrade --install mercora charts/store -n mercora -f deploy/store-values-prod.yaml --wait --timeout 15m
 wordpress:
   # Bitnami writes WP_HOME = <wordpressScheme>://<ingress.hostname> into wp-config.php
-  # on first install. It must equal woo-mcp's store.publicUrl (OAuth signing).
-  # shortcut: scheme stays http until TLS is set up in Phase 7; then set wordpressScheme: https and check the probes.
+  # on first install only. It must equal woo-mcp's store.publicUrl.
+  wordpressScheme: https
   ingress:
     hostname: store.example.com

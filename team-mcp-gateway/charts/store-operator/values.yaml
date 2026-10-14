@@ -1,11 +1,17 @@
 image:
   repository: store-operator
-  tag: "0.4.2"
+  tag: "0.5.3"
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
 # Secret in this namespace with GATEWAY_API_KEY: an admin API key from the dashboard.
 existingSecret: store-operator-gateway
+# Where stores (<name>.baseDomain) and edges (<slug>.gw.baseDomain) are served,
+# over urlScheme. clusterIssuer set: each store and edge Ingress gets its own
+# cert-manager certificate. Local: localhost, http, none.
+baseDomain: localhost
+urlScheme: http
+clusterIssuer: ""
 # Gateway image tag every edge (McpGateway) is installed with.
 edgeImageTag: "0.6.1"
 resources:

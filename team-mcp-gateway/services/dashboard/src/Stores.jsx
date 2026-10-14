@@ -96,15 +96,24 @@ export default function Stores({ user }) {
             </div>
             <div className="muted small">
               {s.owner} · created {when(s.created)}
-              {s.phase === 'Ready' && (
-                <>
-                  {' · '}
-                  <a href={s.url} target="_blank" rel="noreferrer">
-                    {s.url}
-                  </a>
-                </>
-              )}
             </div>
+            {s.phase === 'Ready' && (
+            <div className="small">
+              Public URL:{' '}
+              <a href={s.url} target="_blank" rel="noreferrer">
+                {s.url}
+              </a>
+              {' · '}Admin URL:{' '}
+              <a href={s.admin_url} target="_blank" rel="noreferrer">
+                {s.admin_url}
+              </a>
+            </div>
+            )}
+            {s.phase === 'Ready' && s.admin_password && (
+              <div className="small">
+                User: <code>{s.admin_user}</code> · Password: <code>{s.admin_password}</code>
+              </div>
+            )}
             {s.message && <div className={s.phase === 'Failed' ? 'error small' : 'muted small'}>{s.message}</div>}
           </div>
           {s.owner_id === user.id && s.phase !== 'Deleting' && (

@@ -5,8 +5,20 @@ metadata:
   name: {{ include "gateway.name" . }}
   labels:
     {{- include "gateway.labels" . | nindent 4 }}
+  {{- with .Values.ingress.clusterIssuer }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ . | quote }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.clusterIssuer }}
+  tls:
+    - secretName: {{ include "gateway.name" . }}-tls
+      hosts:
+        {{- range prepend (.Values.ingress.extraHosts | default list) .Values.ingress.host }}
+        - {{ . | quote }}
+        {{- end }}
+  {{- end }}
   rules:
     {{- range prepend (.Values.ingress.extraHosts | default list) .Values.ingress.host }}
     - host: {{ . | quote }}

@@ -1,0 +1,51 @@
+# Let's Encrypt over HTTP-01. One certificate for the fixed hosts (dash, gateway),
+# served by Traefik as its default. Stores and edges get their own, per Ingress.
+# Needs cert-manager and port 80 open. See docs/deploy-vps.md.
+#   kubectl apply -f deploy/tls-prod.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: you@example.org                 # Let's Encrypt expiry notices; example.* addresses are rejected
+    privateKeySecretRef: { name: letsencrypt-account }
+    solvers:
+      # HTTP-01 on port 80: no DNS provider token. No wildcards, so one certificate per host.
+      - http01:
+          ingress: { ingressClassName: traefik }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard          # name kept so the commands in docs/deploy-vps.md still work
+  namespace: kube-system
+spec:
+  secretName: wildcard-tls
+  issuerRef: { name: letsencrypt, kind: ClusterIssuer }
+  dnsNames:
+    - dash.example.com
+    - gateway.example.com
+---
+# Traefik's default certificate: Ingresses without a tls: section get it too.
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  defaultCertificate: { secretName: wildcard-tls }
+---
+# http -> https for every host.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        redirections:
+          entryPoint: { to: websecure, scheme: https, permanent: true }

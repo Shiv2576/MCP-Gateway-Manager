@@ -1,0 +1,37 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hostedservers.mcpgateway.example.com
+spec:
+  group: mcpgateway.example.com
+  scope: Namespaced
+  names: { plural: hostedservers, singular: hostedserver, kind: HostedServer, shortNames: [hmcp] }
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Image, type: string, jsonPath: .spec.image }
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Message, type: string, jsonPath: .status.message }
+        - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image, port, path]
+              properties:
+                image: { type: string }
+                args: { type: array, items: { type: string } }
+                port: { type: integer, minimum: 1, maximum: 65535 }
+                path: { type: string }
+                env: { type: object, additionalProperties: { type: string } }
+                tokenEnv: { type: string }
+                authHeader: { type: string }
+                owner: { type: string }
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

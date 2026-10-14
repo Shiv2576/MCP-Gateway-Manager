@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from mcp.server.auth.routes import build_resource_metadata_url
-from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.server.lowlevel import Server
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, ListToolsResult
@@ -23,8 +27,11 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import api, approvals, chat, credentials, gateways as gateway_api, oauth, pii_api, setup, stores as store_api, teams
+from . import api, approvals, chat, credentials, oauth, pii_api, setup, teams
 from . import db as store
+from . import gateways as gateway_api
+from . import hosted as hosted_api
+from . import stores as store_api
 from .kube import Kube
 from .upstream import Upstreams
 
@@ -40,7 +47,9 @@ class ConfigError(RuntimeError):
 @dataclass(frozen=True)
 class Settings:
     database_url: str = field(default="", repr=False)
-    mode: str = "control"  # control: the /api behind the dashboard; edge: /mcp for one gateway
+    mode: str = (
+        "control"  # control: the /api behind the dashboard; edge: /mcp for one gateway
+    )
     gateway_slug: str = ""  # edge only: which gateway's attached servers to serve
     # Fernet key that encrypts members' own upstream credentials. Both modes.
     credentials_key: str = field(default="", repr=False)
@@ -50,6 +59,8 @@ class Settings:
     list_timeout_s: float = 5
     refresh_interval_s: float = 30
     calls_per_minute: int = 20
+    # Items/hour per member for a write tool no team budgeted. 0: every such call needs approval.
+    default_items_per_hour: int = 20
     # Approved bulk jobs run longer than a normal call.
     approval_call_timeout_s: float = 120
     cookie_secure: bool = False
@@ -62,6 +73,9 @@ class Settings:
     # The gateway's public https URL. Set, it turns on OAuth for /mcp so
     # clients can connect with a browser login; API keys work either way.
     public_url: str = ""
+    # Stores are <name>.<base_domain>, edges <slug>.gw.<base_domain>, over url_scheme.
+    base_domain: str = "localhost"
+    url_scheme: str = "http"
     # Where OAuth codes may be sent, besides loopback URLs. Claude's callback.
     oauth_redirect_uris: tuple[str, ...] = (
         "https://claude.ai/api/mcp/auth_callback",
@@ -81,14 +95,23 @@ class Settings:
             list_timeout_s=float(env("LIST_TIMEOUT_S", cls.list_timeout_s)),
             refresh_interval_s=float(env("REFRESH_INTERVAL_S", cls.refresh_interval_s)),
             calls_per_minute=int(env("CALLS_PER_MINUTE", cls.calls_per_minute)),
-            approval_call_timeout_s=float(env("APPROVAL_CALL_TIMEOUT_S", cls.approval_call_timeout_s)),
+            default_items_per_hour=int(
+                env("DEFAULT_ITEMS_PER_HOUR", cls.default_items_per_hour)
+            ),
+            approval_call_timeout_s=float(
+                env("APPROVAL_CALL_TIMEOUT_S", cls.approval_call_timeout_s)
+            ),
             cookie_secure=env("COOKIE_SECURE", "false").lower() == "true",
             openrouter_api_key=env("OPENROUTER_API_KEY", "").strip(),
             llm_model=env("LLM_MODEL", cls.llm_model),
             llm_url=env("LLM_URL", cls.llm_url),
             stores_namespace=env("STORES_NAMESPACE", ""),
             public_url=env("PUBLIC_URL", "").strip().rstrip("/"),
-            oauth_redirect_uris=tuple(u for u in env("OAUTH_REDIRECT_URIS", "").split(",") if u.strip())
+            base_domain=env("BASE_DOMAIN", cls.base_domain).strip(),
+            url_scheme=env("URL_SCHEME", cls.url_scheme).strip(),
+            oauth_redirect_uris=tuple(
+                u for u in env("OAUTH_REDIRECT_URIS", "").split(",") if u.strip()
+            )
             or cls.oauth_redirect_uris,
         )
 
@@ -103,7 +126,9 @@ class ApiKeyGuard:
         challenge = "Bearer"
         if public_url:
             # How an OAuth client finds where to log in (RFC 9728).
-            challenge += f' resource_metadata="{build_resource_metadata_url(self._resource)}"'
+            challenge += (
+                f' resource_metadata="{build_resource_metadata_url(self._resource)}"'
+            )
         self._challenge = challenge
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -131,12 +156,21 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
     """/mcp for one gateway's attached servers, plus OAuth when PUBLIC_URL is set."""
 
     async def on_list_tools(ctx, params) -> ListToolsResult:
-        return ListToolsResult(tools=upstreams.list_tools(ctx.request.state.user, settings.gateway_slug))
+        return ListToolsResult(
+            tools=upstreams.list_tools(ctx.request.state.user, settings.gateway_slug)
+        )
 
     async def on_call_tool(ctx, params) -> CallToolResult:
-        info = getattr(ctx.session.client_params, "client_info", None)  # None on stateless requests without initialize
-        return await upstreams.call_tool(ctx.request.state.user, settings.gateway_slug, params.name, params.arguments,
-                                         client=info and info.name)
+        info = getattr(
+            ctx.session.client_params, "client_info", None
+        )  # None on stateless requests without initialize
+        return await upstreams.call_tool(
+            ctx.request.state.user,
+            settings.gateway_slug,
+            params.name,
+            params.arguments,
+            client=info and info.name,
+        )
 
     server = Server(
         "team-mcp-gateway",
@@ -158,7 +192,9 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
             # ApiKeyGuard checks the token's resource itself.
             validate_token_resource=False,
         )
-        provider = oauth.Provider(conn, settings.public_url, settings.oauth_redirect_uris)
+        provider = oauth.Provider(
+            conn, settings.public_url, settings.oauth_redirect_uris
+        )
 
     return server.streamable_http_app(
         streamable_http_path="/mcp",
@@ -178,18 +214,22 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
 def _transport_security(settings: Settings) -> TransportSecuritySettings:
     """DNS-rebinding protection: only this edge's own hostnames. The SDK's
     "host:*" matches only a Host header with a port, so list both forms."""
-    names = [f"{settings.gateway_slug}.gw.localhost", "localhost", "127.0.0.1"]  # Ingress; port-forward and tests
+    own = f"{settings.gateway_slug}.gw.{settings.base_domain}"
+    names = [own, "localhost", "127.0.0.1"]  # Ingress; port-forward and tests
     if settings.public_url:
         names.append(urlsplit(settings.public_url).hostname)
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[h for n in names for h in (n, f"{n}:*")],
         allowed_origins=[o for n in names for o in (f"http://{n}", f"http://{n}:*")]
+        + [f"{settings.url_scheme}://{own}"]
         + ([settings.public_url] if settings.public_url else []),
     )
 
 
-def create_app(settings: Settings | None = None, stores=None, gateways=None) -> ASGIApp:
+def create_app(
+    settings: Settings | None = None, stores=None, gateways=None, hosted=None
+) -> ASGIApp:
     settings = settings or Settings.from_env()
     if settings.mode not in ("control", "edge"):
         raise ConfigError("GATEWAY_MODE must be control or edge")
@@ -201,11 +241,21 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
     try:
         vault = credentials.Vault(settings.credentials_key)
     except ValueError:
-        raise ConfigError("CREDENTIALS_KEY must be a Fernet key (32 url-safe base64 bytes)") from None
+        raise ConfigError(
+            "CREDENTIALS_KEY must be a Fernet key (32 url-safe base64 bytes)"
+        ) from None
     conn = store.connect(settings.database_url, create_schema=not edge)
-    if not edge and conn.execute("SELECT 1 FROM org").fetchone() is None and len(settings.setup_token) < 16:
-        raise ConfigError("not set up yet: set SETUP_TOKEN (16+ chars) and finish setup in the dashboard")
-    if not edge:  # edges only read; the control plane owns the schema and its migrations
+    if (
+        not edge
+        and conn.execute("SELECT 1 FROM org").fetchone() is None
+        and len(settings.setup_token) < 16
+    ):
+        raise ConfigError(
+            "not set up yet: set SETUP_TOKEN (16+ chars) and finish setup in the dashboard"
+        )
+    if (
+        not edge
+    ):  # edges only read; the control plane owns the schema and its migrations
         credentials.seal_shared_credentials(conn, vault)
 
     upstreams = Upstreams(
@@ -214,6 +264,7 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
         list_timeout=settings.list_timeout_s,
         refresh_interval=settings.refresh_interval_s,
         calls_per_minute=settings.calls_per_minute,
+        default_items_per_hour=settings.default_items_per_hour,
         gateway_slug=settings.gateway_slug if edge else None,
         vault=vault,
         approval_timeout=settings.approval_call_timeout_s,
@@ -226,39 +277,70 @@ def create_app(settings: Settings | None = None, stores=None, gateways=None) -> 
         # An edge is ready only while its gateway exists; both need the database.
         try:
             if edge:
-                ok = conn.execute("SELECT 1 FROM gateways WHERE slug = ?", (settings.gateway_slug,)).fetchone() is not None
+                ok = (
+                    conn.execute(
+                        "SELECT 1 FROM gateways WHERE slug = ?",
+                        (settings.gateway_slug,),
+                    ).fetchone()
+                    is not None
+                )
             else:
                 ok = conn.execute("SELECT 1").fetchone() is not None
         except Exception:
             ok = False
-        return JSONResponse({"status": "ok" if ok else "not ready"}, status_code=200 if ok else 503)
+        return JSONResponse(
+            {"status": "ok" if ok else "not ready"}, status_code=200 if ok else 503
+        )
 
-    health = [Route("/healthz", healthz, methods=["GET"]), Route("/readyz", readyz, methods=["GET"])]
+    health = [
+        Route("/healthz", healthz, methods=["GET"]),
+        Route("/readyz", readyz, methods=["GET"]),
+    ]
     if edge:
         app = _edge_app(settings, conn, upstreams, health)
     else:
-        app = Starlette(routes=[
-            *health,
-            *api.routes,
-            *setup.routes,
-            *store_api.routes,
-            *gateway_api.routes,
-            *teams.routes,
-            *credentials.routes,
-            *pii_api.routes,
-            *approvals.routes,
-            Route("/api/chat", chat.chat, methods=["POST"]),
-        ])
+        app = Starlette(
+            routes=[
+                *health,
+                *api.routes,
+                *setup.routes,
+                *store_api.routes,
+                *hosted_api.routes,
+                *gateway_api.routes,
+                *teams.routes,
+                *credentials.routes,
+                *pii_api.routes,
+                *approvals.routes,
+                Route("/api/chat", chat.chat, methods=["POST"]),
+            ]
+        )
     app.state.db = conn
     app.state.settings = settings
     app.state.upstreams = upstreams
     app.state.vault = vault
     app.state.login_throttle = api.LoginThrottle()
-    app.state.stores = stores if stores is not None else (
-        Kube(settings.stores_namespace) if settings.stores_namespace else None
+    app.state.stores = (
+        stores
+        if stores is not None
+        else (Kube(settings.stores_namespace) if settings.stores_namespace else None)
     )
-    app.state.gateways = gateways if gateways is not None else (
-        Kube(settings.stores_namespace, "mcpgateways") if settings.stores_namespace else None
+    app.state.gateways = (
+        gateways
+        if gateways is not None
+        else (
+            Kube(settings.stores_namespace, "mcpgateways")
+            if settings.stores_namespace
+            else None
+        )
+    )
+    app.state.hosted = (
+        hosted
+        if hosted is not None
+        else (
+            Kube(settings.stores_namespace, "hostedservers")
+            if settings.stores_namespace
+            else None
+        )
     )
 
     sdk_lifespan = app.router.lifespan_context

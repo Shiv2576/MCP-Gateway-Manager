@@ -392,7 +392,8 @@ def _server(row: dict, status: Status | None, gateways=()) -> dict:
         "status": status.state,
         "error": status.error,
         "checked_at": status.checked_at,
-        "tools": [{"name": t.name, "description": t.description} for t in status.tools],
+        "tools": [{"name": t.name, "description": t.description,
+                   "read_only": bool(t.annotations and t.annotations.read_only_hint)} for t in status.tools],
     }
 
 
@@ -585,7 +586,49 @@ async def audit_entry(request: Request) -> Response:
     return JSONResponse({**row, "refund_total": row["refund_total"] and str(row["refund_total"])})
 
 
+# ------------------------------------------------------------------- reports
+
+
+REPORT_DAYS = 30
+
+
+@handler
+async def reports(request: Request) -> Response:
+    require_admin(request)
+    db, now = request.app.state.db, time.time()
+
+    def count(sql, args=()):
+        return db.execute(sql, args).fetchone()["n"]
+
+    def top(select, group):
+        return [dict(r) for r in db.execute(
+            f"SELECT {group} AS name, {select} AS value FROM audit_log"
+            # wait_for_approval is a polling loop, not a feature anyone uses.
+            f" WHERE at > ? AND {group} IS NOT NULL AND tool <> 'gateway__wait_for_approval'"
+            f" GROUP BY {group} ORDER BY value DESC LIMIT 10",
+            (now - REPORT_DAYS * 86400,),
+        ).fetchall()]
+
+    return JSONResponse({
+        "days": REPORT_DAYS,
+        "counts": {
+            "mcps": count("SELECT COUNT(*) AS n FROM servers"),
+            "gateways": count("SELECT COUNT(*) AS n FROM gateways"),
+            # Agents use API keys; apps sign in through OAuth.
+            "apps": count("SELECT COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL")
+            + count("SELECT COUNT(DISTINCT client_id) AS n FROM oauth_tokens WHERE kind = 'refresh' AND expires_at > ?", (now,)),
+            "connections": count("SELECT COUNT(*) AS n FROM (SELECT DISTINCT user_id, client_id FROM oauth_tokens"
+                                 " WHERE kind = 'refresh' AND expires_at > ?) c", (now,)),
+        },
+        "by_tool": top("COUNT(*)", "tool"),
+        "by_server": top("COUNT(*)", "server"),
+        "by_user": top("COUNT(*)", "username"),
+        "p99_by_tool": top("ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms))::int", "tool"),
+    })
+
+
 routes = [
+    Route("/api/reports", reports, methods=["GET"]),
     Route("/api/login", login, methods=["POST"]),
     Route("/api/logout", logout, methods=["POST"]),
     Route("/api/me", me, methods=["GET"]),

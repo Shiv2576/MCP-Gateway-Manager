@@ -55,8 +55,8 @@ def test_upsert_and_delete_are_idempotent():
     httpd, servers, calls = fake_gateway()
     gw = Gateway(f"http://127.0.0.1:{httpd.server_port}", KEY)
     try:
-        gw.upsert_server("shop1", "http://a/mcp", "t1")
-        gw.upsert_server("shop1", "http://b/mcp", "t2")  # retry: updates, no duplicate
+        gw.upsert_server("shop1", "http://a/mcp", "t1", store="shop1")
+        gw.upsert_server("shop1", "http://b/mcp", "t2", store="shop1")  # retry: updates, no duplicate
         assert len(servers) == 1
         s = servers[1]
         assert (s["name"], s["url"], s["auth"], s["enabled"]) == ("shop1", "http://b/mcp", {"type": "bearer", "token": "t2"}, True)
@@ -66,6 +66,14 @@ def test_upsert_and_delete_are_idempotent():
         gw.delete_server("shop1")
         gw.delete_server("shop1")  # already gone: fine
         assert servers == {}
+
+        # Hosted servers: no store link; the token goes in a custom header, or nothing is sent.
+        gw.upsert_server("notes", "http://n/mcp", "t3", header="X-API-Key")
+        gw.upsert_server("github", "http://g/", None)
+        by_name = {s["name"]: s for s in servers.values()}
+        assert by_name["notes"]["auth"] == {"type": "header", "name": "X-API-Key", "value": "t3"}
+        assert by_name["notes"]["store"] is None
+        assert by_name["github"]["auth"] == {"type": "none"}
 
         bad = Gateway(f"http://127.0.0.1:{httpd.server_port}", "wrong")
         try:

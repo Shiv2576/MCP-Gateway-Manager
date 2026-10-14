@@ -182,6 +182,8 @@ async def set_budgets(request: Request) -> Response:
     for b in budgets:
         if b["server_id"] not in attached:
             raise HTTPError(400, "budgets names a server that is not attached to this gateway")
+        if request.app.state.upstreams.read_only(b["server_id"], b["tool"]):
+            raise HTTPError(400, f"{b['tool']} is read-only; budgets apply to write tools only")
         items = b.get("max_items")
         if items is not None and (type(items) is not int or items < 0):
             raise HTTPError(400, "max_items must be a whole number, 0 or more (0: every call needs approval)")

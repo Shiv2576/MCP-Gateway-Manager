@@ -42,7 +42,7 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
     gateways.map((g) => [g.slug, new Set((team.policies[g.slug] || []).map((t) => key(t.server_id, t.tool)))]),
   )
   const [picks, setPicks] = useState(() => Object.fromEntries(gateways.map((g) => [g.slug, new Set(saved[g.slug])])))
-  // Write budgets, per gateway: tool key -> { max_items, max_refund_total } as typed. Empty = not budgeted.
+  // Write budgets, per gateway: tool key -> { max_items, max_refund_total } as typed. Empty = the gateway default.
   const savedBudgets = Object.fromEntries(
     gateways.map((g) => [
       g.slug,
@@ -53,6 +53,8 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
     ]),
   )
   const [budgets, setBudgets] = useState(savedBudgets)
+  // Read-only tools (the server says so) get only the per-minute rate limit, never a budget.
+  const readOnly = new Set(servers.flatMap((s) => (s.tools || []).filter((t) => t.read_only).map((t) => key(s.id, t.name))))
   const setBudget = (slug, k, field, value) =>
     setBudgets({ ...budgets, [slug]: { ...budgets[slug], [k]: { ...budgets[slug][k], [field]: value } } })
   const [error, setError] = useState('')
@@ -81,7 +83,7 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
       for (const g of gateways) {
         // Only tools still allowed keep a budget.
         const rows = Object.entries(budgets[g.slug])
-          .filter(([k, b]) => picks[g.slug].has(k) && (isSet(b?.max_items) || b?.max_refund_total))
+          .filter(([k, b]) => picks[g.slug].has(k) && !readOnly.has(k) && (isSet(b?.max_items) || b?.max_refund_total))
           .map(([k, b]) => {
             const i = k.indexOf(':')
             return {
@@ -149,10 +151,11 @@ function TeamEditor({ team, users, gateways, servers, onSaved, onCancel }) {
                           <span className="mono small">{t}</span>
                           {stale.includes(t) && <span className="pill">no longer offered</span>}
                         </label>
-                        {picks[g.slug].has(k) && (
+                        {picks[g.slug].has(k) && readOnly.has(k) && <span className="muted small">read · per-minute limit</span>}
+                        {picks[g.slug].has(k) && !readOnly.has(k) && (
                           <>
                             <input className="budget" type="number" min="0" step="1" placeholder="items / hour"
-                              aria-label={`${t}: items per hour`} title="Write budget: items per member per rolling hour. 0 = every call needs approval. Empty = no budget."
+                              aria-label={`${t}: items per hour`} title="Write budget: items per member per rolling hour. 0 = every call needs approval. Empty = the gateway default (20 unless DEFAULT_ITEMS_PER_HOUR is set)."
                               value={b.max_items ?? ''} onChange={(e) => setBudget(g.slug, k, 'max_items', e.target.value)} />
                             {t === REFUND_TOOL && (
                               <input className="budget" type="number" min="0.01" step="0.01" placeholder="money / hour"
