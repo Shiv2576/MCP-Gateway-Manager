@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Component, Fragment, useEffect, useState } from 'react'
 import { api } from './api.js'
 import Servers from './Servers.jsx'
 import Gateways from './Gateways.jsx'
@@ -14,6 +14,7 @@ import { Audit, Keys, Users } from './Admin.jsx'
 
 // Lucide icon paths, 24x24 viewBox.
 const ICONS = {
+  send: 'M12 19V5M5 12l7-7 7 7',
   reports: 'M3 3v18h18M18 17V9M13 17V5M8 17v-3',
   servers: 'M2 4h20v6H2zM2 14h20v6H2zM6 7h.01M6 17h.01',
   gateways: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 22V12',
@@ -196,10 +197,34 @@ export default function App() {
         </div>
       </aside>
       <main>
-        <Page user={user} />
+        <PageBoundary page={page}>
+          <Page user={user} />
+        </PageBoundary>
       </main>
     </div>
   )
+}
+
+// A page that throws while rendering shows an error here instead of unmounting the whole app.
+class PageBoundary extends Component {
+  state = { error: null }
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+  // Stays mounted across tabs so it also catches errors from a page's unmount cleanup.
+  componentDidUpdate(prev) {
+    if (prev.page !== this.props.page && this.state.error) this.setState({ error: null })
+  }
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div role="alert">
+        <h2>This page crashed</h2>
+        <p className="error mono small">{this.state.error.message}</p>
+        <button className="primary" onClick={() => this.setState({ error: null })}>Try again</button>
+      </div>
+    )
+  }
 }
 
 function Login({ onLogin }) {

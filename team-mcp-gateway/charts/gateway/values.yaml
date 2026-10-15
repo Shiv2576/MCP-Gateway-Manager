@@ -59,6 +59,30 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# Hosts an admin may add as upstream servers although they resolve to private or
+# cluster addresses (comma-separated, exact). Everything else must be public:
+# the SSRF guard. Store and hosted servers the operator creates need no entry.
+upstreamAllowHosts: ""
+
+# Control only: the store's WooCommerce MCP server, registered as server
+# "woo-mcp" by first-run setup, so the admin's first login already lists it.
+# The bearer token is read from woo-mcp's own Secret; empty url: no seed.
+seedServer:
+  url: ""
+  tokenSecret: woo-mcp-credentials
+  tokenKey: MCP_AUTH_TOKEN
+
+networkPolicy:
+  enabled: true
+  # Pod CIDR, Service CIDR (k3s defaults) and cloud metadata. The gateway's
+  # internet rule never reaches these. Change to match your cluster.
+  clusterCidrs: ["10.42.0.0/16", "10.43.0.0/16", "169.254.0.0/16"]
+  # app.kubernetes.io/name of MCP servers in this namespace the gateway may call on 8000.
+  upstreamApps: ["woo-mcp", "notes-mcp", "fx-mcp"]
+  # Control release only: a default-deny for every pod in the namespace. Leave
+  # off while pods without their own policy run here (the mercora WordPress store).
+  namespaceDefaultDeny: false
+
 # Store provisioning: the gateway may create/list/delete Store resources in its
 # own namespace. Needs the store-operator chart (it installs the CRD).
 stores:

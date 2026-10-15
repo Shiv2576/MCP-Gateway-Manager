@@ -27,3 +27,11 @@ def db_url():
     with psycopg.connect(BASE, autocommit=True) as c:
         # FORCE: apps under test may still hold pooled connections.
         c.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+
+
+@pytest.fixture(autouse=True)
+def _loopback_upstreams(monkeypatch):
+    """Fake upstreams listen on 127.0.0.1, which the SSRF guard refuses outside tests."""
+    from app import api
+    check = api.check_upstream_url
+    monkeypatch.setattr(api, "check_upstream_url", lambda url, allow=(): check(url, (*allow, "127.0.0.1")))

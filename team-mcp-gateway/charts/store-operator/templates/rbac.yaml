@@ -1,28 +1,53 @@
+{{- $op := printf "%s-store-operator" .Release.Namespace -}}
+{{- $sa := printf "system:serviceaccount:%s:store-operator" .Release.Namespace -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: store-operator
 ---
-# Broad on purpose: Helm installs WordPress, MariaDB and woo-mcp into a new
-# namespace per store. Only this pod holds these rights; the gateway can only
-# create Store objects.
+# Cluster-wide, but no workload or Secret rights anywhere: make and remove the
+# store-<name> / mcp-<name> namespaces, and bind the workloads role inside them.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ .Release.Namespace }}-store-operator
+  name: {{ $op }}
 rules:
-  - apiGroups: ["mcpgateway.example.com"]
-    resources: ["stores", "stores/status", "mcpgateways", "mcpgateways/status", "hostedservers", "hostedservers/status"]
-    verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create"]
+  # Only this role may be handed out, and the admission policy below keeps it
+  # to namespaces the operator created.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["{{ $op }}-workloads"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $op }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $op }}
+subjects:
+  - kind: ServiceAccount
+    name: store-operator
+    namespace: {{ .Release.Namespace }}
+---
+# Everything Helm and the handlers need inside one store or hosted namespace.
+# Bound by the operator with a RoleBinding in each namespace it creates; never cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $op }}-workloads
+rules:
   - apiGroups: [""]
     resources: ["resourcequotas", "limitranges", "secrets", "configmaps", "services", "persistentvolumeclaims", "serviceaccounts", "pods"]
     verbs: ["*"]
@@ -39,15 +64,83 @@ rules:
     resources: ["poddisruptionbudgets"]
     verbs: ["*"]
 ---
+# This namespace: the custom resources, and the gw-<slug> edge releases (Helm
+# keeps release records in Secrets). Edges mount the gateway's Secrets, so
+# whoever installs them can reach those Secrets: that much is inherent.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: Role
 metadata:
-  name: {{ .Release.Namespace }}-store-operator
+  name: store-operator
+rules:
+  - apiGroups: ["mcpgateway.example.com"]
+    resources: ["stores", "stores/status", "mcpgateways", "mcpgateways/status", "hostedservers", "hostedservers/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets", "services"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["*"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: store-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ .Release.Namespace }}-store-operator
+  kind: Role
+  name: store-operator
 subjects:
   - kind: ServiceAccount
     name: store-operator
     namespace: {{ .Release.Namespace }}
+{{- if .Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy" }}
+---
+# RBAC cannot say "only in namespaces you created". This does: the operator may
+# bind roles in, and delete, only namespaces labelled as a store or hosted server.
+# It cannot add those labels to an existing namespace (no update on namespaces).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $op }}-own-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rolebindings"]
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: is-store-operator
+      expression: request.userInfo.username == "{{ $sa }}"
+  variables:
+    - name: labels
+      expression: >-
+        request.kind.kind == "Namespace"
+          ? (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {})
+          : (has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {})
+  validations:
+    - expression: >-
+        "mcpgateway.example.com/store" in variables.labels ||
+        "mcpgateway.example.com/hosted" in variables.labels
+      message: the store operator may only act on store-<name> and mcp-<name> namespaces it created
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $op }}-own-namespaces
+spec:
+  policyName: {{ $op }}-own-namespaces
+  validationActions: [Deny]
+{{- end }}

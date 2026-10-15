@@ -1,0 +1,72 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+# Deny by default in both directions, then allow only what a gateway needs.
+# The egress half is the network-level SSRF backstop: even a URL whose DNS
+# changes after it was checked cannot reach cloud metadata or cluster pods
+# other than the MCP servers listed here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gateway.name" . }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Traefik (kube-system) for the Ingress; the dashboard and store operator call the control API.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+        {{- if eq .Values.mode "control" }}
+        - podSelector: { matchLabels: { app.kubernetes.io/name: dashboard } }
+        - podSelector: { matchLabels: { app.kubernetes.io/name: store-operator } }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    {{- with $np.upstreamApps }}
+    # MCP servers installed in this namespace.
+    - to:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: {{ toJson . }} }
+      ports:
+        - { protocol: TCP, port: 8000 }
+    {{- end }}
+    # Store woo-mcp and hosted MCP servers: only namespaces the store operator created.
+    - to:
+        - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/store, operator: Exists }] }
+          podSelector: { matchLabels: { app.kubernetes.io/name: woo-mcp } }
+        - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/hosted, operator: Exists }] }
+          podSelector: { matchLabels: { app.kubernetes.io/name: hosted-mcp } }
+    # Internet upstreams and the LLM API, any port; never pod/Service IPs or metadata.
+    # The Kubernetes API is reached through this rule too: its Service IP is
+    # rewritten to the node's address (port 6443 on k3s) before the policy applies.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{ toJson $np.clusterCidrs }}
+{{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.namespaceDefaultDeny (eq .Values.mode "control") }}
+---
+# Catch-all: any pod in this namespace without a policy of its own gets no
+# traffic in or out. Each component's own policy adds back what it needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- end }}

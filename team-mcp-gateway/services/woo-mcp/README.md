@@ -6,3 +6,6 @@ http://127.0.0.1
 - Admin: http://store.localhost/wp-admin
   - Username: admin
   - Password: 6nLllf9JjU
+
+claude mcp add --transport http -s user team-gateway http://prod.gw.localhost/mcp \
+--header "Authorization: Bearer mcpg_2ob0_ppRyxnyuHyf5SDwDwfymaNiUAjN1qdrCCoEW5s"

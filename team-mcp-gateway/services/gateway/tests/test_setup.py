@@ -68,3 +68,58 @@ def test_wrong_setup_tokens_are_throttled(db_url):
             assert (await c.post("/api/setup", json=BODY)).status_code == 429
 
     asyncio.run(run())
+
+
+def test_setup_registers_the_store_server_first(db_url):
+    async def run():
+        settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP,
+                            seed_server_url="http://127.0.0.1:9/mcp", seed_server_token="tok")
+        app = create_app(settings)
+        with serve(app) as gw:
+            c = httpx2.AsyncClient(base_url=gw, timeout=10)
+            assert (await c.post("/api/setup", json=BODY)).status_code == 201
+            assert (await c.post("/api/servers", json={"name": "aaa", "url": "http://127.0.0.1:9/mcp"})).status_code == 201
+            names = [s["name"] for s in (await c.get("/api/servers")).json()]
+            assert names == ["woo-mcp", "aaa"]  # seeded one first, though "aaa" sorts before it
+            row = app.state.db.execute("SELECT * FROM servers WHERE name = 'woo-mcp'").fetchone()
+            assert row["auth_header"] == "Authorization" and app.state.vault.open(row["auth_value"]) == "Bearer tok"
+
+    asyncio.run(run())
+
+
+class FakeStores:
+    def __init__(self, items=None, fail=False):
+        self.items, self.fail = items or [], fail
+
+    async def list(self):
+        if self.fail:
+            raise RuntimeError("cluster unreachable")
+        return self.items
+
+
+def test_no_seed_when_stores_already_exist(db_url):
+    async def run(stores):
+        settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP,
+                            seed_server_url="http://127.0.0.1:9/mcp", seed_server_token="tok")
+        app = create_app(settings)
+        app.state.stores = stores
+        with serve(app) as gw:
+            c = httpx2.AsyncClient(base_url=gw, timeout=10)
+            assert (await c.post("/api/setup", json=BODY)).status_code == 201
+            assert (await c.get("/api/servers")).json() == []
+
+    asyncio.run(run(FakeStores([{"metadata": {"name": "shop1"}}])))
+
+
+def test_no_seed_when_stores_cannot_be_listed(db_url):
+    async def run():
+        settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP,
+                            seed_server_url="http://127.0.0.1:9/mcp", seed_server_token="tok")
+        app = create_app(settings)
+        app.state.stores = FakeStores(fail=True)
+        with serve(app) as gw:
+            c = httpx2.AsyncClient(base_url=gw, timeout=10)
+            assert (await c.post("/api/setup", json=BODY)).status_code == 201
+            assert (await c.get("/api/servers")).json() == []
+
+    asyncio.run(run())

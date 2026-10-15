@@ -17,3 +17,6 @@ edgeImageTag: "0.6.1"
 resources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { memory: 512Mi }
+# Pod CIDR, Service CIDR (k3s defaults) and cloud metadata: never reachable
+# through the operator's Kubernetes API rule.
+clusterCidrs: ["10.42.0.0/16", "10.43.0.0/16", "169.254.0.0/16"]

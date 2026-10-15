@@ -1,0 +1,29 @@
+# Deny by default. No one connects in (the liveness probe comes from the node).
+# Out: DNS, the gateway's admin API, and the Kubernetes API, which the Service
+# IP is rewritten to before the policy applies (the node, 6443 on k3s).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: store-operator
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: store-operator }
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: gateway } }
+      ports:
+        - { protocol: TCP, port: 8000 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{ toJson .Values.clusterCidrs }}
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 6443 }

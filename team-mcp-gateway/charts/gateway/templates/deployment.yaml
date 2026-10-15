@@ -76,6 +76,20 @@ spec:
             - name: OAUTH_REDIRECT_URIS
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.upstreamAllowHosts }}
+            - name: UPSTREAM_ALLOW_HOSTS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and (eq .Values.mode "control") .Values.seedServer.url }}
+            - name: SEED_SERVER_URL
+              value: {{ .Values.seedServer.url | quote }}
+            - name: SEED_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.seedServer.tokenSecret }}
+                  key: {{ .Values.seedServer.tokenKey }}
+                  optional: true  # woo-mcp may be installed after the gateway
+            {{- end }}
             {{- if and (eq .Values.mode "control") .Values.stores.enabled }}
             - name: STORES_NAMESPACE
               value: {{ .Release.Namespace }}

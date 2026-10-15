@@ -67,6 +67,8 @@ class Settings:
     # Chat agent. Any OpenAI-compatible chat completions URL works.
     openrouter_api_key: str = field(default="", repr=False)
     llm_model: str = "openai/gpt-4.1-mini"
+    # Cheap model for the scope check run before every chat message.
+    llm_guard_model: str = "openai/gpt-4.1-nano"
     llm_url: str = "https://openrouter.ai/api/v1/chat/completions"
     # Namespace holding Store resources; empty turns store provisioning off.
     stores_namespace: str = ""
@@ -76,6 +78,13 @@ class Settings:
     # Stores are <name>.<base_domain>, edges <slug>.gw.<base_domain>, over url_scheme.
     base_domain: str = "localhost"
     url_scheme: str = "http"
+    # Hosts an admin may add as upstreams although they resolve to private or
+    # cluster addresses (e.g. demo servers in this namespace). Exact names only.
+    upstream_allow_hosts: tuple[str, ...] = ()
+    # Control only: the store's WooCommerce MCP server, registered by first-run
+    # setup so it is the first server the admin sees. Empty: no seed.
+    seed_server_url: str = ""
+    seed_server_token: str = field(default="", repr=False)
     # Where OAuth codes may be sent, besides loopback URLs. Claude's callback.
     oauth_redirect_uris: tuple[str, ...] = (
         "https://claude.ai/api/mcp/auth_callback",
@@ -104,11 +113,17 @@ class Settings:
             cookie_secure=env("COOKIE_SECURE", "false").lower() == "true",
             openrouter_api_key=env("OPENROUTER_API_KEY", "").strip(),
             llm_model=env("LLM_MODEL", cls.llm_model),
+            llm_guard_model=env("LLM_GUARD_MODEL", cls.llm_guard_model),
             llm_url=env("LLM_URL", cls.llm_url),
             stores_namespace=env("STORES_NAMESPACE", ""),
             public_url=env("PUBLIC_URL", "").strip().rstrip("/"),
             base_domain=env("BASE_DOMAIN", cls.base_domain).strip(),
             url_scheme=env("URL_SCHEME", cls.url_scheme).strip(),
+            upstream_allow_hosts=tuple(
+                h.strip().lower() for h in env("UPSTREAM_ALLOW_HOSTS", "").split(",") if h.strip()
+            ),
+            seed_server_url=env("SEED_SERVER_URL", "").strip(),
+            seed_server_token=env("SEED_SERVER_TOKEN", "").strip(),
             oauth_redirect_uris=tuple(
                 u for u in env("OAUTH_REDIRECT_URIS", "").split(",") if u.strip()
             )

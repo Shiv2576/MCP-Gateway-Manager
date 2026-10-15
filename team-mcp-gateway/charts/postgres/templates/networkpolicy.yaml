@@ -1,4 +1,5 @@
 # Only gateway pods (control plane and every edge carry this label) may connect.
+# No egress at all: Postgres never opens a connection.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -6,7 +7,7 @@ metadata:
 spec:
   podSelector:
     matchLabels: { app.kubernetes.io/name: postgres, app.kubernetes.io/instance: {{ .Release.Name }} }
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: gateway } }

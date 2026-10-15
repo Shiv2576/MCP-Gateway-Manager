@@ -62,6 +62,17 @@ def owns_namespace(ns: dict, store: str) -> bool:
     return (ns.get("metadata", {}).get("labels") or {}).get(STORE_LABEL) == store
 
 
+def workloads_binding(operator_namespace: str, role: str) -> dict:
+    """Gives the operator its Helm/workload rights in one namespace it created, and nowhere else."""
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": "store-operator"},
+        "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role},
+        "subjects": [{"kind": "ServiceAccount", "name": "store-operator", "namespace": operator_namespace}],
+    }
+
+
 def resource_quota() -> dict:
     # WordPress 250m/512Mi, MariaDB 100m/256Mi, setup Job 100m/256Mi, woo-mcp 50m/96Mi, plus rollout slack.
     return {

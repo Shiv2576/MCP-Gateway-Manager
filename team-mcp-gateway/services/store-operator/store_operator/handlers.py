@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 
 import kopf
 import kubernetes
-from kubernetes.client import ApiClient, ApiException, AppsV1Api, BatchV1Api, CoreV1Api, CustomObjectsApi, NetworkingV1Api
+from kubernetes.client import (ApiClient, ApiException, AppsV1Api, BatchV1Api, CoreV1Api, CustomObjectsApi,
+                               NetworkingV1Api, RbacAuthorizationV1Api)
 
 from . import manifests as m
 from .gateway import Gateway
@@ -25,6 +26,7 @@ NAMESPACE = os.environ.get("STORES_NAMESPACE", "mercora")
 CHARTS = os.environ.get("CHARTS_DIR", "/charts")
 MAX_ATTEMPTS = 3
 EDGE_IMAGE_TAG = os.environ.get("EDGE_IMAGE_TAG", "0.6.1")
+WORKLOADS_ROLE = os.environ.get("WORKLOADS_ROLE", f"{NAMESPACE}-store-operator-workloads")
 gateway = Gateway(os.environ.get("GATEWAY_URL", "http://team-gateway:8000"), os.environ.get("GATEWAY_API_KEY", ""))
 
 
@@ -45,6 +47,11 @@ def _create(fn, *args) -> None:
             raise
 
 
+def _bind_workloads(ns: str) -> None:
+    """The operator's rights inside ns come only from this binding (charts/store-operator rbac.yaml)."""
+    _create(RbacAuthorizationV1Api().create_namespaced_role_binding, ns, m.workloads_binding(NAMESPACE, WORKLOADS_ROLE))
+
+
 def _owned(core: CoreV1Api, store: str) -> bool:
     ns = ApiClient().sanitize_for_serialization(core.read_namespace(m.namespace_name(store)))
     return m.owns_namespace(ns, store)
@@ -57,6 +64,7 @@ def _namespace_objects(store: str, owner_id: str, create_namespace: bool = True)
         _create(core.create_namespace, m.namespace(store, owner_id))
     if not _owned(core, store):
         raise RuntimeError(f"namespace {ns} already exists and was not created for this store")
+    _bind_workloads(ns)  # also gives stores made before this binding existed their rights back
     _create(core.create_namespaced_resource_quota, ns, m.resource_quota())
     _create(core.create_namespaced_limit_range, ns, m.limit_range())
     for policy in m.network_policies():
@@ -271,6 +279,7 @@ def on_hosted_created(name, spec, labels, patch, retry, logger, **_):
         _create(core.create_namespace, m.hosted_namespace(name, labels.get(m.OWNER_LABEL, "")))
         if not _hosted_owned(core, name):
             raise RuntimeError(f"namespace {ns} already exists and was not created for this server")
+        _bind_workloads(ns)
         _create(core.create_namespaced_resource_quota, ns, m.hosted_quota())
         _create(core.create_namespaced_limit_range, ns, m.limit_range())
         for policy in m.hosted_network_policies(spec, NAMESPACE):
