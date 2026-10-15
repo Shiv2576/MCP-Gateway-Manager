@@ -311,7 +311,7 @@ def test_dashboard_uses_the_gateway_policy(db_url):
             while not (await bob.get("/api/tools?gateway=main")).json():
                 assert asyncio.get_running_loop().time() < deadline
                 await asyncio.sleep(0.1)
-            listed = {t["name"] for t in (await bob.get("/api/tools?gateway=main")).json()} - {"gateway__request_approval", "gateway__wait_for_approval"}
+            listed = {t["name"] for t in (await bob.get("/api/tools?gateway=main")).json()} - {"gateway__request_approval", "gateway__wait_for_approval", "gateway__list_team_alerts", "gateway__mark_team_alert_done"}
             assert listed == on_edge == {"notes__list"}
             r = await bob.post("/api/tools/call", json={"gateway": "main", "name": "fx__list", "arguments": {}})
             assert r.json()["isError"] is True

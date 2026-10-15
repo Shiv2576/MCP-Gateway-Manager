@@ -67,7 +67,7 @@ const PAGES = [
   { id: 'stores', label: 'Stores', el: Stores, admin: true, group: 'Workspace' },
   { id: 'tools', label: 'Tools', el: Tools, group: 'Workspace' },
   { id: 'chat', label: 'Chat', el: Chat, group: 'Workspace' },
-  { id: 'alerts', label: 'Alerts', el: Alerts, admin: true, group: 'Workspace' },
+  { id: 'alerts', label: 'Alerts', el: Alerts, group: 'Workspace' },
   { id: 'keys', label: 'API keys', el: Keys, group: 'Settings' },
   { id: 'credentials', label: 'My credentials', el: Credentials, group: 'Settings' },
   { id: 'users', label: 'Members', el: Users, admin: true, group: 'Settings' },
@@ -96,7 +96,7 @@ export default function App() {
   const [setup, setSetup] = useState(undefined) // { needed, org }
   const [page, setPage] = useState('reports') // admin-only; members fall back to Servers below
   const [dark, toggleTheme] = useTheme()
-  const [pending, setPending] = useState(0) // approvals waiting, for the Alerts badge
+  const [pending, setPending] = useState(0) // approvals waiting (admins) or open team alerts (members), for the Alerts badge
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar') === 'collapsed' } catch { return false }
   })
@@ -113,8 +113,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (user?.role !== 'admin') return
-    const poll = () => api('/approvals/count').then((r) => setPending(r.pending)).catch(() => {})
+    if (!user) return
+    // Admins: approvals waiting for them. Members: their teams' open alerts.
+    const poll = () => (user.role === 'admin'
+      ? api('/approvals/count').then((p) => p.pending)
+      : api('/alerts/count').then((a) => a.open)
+    ).then(setPending).catch(() => {})
     poll()
     const t = setInterval(poll, 10000)
     return () => clearInterval(t)

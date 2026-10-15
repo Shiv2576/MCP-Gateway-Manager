@@ -5,7 +5,7 @@ replicaCount: 1
 
 image:
   repository: woo-mcp
-  tag: "0.4.0"
+  tag: "0.5.0"
   pullPolicy: IfNotPresent
 
 store:

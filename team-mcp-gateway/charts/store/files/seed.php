@@ -1,31 +1,64 @@
 <?php
 /**
  * Seeds an empty store in one WordPress boot (one wp-cli call per product
- * takes 1-2 s each; 300 of them would not fit the provisioning timeout).
+ * takes 1-2 s each; hundreds of them would not fit the provisioning timeout).
  *
  *   TEMPLATE=catalog-a|catalog-b|blank wp eval-file seed.php
  *
- * catalog-a: 300 products, 60 in each of 5 categories, generated from word
- * lists with a fixed seed, so every store of a template is identical.
+ * catalog-a: the restock planning demo. 40 everyday products with a cost of
+ * goods and tracked stock, and 90 days of sales (about 1,500 guest orders)
+ * made from each product's units-per-day rate, so the restock tools see a
+ * stockout hero (Fresh Deodorant 150ml, 6 days left), a thin-margin fast mover,
+ * a sold-out product, overstock and dead stock. History orders carry
+ * _synthetic_age for `wp restock refresh` (mu-plugin restock.php). Same fixed
+ * seed, same history in every store.
  * catalog-b: the cart recovery demo. 40 products with a cost of goods
  * (WooCommerce's Cost of Goods Sold field) and 300 shoppers (shopper001@example.com ...) with saved carts last
  * changed 0-30 days ago; 80 carts hold Fresh Deodorant 150ml. Same fixed seed,
  * same carts in every store. Shopper password: SHOPPER_PASSWORD, else random.
  * blank: the products in /setup/products ("name|price" lines).
- * Then a few orders created now, so "today's orders" has data.
+ * Then a few orders created now (catalog-a: none, its history reaches today), so "today's orders" has data.
  * The caller runs this only when the store has no products.
  */
 
 $catalogs = array(
+	// Restock planning demo: name, price, cost of goods (null: unknown), stock, units sold per day,
+	// and, for a sold-out product, how many days ago its sales stopped.
 	'catalog-a' => array(
-		'seed'       => 101,
-		'orders'     => 12,
-		'categories' => array(
-			'Electronics'    => array( array( 'Wireless', 'Smart', 'Portable', 'Compact', 'Pro', 'USB-C' ), array( 'Headphones', 'Speaker', 'Charger', 'Power Bank', 'Keyboard', 'Mouse', 'Webcam' ), 499, 9999 ),
-			'Books'          => array( array( 'Illustrated', 'Pocket', 'Collected', 'Annotated', 'Classic', 'Modern' ), array( 'Poems', 'Cookbook', 'Atlas', 'Novel', 'Field Guide', 'Short Stories' ), 199, 1499 ),
-			'Home & Kitchen' => array( array( 'Steel', 'Ceramic', 'Bamboo', 'Cast Iron', 'Glass', 'Copper' ), array( 'Pan', 'Kettle', 'Bowl Set', 'Knife', 'Storage Jar', 'Tray' ), 249, 4999 ),
-			'Toys'           => array( array( 'Wooden', 'Magnetic', 'Plush', 'Remote Control', 'Puzzle', 'Musical' ), array( 'Train', 'Blocks', 'Bear', 'Car', 'Robot', 'Kite' ), 149, 2999 ),
-			'Office'         => array( array( 'Ergonomic', 'Recycled', 'Leather', 'Minimal', 'Magnetic', 'Desk' ), array( 'Notebook', 'Pen Set', 'Organizer', 'Lamp', 'Whiteboard', 'Stapler' ), 99, 3999 ),
+		'seed'           => 101,
+		'orders'         => 0, // the history reaches today
+		'history_days'   => 90,
+		'stock_products' => array(
+			'Personal Care' => array(
+				array( 'Fresh Deodorant 150ml', 249, 110, 54, 9 ), array( 'Herbal Shampoo 400ml', 399, 170, 30, 2 ),
+				array( 'Mint Toothpaste 150g', 129, 62, 270, 6 ), array( 'Neem Soap 4-pack', 199, 120, 180, 4 ),
+				array( 'Aloe Face Wash 100ml', 249, 95, 135, 3 ), array( 'Coconut Hair Oil 300ml', 189, 105, 150, 3 ),
+				array( 'Sunscreen SPF 50', 499, 210, 45, 1 ), array( 'Shaving Foam 200ml', 220, 120, 70, 1.5 ),
+			),
+			'Snacks'        => array(
+				array( 'Instant Noodles 12-pack', 168, 150, 40, 8 ), array( 'Salted Peanuts 200g', 99, 58, 25, 3 ),
+				array( 'Masala Chips 52g', 20, 11, 400, 5 ), array( 'Roasted Makhana 100g', 149, 80, 90, 2 ),
+				array( 'Digestive Biscuits 250g', 60, 42, 270, 6 ), array( 'Dark Chocolate 70%', 249, 130, 50, 1 ),
+				array( 'Trail Mix 200g', 299, 170, 45, 1 ), array( 'Banana Chips 200g', 110, 60, 90, 2 ),
+			),
+			'Beverages'     => array(
+				array( 'Green Tea 100 Bags', 349, 120, 0, 4, 3 ), array( 'Filter Coffee 500g', 450, 260, 120, 2.5 ),
+				array( 'Masala Chai 250g', 220, 110, 135, 3 ), array( 'Mango Juice 1L', 120, 78, 225, 5 ),
+				array( 'Lemon Soda 6-pack', 180, 110, 135, 3 ), array( 'Coconut Water 1L', 150, 95, 90, 2 ),
+				array( 'Hot Chocolate Mix 400g', 399, 230, 40, 0.75 ), array( 'Kombucha 330ml', 199, 120, 25, 0.5 ),
+			),
+			'Household'     => array(
+				array( 'Detergent Powder 1kg', 135, 118, 200, 5 ), array( 'Dishwash Gel 500ml', 110, 62, 180, 4 ),
+				array( 'Floor Cleaner 1L', 199, 105, 80, 2 ), array( 'Garbage Bags x30', 99, 45, 135, 3 ),
+				array( 'Toilet Rolls 10-pack', 399, 250, 70, 1.5 ), array( 'Kitchen Towels 2-roll', 149, 80, 90, 2 ),
+				array( 'Steel Scrub Pack', 49, 18, 160, 4 ), array( 'Mosquito Repellent Refill', 89, 48, 135, 3 ),
+			),
+			'Festive'       => array(
+				array( 'Diwali Gift Hamper', 1499, 950, 140, 0.1 ), array( 'Brass Diya Set', 899, 420, 60, 0 ),
+				array( 'Scented Candle Set', 599, 260, 80, 0.5 ), array( 'Dry Fruit Box 500g', 899, 640, 25, 1 ),
+				array( 'Assorted Mystery Box', 499, null, 30, 1 ), array( 'Rangoli Colour Kit', 299, 120, 45, 1 ),
+				array( 'Festive Torans', 249, 90, 40, 1 ), array( 'Gift Wrap Roll', 99, 35, 90, 2 ),
+			),
 		),
 	),
 	// Cart recovery demo: hand-picked products with costs, then shoppers with saved carts.
@@ -79,10 +112,29 @@ function seed_product( $name, $price, $category_id, $cogs = null ) {
 	return $product->save();
 }
 
+function seed_history_order( $n, $products, $lines, $age, $status ) {
+	$at    = time() - $age;
+	$order = wc_create_order();
+	foreach ( $lines as $id => $qty ) {
+		$order->add_product( $products[ $id ], $qty );
+	}
+	$order->set_address( array( 'first_name' => 'Demo', 'last_name' => "Customer $n", 'email' => "customer$n@example.com" ), 'billing' );
+	$order->calculate_totals();
+	$order->set_status( $status );
+	$order->set_date_created( $at );
+	if ( 'completed' === $status ) {
+		$order->set_date_paid( $at );
+		$order->set_date_completed( $at );
+	}
+	$order->update_meta_data( '_synthetic_age', $age ); // wp restock refresh re-dates from this
+	$order->save();
+}
+
 $template = getenv( 'TEMPLATE' ) ?: 'blank';
 $ids      = array();
 $by_name  = array();
 $weights  = array();
+$stocked  = array();
 
 if ( 'blank' === $template ) {
 	mt_srand( 303 );
@@ -104,13 +156,13 @@ if ( 'blank' === $template ) {
 			$weights[ $id ]   = $weight;
 		}
 	}
-	foreach ( $catalog['categories'] ?? array() as $category => $words ) {
-		list( $adjectives, $nouns, $min, $max ) = $words;
+	foreach ( $catalog['stock_products'] ?? array() as $category => $rows ) {
 		$term = term_exists( $category, 'product_cat' ) ?: wp_insert_term( $category, 'product_cat' );
-		$code = strtoupper( substr( preg_replace( '/[^A-Za-z]/', '', $category ), 0, 3 ) );
-		for ( $i = 1; $i <= 60; $i++ ) {
-			$name  = $adjectives[ mt_rand( 0, count( $adjectives ) - 1 ) ] . ' ' . $nouns[ mt_rand( 0, count( $nouns ) - 1 ) ] . sprintf( ' %s-%02d', $code, $i );
-			$ids[] = seed_product( $name, mt_rand( $min, $max ), (int) $term['term_id'] );
+		foreach ( $rows as $row ) {
+			list( $name, $price, $cogs, $stock, $per_day ) = $row;
+			$id             = seed_product( $name, $price, (int) $term['term_id'], $cogs );
+			$ids[]          = $id;
+			$stocked[ $id ] = array( $stock, $per_day, $row[5] ?? 0 );
 		}
 	}
 } else {
@@ -125,6 +177,41 @@ for ( $n = 1; $n <= $orders; $n++ ) {
 	$order->set_address( array( 'first_name' => 'Demo', 'last_name' => "Customer $n", 'email' => "customer$n@example.com" ), 'billing' );
 	$order->calculate_totals();
 	$order->update_status( 'processing' );
+}
+
+// Sales history: unit k of a product sold k / per_day days ago (counted from when it sold
+// out, if it did), so any window gives the stated rate. Units close in time share an order.
+if ( $stocked ) {
+	add_filter( 'pre_wp_mail', '__return_false' ); // no "order completed" mail to example.com
+	mt_srand( $catalog['seed'] + 2 );
+	$horizon = $catalog['history_days'] * DAY_IN_SECONDS;
+	$units   = array();
+	foreach ( $stocked as $id => list( , $per_day, $stopped ) ) {
+		for ( $k = 0; $per_day > 0 && ( $age = (int) ( ( $stopped + $k / $per_day ) * DAY_IN_SECONDS ) ) < $horizon; $k++ ) {
+			$units[] = array( $age, $id );
+		}
+	}
+	sort( $units );
+	$products = array();
+	foreach ( array_keys( $stocked ) as $id ) {
+		$products[ $id ] = wc_get_product( $id );
+	}
+	$n = 0;
+	for ( $i = 0; $i < count( $units ); $i += $size ) {
+		$size  = mt_rand( 1, 12 );
+		$lines = array_count_values( array_column( array_slice( $units, $i, $size ), 1 ) );
+		seed_history_order( ++$n, $products, $lines, $units[ $i ][0], 'completed' );
+		if ( mt_rand( 1, 100 ) <= 3 ) { // now and then a cancelled order: not a sale, so the rates hold
+			seed_history_order( ++$n, $products, $lines, $units[ $i ][0], 'cancelled' );
+		}
+	}
+	// Stock last: with tracking on, WooCommerce would have taken the history's sales out of it.
+	foreach ( $stocked as $id => list( $stock ) ) {
+		$products[ $id ]->set_manage_stock( true );
+		$products[ $id ]->set_stock_quantity( $stock );
+		$products[ $id ]->save();
+	}
+	WP_CLI::log( "$n history orders over {$catalog['history_days']} days" );
 }
 
 // Abandoned carts: shoppers with a saved WooCommerce cart (the same user meta

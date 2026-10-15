@@ -45,6 +45,10 @@ class Settings:
     max_discount_pct: int = 40
     max_offer_days: int = 14
     cart_window_days: int = 20  # a product must sit in a cart changed this recently
+    # Restock planning: how stock facts are computed.
+    lead_time_days: int = 7  # a reorder takes this long to arrive
+    cover_days: int = 30  # a reorder should last this long after it arrives
+    overstock_days: int = 120  # more days of stock than this is overstock
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,4 +82,7 @@ class Settings:
             max_discount_pct=int(os.environ.get("MAX_DISCOUNT_PCT", cls.max_discount_pct)),
             max_offer_days=int(os.environ.get("MAX_OFFER_DAYS", cls.max_offer_days)),
             cart_window_days=int(os.environ.get("CART_WINDOW_DAYS", cls.cart_window_days)),
+            lead_time_days=int(os.environ.get("LEAD_TIME_DAYS", cls.lead_time_days)),
+            cover_days=int(os.environ.get("COVER_DAYS", cls.cover_days)),
+            overstock_days=int(os.environ.get("OVERSTOCK_DAYS", cls.overstock_days)),
         )

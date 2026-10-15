@@ -102,7 +102,7 @@ function PendingCard({ a, onDone }) {
   )
 }
 
-export default function Alerts() {
+function Approvals() {
   const [tab, setTab] = useState('pending')
   const [rows, setRows] = useState([])
   const [error, setError] = useState('')
@@ -116,7 +116,7 @@ export default function Alerts() {
     <>
       <div className="toolbar">
         <div>
-          <h2>Alerts</h2>
+          <h2>Approvals</h2>
           <div className="muted small">
             Jobs bigger than a member's hourly write budget, sent by their agent for approval. Approving runs the
             exact request as that member.
@@ -156,6 +156,62 @@ export default function Alerts() {
           </table>
         </div>
       )}
+    </>
+  )
+}
+
+// Alerts for teams: what someone's tool call did that a team should act on.
+function TeamAlerts() {
+  const [rows, setRows] = useState([])
+  const [error, setError] = useState('')
+
+  // Every alert stays listed, done ones too; reloaded like the badge's 30 s poll.
+  const load = useCallback(() => {
+    api('/alerts?status=all').then(setRows).catch((e) => setError(e.message))
+  }, [])
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 30000)
+    return () => clearInterval(t)
+  }, [load])
+
+  return (
+    <>
+      <div className="toolbar">
+        <div>
+          <h2>Team alerts</h2>
+          <div className="muted small">
+            Alerts for your teams. An alert is done when an agent calls gateway__mark_team_alert_done.
+          </div>
+        </div>
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
+      {rows.length === 0 && <p className="muted">No alerts yet.</p>}
+      {rows.map((a) => (
+        <div key={a.id} className="card">
+          <div className="row">
+            <b>{a.title}</b>
+            <span className="pill">{a.team}</span>
+            {a.done_at && <span className="pill ok">done</span>}
+          </div>
+          <div className="muted small">
+            <span className="mono">{a.tool}</span> on <span className="mono">{a.gateway}</span> · {when(a.created_at)}
+          </div>
+          <ul className="small">{a.lines.map((l, i) => <li key={i} className="mono">{l}</li>)}</ul>
+          <div className="muted small">
+            requested by {a.requested_by || 'a removed user'}{a.approved_by && <> · approved by {a.approved_by}</>}
+          </div>
+          {a.done_at && <div className="small">Done by <b>{a.done_by || 'a removed user'}</b>, {when(a.done_at)}</div>}
+        </div>
+      ))}
+    </>
+  )
+}
+
+export default function Alerts({ user }) {
+  return (
+    <>
+      {user.role === 'admin' ? <Approvals /> : <TeamAlerts />}
     </>
   )
 }

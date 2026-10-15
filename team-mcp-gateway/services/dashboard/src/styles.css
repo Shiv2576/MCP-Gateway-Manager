@@ -351,3 +351,28 @@ input.budget { width: 110px; padding: 2px 6px; font-size: 12px; }
 .stat { font-size: 28px; font-weight: 600; margin-top: 4px; }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
 @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } .charts { grid-template-columns: 1fr; } }
+
+/* Teams: one section per team, a table per gateway; built for screen readers and keyboard first. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.team { padding: 20px; margin-bottom: 20px; scroll-margin-top: 16px; }
+.team-head { align-items: flex-start; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.team-head h3 { font-size: 17px; margin: 0 0 4px; }
+.team h4 { font-size: 13px; font-weight: 600; margin: 18px 0 8px; }
+.chip-list { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.chip-list .pill { font-size: 12px; padding: 2px 10px; }
+.team-jump { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.team-jump a { display: inline-block; padding: 4px 12px; border: 1px solid var(--border); border-radius: 99px; color: var(--foreground); text-decoration: none; font-size: 13px; }
+.team-jump a:hover { background: var(--accent); }
+.team a:focus-visible, .team-jump a:focus-visible, .team h4:focus-visible, .box:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.team-table { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.team-table caption { text-align: left; font-weight: 600; font-size: 13px; padding: 10px 14px; background: var(--muted); border-bottom: 1px solid var(--border); }
+.team-table th, .team-table td { padding: 8px 14px; vertical-align: middle; }
+.team-table tbody th { color: var(--foreground); font-weight: 500; font-size: 12.5px; }
+.team-table tbody th .pill { margin-left: 6px; }
+.team-table tr.on th { font-weight: 600; }
+.team-editor fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; }
+.team-editor legend { font-weight: 600; font-size: 13px; padding: 0 6px; }
+.team-editor h4 { margin-top: 4px; }
+.team-editor input.box { width: 18px; height: 18px; padding: 0; cursor: pointer; }
+.team-editor .picks .pick { padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.team-editor .picks .pick:has(input:checked) { border-color: var(--primary); }

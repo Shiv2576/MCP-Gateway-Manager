@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
 
 const TEMPLATES = [
-  { id: 'catalog-a', title: 'Catalog A', text: '300 products: electronics, books, home & kitchen, toys, office' },
+  { id: 'catalog-a', title: 'Catalog A', text: '40 everyday products with stock and 90 days of sales: restock planning demo' },
   { id: 'catalog-b', title: 'Catalog B', text: 'Cart recovery demo: 40 products with costs, 300 shoppers with abandoned carts' },
   { id: 'blank', title: 'Blank', text: '3 basic products' },
 ]

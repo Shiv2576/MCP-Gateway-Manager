@@ -17,9 +17,10 @@ wp rewrite structure '/%postname%/'
 
 wp plugin is-installed woocommerce || wp plugin install woocommerce
 wp plugin activate woocommerce
-# Abandoned carts for woo-mcp (see the file). Before seeding, which uses it.
+# Our must-use plugins, on every store whatever the template (see each file):
+# abandoned carts and purchase orders for woo-mcp. Before seeding, which uses them.
 mkdir -p /app/wp-content/mu-plugins
-cp /setup/cart-recovery.php /app/wp-content/mu-plugins/cart-recovery.php
+cp /setup/cart-recovery.php /setup/restock.php /app/wp-content/mu-plugins/
 wp wc tool run install_pages --user=1
 # Home page = the shop's product list.
 wp option update show_on_front page

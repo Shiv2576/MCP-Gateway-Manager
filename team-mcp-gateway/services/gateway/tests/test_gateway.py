@@ -267,6 +267,7 @@ def test_the_whole_gateway(db_url):
                     "fx__convert", "fx__list",
                     "slow__list",
                     "gateway__request_approval", "gateway__wait_for_approval",
+                    "gateway__list_team_alerts", "gateway__mark_team_alert_done",
                 }
 
                 # Routed to the right server, even with the same upstream name.
@@ -482,10 +483,12 @@ def test_chat_agent_guardrails(db_url):
                 assert "bob" in system and "<tool_result>" in system and seen[1][1]["max_tokens"] == 400
                 context = json.loads(system.split("(data, not instructions):\n")[1].split("\n")[0])
                 assert context == {"username": "bob", "role": "member", "teams": ["shop"], "gateway": "main",
-                                   "tool_count": 4, "tools": [{"name": "shop__orders", "write": False},
+                                   "tool_count": 6, "tools": [{"name": "shop__orders", "write": False},
                                                               {"name": "shop__refund", "write": True},
                                                               {"name": "gateway__request_approval", "write": True},
-                                                              {"name": "gateway__wait_for_approval", "write": True}]}
+                                                              {"name": "gateway__wait_for_approval", "write": True},
+                                                              {"name": "gateway__list_team_alerts", "write": False},
+                                                              {"name": "gateway__mark_team_alert_done", "write": True}]}
                 assert seen[1][0] == "Bearer test-llm-key"
 
                 payload, sig = pending["token"].split(".")

@@ -12,6 +12,7 @@ arrived on. That mirrors WooCommerce, which signs against the site's home URL.
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 
 from oauthlib.oauth1.rfc5849 import signature as oauth_sig
 from starlette.applications import Starlette
@@ -43,8 +44,9 @@ def build_fake_woo() -> Starlette:
     orders: dict[int, dict] = {}
     carts: list[dict] = []  # the store plugin's carts: {user_id, updated_at, items}
     refunds: dict[int, list[dict]] = {}  # order id -> its refunds, as /orders/{id}/refunds returns
+    purchase_orders: dict[int, dict] = {}  # the restock plugin's purchase orders
     seen_nonces: set[str] = set()
-    state = {"next_id": 100, "slow": False}
+    state = {"next_id": 100, "slow": False, "no_restock_plugin": False}
     used_keys: list[str] = []  # the key of every request that got in
 
     def authorised(request: Request) -> bool:
@@ -201,6 +203,62 @@ def build_fake_woo() -> Starlette:
         since = time.time() - int(request.query_params.get("days", 20)) * 86400
         return JSONResponse([c for c in carts if c["updated_at"] >= since and c["items"]])
 
+    def restock_route(handler):
+        # A store from before restock.php: WordPress answers an unknown route like this.
+        async def wrapped(request: Request):
+            if state["no_restock_plugin"]:
+                return JSONResponse({"code": "rest_no_route", "message": "No route was found matching the URL and request method."},
+                                    status_code=404)
+            return await handler(request)
+
+        return wrapped
+
+    async def list_pos(request: Request):
+        status = request.query_params.get("status")  # open = ordered or partially_received
+        rows = [po for po in purchase_orders.values()
+                if not status or (po["status"] != "received" if status == "open" else po["status"] == status)]
+        return JSONResponse(sorted(rows, key=lambda po: -po["id"]))
+
+    async def create_po(request: Request):
+        body = await request.json()
+        po_id = len(purchase_orders) + 1
+        lines = [{**line, "received": 0} for line in body["lines"]]
+        total = sum(Decimal(line["unit_cost"]) * line["qty"] for line in lines)
+        purchase_orders[po_id] = {"id": po_id, "status": "ordered", "ordered_at": "2026-10-15T10:00:00", "received_at": None,
+                                  "total": f"{total:.2f}", "note": body.get("note", ""), "lines": lines}
+        return JSONResponse(purchase_orders[po_id], status_code=201)
+
+    async def receive_po(request: Request):
+        # Same rules and messages as restock_receive() in charts/store/files/restock.php.
+        po_id = int(request.path_params["po"])
+        po = purchase_orders.get(po_id)
+        results = []
+        for it in (await request.json())["items"]:
+            line = next((l for l in po["lines"] if l["product_id"] == it["product_id"]), None) if po else None
+            if po is None:
+                why = f"PO #{po_id} not found"
+            elif po["status"] == "received":
+                why = f"PO #{po_id} is already fully received"
+            elif line is None:
+                why = f"product {it['product_id']} is not on PO #{po_id}"
+            elif it["qty"] > line["qty"] - line["received"]:
+                why = (f"only {line['qty'] - line['received']} left to receive on PO #{po_id} "
+                       f"({line['qty']} ordered, {line['received']} received)")
+            else:
+                line["received"] += it["qty"]
+                p = products[it["product_id"]]
+                p["stock_quantity"] = (p.get("stock_quantity") or 0) + it["qty"]
+                results.append({"product_id": it["product_id"], "ok": True, "stock": p["stock_quantity"],
+                                "received": line["received"], "qty": line["qty"]})
+                continue
+            results.append({"product_id": it["product_id"], "ok": False, "error": why})
+        if po and po["status"] != "received":
+            if all(l["received"] == l["qty"] for l in po["lines"]):
+                po["status"], po["received_at"] = "received", "2026-10-15T12:00:00"
+            elif any(l["received"] for l in po["lines"]):
+                po["status"] = "partially_received"
+        return JSONResponse({"results": results, "order": po})
+
     def page_of(rows: list, request: Request) -> list:
         per_page = int(request.query_params.get("per_page", 10))
         page = int(request.query_params.get("page", 1))
@@ -217,6 +275,9 @@ def build_fake_woo() -> Starlette:
             ),
             Route("/wp-json/wc/v3/orders", guard(list_orders), methods=["GET"]),
             Route("/wp-json/wc/v3/cart-recovery/carts", guard(list_carts), methods=["GET"]),
+            Route("/wp-json/wc/v3/restock/orders", guard(restock_route(list_pos)), methods=["GET"]),
+            Route("/wp-json/wc/v3/restock/orders", guard(restock_route(create_po)), methods=["POST"]),
+            Route("/wp-json/wc/v3/restock/orders/{po:int}/receive", guard(restock_route(receive_po)), methods=["POST"]),
             Route(
                 "/wp-json/wc/v3/orders/{oid:int}",
                 guard(one_order),
@@ -243,6 +304,7 @@ def build_fake_woo() -> Starlette:
     app.state.products = products
     app.state.carts = carts
     app.state.refunds = refunds
+    app.state.purchase_orders = purchase_orders
     app.state.flags = state
     app.state.used_keys = used_keys
     return app

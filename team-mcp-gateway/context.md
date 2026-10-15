@@ -396,7 +396,7 @@ store-operator (kopf, ClusterRole) ◄──────────────
 ```
 
 - **Templates** (`charts/store/files/seed.php`, one `wp eval-file`, fixed seed):
-  `catalog-a` 300 products in Electronics/Books/Home & Kitchen/Toys/Office + 12 orders;
+  `catalog-a` 40 everyday products with cost and stock + 90 days of sales history (~1,500 orders, restock demo);
   `catalog-b` 300 in Fashion/Sports/Beauty/Grocery/Garden + 7 orders; `blank` 3 products + 2 orders.
   Orders are dated the day the store is created.
 - **Names**: store `shop1` → namespace `store-shop1`, URL `http://shop1.localhost`,

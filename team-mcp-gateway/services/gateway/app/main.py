@@ -27,7 +27,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import api, approvals, chat, credentials, oauth, pii_api, setup, teams
+from . import alerts, api, approvals, chat, credentials, oauth, pii_api, setup, teams
 from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
@@ -326,6 +326,7 @@ def create_app(
                 *credentials.routes,
                 *pii_api.routes,
                 *approvals.routes,
+                *alerts.routes,
                 Route("/api/chat", chat.chat, methods=["POST"]),
             ]
         )

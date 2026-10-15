@@ -51,9 +51,16 @@ Finance member's agent -> gateway
   -> admin approves on Alerts
        gateway runs the frozen call as the requester
        store records PO #N, status "ordered"; on_order goes up
-  -> goods arrive (in the demo: the member says so)
+       team alert to store-operators (2026-10-15-team-alerts-design.md)
+
+Store operator (team store-operators) -> gateway
+  -> sees the alert on the Alerts tab, or via gateway__list_team_alerts
+  -> goods arrive (in the demo the operator also plays the supplier)
   -> woo__receive_stock(po_id, items)           no approval; bounded by the PO
-       stock goes up; PO becomes "received" when every line is in
+       stock goes up; PO "partially_received", then "received" when every line is in
+  -> their agent marks the alert done (gateway__mark_team_alert_done)
+
+Finance member's agent
   -> woo__list_restock_orders()                 what is on order, what came in
 
 Overstock:
@@ -90,22 +97,28 @@ A must-use plugin, like `cart-recovery.php`. WooCommerce has no purchase orders;
 this adds them.
 
 - **PO storage.** A non-public custom post type `restock_po`. Post meta:
-  `_status` (`ordered` | `received`), `_lines`
+  `_status` (`ordered` | `partially_received` | `received`), `_lines`
   (`[{product_id, name, qty, unit_cost, received}]`), `_total` (Σ qty ×
   unit_cost), `_note`. Post author = the user behind the WooCommerce API key,
   so WP records who ordered. Post date = ordered at; `_received_at` when the
   last line comes in.
+- **Purchase orders in WP admin.** The post type has `show_ui` on, under the
+  WooCommerce menu, read-only (no create/edit capability): a list of POs with
+  status, total and ordered date, so the demo can show the PO is real store
+  data. Changes only go through the endpoints below.
 - **Endpoints**, all under `wc/v3` so WooCommerce's API keys authenticate them
   (as for the carts endpoint), permission `manage_woocommerce`:
-  - `GET /wc/v3/restock/orders?status=ordered|received` → `[{id, status,
-    ordered_at, received_at, total, note, lines}]`, newest first.
+  - `GET /wc/v3/restock/orders?status=open|received` → `[{id, status,
+    ordered_at, received_at, total, note, lines}]`, newest first. `open` =
+    `ordered` or `partially_received` (goods still to come).
   - `POST /wc/v3/restock/orders` `{lines: [{product_id, name, qty, unit_cost}],
     note}` → the new PO. Only stores; woo-mcp has already checked the lines.
   - `POST /wc/v3/restock/orders/{id}/receive` `{items: [{product_id, qty}]}` →
     per item `{product_id, ok, error}` and the PO after. Per item: refuse when
     the product is not on the PO or `qty` > `qty − received` on that line; else
     `wc_update_product_stock($product, $qty, 'increase')` and add to
-    `received`. When every line is fully received, `_status = received`. The
+    `received`. After a receive, `_status` = `received` when every line is
+    fully received, else `partially_received` once anything came in. The
     whole request holds a MySQL named lock (`GET_LOCK('restock_po_<id>', 5)`),
     so two receives of the same PO cannot both pass the check.
 - **Refresh command.** `wp restock refresh` re-dates the synthetic history
@@ -176,9 +189,11 @@ forces a choice. That choice is the demo.
 - Units are spaced evenly in time per product (unit k of a product at
   `k / per_day` days ago, random hour), so any window gives the stated rate.
   Green Tea's units stop 3 days ago.
-- Units on the same day are packed into orders of 1–4 lines, 1–3 units a line.
-  Status `completed`. About 3% extra orders are `refunded` or `cancelled`
-  (not counted as sales, so the rates hold); the refund report gets data.
+- Units in time order are packed into orders of 1–12 units (same product
+  merged into one line), dated at the order's newest unit. Status
+  `completed`. About 3% extra orders are `cancelled` (not a sale, so the
+  rates hold). Not `refunded`: the existing reports count refunded orders as
+  sales.
 - Guest customers `Demo Customer N` / `customerN@example.com`, never the
   Catalog B shoppers, so the PII masking demo still has names and emails.
 - The history reaches today, so "today's orders" has data; Catalog A's
@@ -186,9 +201,12 @@ forces a choice. That choice is the demo.
 - Each order gets meta `_synthetic_age` for `wp restock refresh`.
 - **Order of steps:** products → history orders → then stock tracking on and
   stock quantities set. Otherwise WooCommerce subtracts the history from stock.
-- **Size:** about 109 units a day, about 5 units an order, so about 2,000 orders. Seed time must be
-  measured against the provisioning timeout before this is final; if too slow,
-  put more units on each line (fewer orders, same rates).
+- **Size:** about 109 units a day, about 6.5 units an order, so about 1,500
+  orders; under the reports' 2,000-order page limit even for a 90-day window.
+  Seed time must be measured against the setup Job's 900 s deadline before
+  this is final; if too slow, pack more units per order (fewer orders, same
+  rates). Mail is off during the seed (`pre_wp_mail`), so completed orders
+  send nothing.
 
 ### 4. Read tool: `get_inventory_health`
 
@@ -198,7 +216,7 @@ get_inventory_health(days: int = 30 [7..90], limit: int = 50 [1..100]) -> Invent
 
 - Reads all products (paged, like `get_low_stock_products`), sales orders in
   the last `days` (paged `/orders`, `SALE_STATUSES` only), and open POs
-  (`GET /restock/orders?status=ordered`).
+  (`GET /restock/orders?status=open`).
 - Rows only for products with `manage_stock` on; the rest are counted in
   `untracked`.
 - Per product: `product_id`, `name`, `regular_price`, `cogs`, `margin_pct`,
@@ -256,11 +274,13 @@ receive_stock(po_id: int, items: [{product_id, qty}]) -> BulkResult
 ### 7. Read tool: `list_restock_orders`
 
 ```
-list_restock_orders(status: "ordered" | "received" | None = None, limit: int = 20) -> RestockOrders
+list_restock_orders(status: "open" | "received" | None = None, limit: int = 20) -> RestockOrders
 ```
 
-POs newest first: id, status, ordered_at, received_at, total, note, lines with
-qty, received, unit_cost. Totals: count, value on order.
+POs newest first: id, status (`ordered`, `partially_received`, `received`),
+ordered_at, received_at, total, note, lines with qty, received, remaining,
+unit_cost. `open` lists POs with goods still to come. Totals: count, value
+on order.
 
 ### 8. Write tool: `create_clearance_offers`
 
@@ -281,15 +301,32 @@ New woo-mcp settings (`config.py`): `LEAD_TIME_DAYS=7`, `COVER_DAYS=30`,
 `OVERSTOCK_DAYS=120`. Clearance reuses `MIN_MARGIN`, `MAX_DISCOUNT_PCT`,
 `MAX_OFFER_DAYS`.
 
-No gateway code changes. On the Teams page: a finance team gets the five
-tools; budget 0 on `create_restock_plan` and `create_clearance_offers`.
-Shared or personal identity both work, as for cart recovery (a personal key
-needs Read/Write and a Shop manager user).
+No gateway code changes for the tools themselves. Tool names on a gateway are
+`<server>__<tool>`, and a store's server is named after the store: on a store
+`shop1` the tools are `shop1__get_inventory_health` and so on (`woo__` above is
+the `woo-mcp` server's prefix). On the Teams page:
+
+| Team | Tools | Approval / alerts |
+|---|---|---|
+| `finance` | `get_inventory_health`, `create_restock_plan`, `create_clearance_offers`, `list_restock_orders` | budget 0 on the plan and clearance tools |
+| `store-operators` | `list_restock_orders`, `receive_stock` | alert rule: `create_restock_plan` succeeds |
+
+The alert rule is set on the **`store-operators`** team's card: tick
+"alert store-operators" next to `create_restock_plan`. The box sits beside
+every write tool of every team and alerts the team whose card it is on, so a
+tick on `finance` or on `receive_stock` sends no alert to the operators (both
+happened in the first live test).
+
+The alert itself is the generic team alerts feature
+(`2026-10-15-team-alerts-design.md`). Only members see team alerts: an
+admin's Alerts tab shows approvals only. There is no Mark done button; an
+alert is done when the operator's agent calls `gateway__mark_team_alert_done`. Shared or personal identity both work,
+as for cart recovery (a personal key needs Read/Write and a Shop manager user).
 
 ### 10. Other edits
 
 - `services/dashboard/src/Stores.jsx`: Catalog A card text "40 everyday
-  products, 90 days of sales history".
+  products with stock and 90 days of sales: restock planning demo".
 - `charts/store/values.yaml` comment; `charts/store/files/setup-woo.sh` copies
   `restock.php`.
 - `README.md`, `context.md`, `docs/deploy-vps.md`: lines that say Catalog A has
@@ -318,8 +355,8 @@ dated orders and the three restock endpoints:
   each status, missing COGS, `untracked`, empty store → `products: []`.
 - `create_restock_plan`: each refusal; passing items make one PO with the
   store's numbers; all refused → no PO; duplicate ids.
-- `receive_stock`: over-receive refused, partial receive, PO closes when full,
-  unknown PO, already received.
+- `receive_stock`: over-receive refused, partial receive sets
+  `partially_received`, PO closes when full, unknown PO, already received.
 - `create_clearance_offers`: refused when not overstock; the shared checks
   still refuse as before; `create_cart_offers` tests unchanged and passing.
 - `list_restock_orders`: status filter, empty store.
@@ -331,20 +368,70 @@ overstock.
 Manual demo (VPS or k3d):
 
 1. Create a Catalog A store.
-2. Teams page: finance team with the five tools, budget 0 on the plan and
-   clearance tools.
-3. As a finance member, ask Claude: "I have ₹50,000 for restocking this month.
+2. Members page: a finance member and a store operator. Teams page: the two
+   teams and the alert rule from 9.
+3. As the finance member, ask Claude: "I have ₹50,000 for restocking this month.
    What should I reorder?" Claude reads inventory health, picks within budget
    (deodorant first; noodles thin; chips wait), requests approval.
-4. Admin approves on Alerts; the card shows PO #N. `list_restock_orders`
-   shows it as ordered; inventory health shows `on_order`.
-5. "The deodorant delivery arrived": Claude calls `receive_stock`; stock goes
-   up; the PO becomes received.
-6. "What's sitting on the shelves?": Claude proposes clearance on the hamper
+4. Admin approves on Alerts; the card shows PO #N. Inventory health shows
+   `on_order`; WP admin → WooCommerce → Purchase orders lists it.
+5. As the store operator: the Alerts tab shows "PO #N ordered" with a badge.
+   "200 deodorants arrived": `receive_stock` → stock up, PO
+   `partially_received`. Then the rest → PO `received`. "Mark the alert done"
+   → the agent calls `gateway__mark_team_alert_done`; the Alerts tab shows
+   "done by <operator>".
+6. As the finance member: "Show me my restock orders" → PO #N received.
+7. "What's sitting on the shelves?": Claude proposes clearance on the hamper
    (≤ 30%, the floor at cost + 10%); admin approves; the storefront shows the
    sale price.
-7. Run the same tools on a blank store: successful empty answers.
+8. Run the same tools on a blank store: successful empty answers.
 
 ## Status
 
-Design only. Nothing built.
+Built, tested and deployed on k3d `store-check` (2026-10-15/16).
+
+**Deployed:** woo-mcp 0.5.0 (the woo-mcp chart default, used by new stores),
+store-operator 0.7.0 (bundles the store chart with `restock.php` and the new
+seed), gateway 0.10.0 (control plane and the `prod` edge), dashboard 0.9.3.
+Existing stores get `restock.php` on their next setup run but keep their old
+data; only Catalog A stores created now get the demo data.
+
+**Tests:** woo-mcp 23/23, gateway 99/99; the dashboard builds.
+
+**Seed, measured on a throwaway Catalog A store:** setup Job 5 min 05 s
+against the 900 s deadline, so no repacking was needed. 1,566 history orders
+(46 cancelled); 494 completed in the last 30 days, 20 today. Deodorant stock
+54 at 9.03/day, noodles 8/day, green tea stock 0 at 3.6/day over 30 days (its
+sales stop 3 days ago), hamper 140 at 0.1/day, diya 0. `wp restock refresh`
+re-dated the 1,566 orders in 23 s.
+
+**Plugin, on real WordPress:** create PO; over-receive refused;
+`partially_received`, then `received`; the already-received and not-found
+messages; the status filter; 401 when logged out, 400 on a bad status. The WP
+admin Purchase orders list is read-only (no Add new, no edit).
+
+**Live run through the gateway** (store `shop1`, gateway `prod`):
+`get_inventory_health` ×3, `list_restock_orders` ×4 and `receive_stock` ×1
+all succeeded. Six `create_restock_plan` calls: 3 refused for approval, and
+approvals #3 and #4 executed. #4 created PO #1618 (deodorant 160 × 110, green
+tea 85 × 120, peanuts 37 × 58) and alert #1. That alert went to `finance`, not
+the operators: the rule had been ticked on the wrong team (see 9).
+
+**Not yet run live:** an alert reaching the operators' team (needs the rule on
+their card), `gateway__mark_team_alert_done` from an agent, and
+`create_clearance_offers`.
+
+**Beyond this design, also deployed:**
+- Alerts tab: members see their teams' alerts, listed for good (no
+  Open/Done/All filter, no Refresh; reloaded every 30 s), with no Mark done
+  button. Done comes only from `gateway__mark_team_alert_done` and shows "Done
+  by X". Admins see approvals only, and their badge counts pending approvals
+  only. Members' badges count their teams' open alerts.
+- Teams page: the alert checkbox reads "alert <team name>".
+- Dashboard chat: members also get `gateway__list_team_alerts` and
+  `gateway__mark_team_alert_done`.
+- The cluster runs with NetworkPolicies on every component. The gateway may
+  reach woo-mcp pods only in namespaces the store operator created, so store
+  tools work as before (`docs/deploy-vps.md`).
+- On `store-check` the operators' team is named `store-operator` (singular);
+  the name is free, only the rule's placement matters.

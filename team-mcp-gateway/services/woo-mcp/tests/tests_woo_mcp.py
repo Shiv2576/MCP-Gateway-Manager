@@ -180,7 +180,7 @@ def test_token_is_required_but_health_is_open():
     asyncio.run(run())
 
 
-def test_the_eighteen_tools_are_listed_in_both_protocol_eras():
+def test_the_twenty_three_tools_are_listed_in_both_protocol_eras():
     expected = {
         "list_products",
         "create_product",
@@ -200,6 +200,11 @@ def test_the_eighteen_tools_are_listed_in_both_protocol_eras():
         "bulk_refund_orders",
         "get_abandoned_carts",
         "create_cart_offers",
+        "get_inventory_health",
+        "create_restock_plan",
+        "receive_stock",
+        "list_restock_orders",
+        "create_clearance_offers",
     }
 
     async def run():
@@ -341,7 +346,7 @@ def test_store_problems_become_clear_errors_not_hangs():
         with serve(create_app(settings_for(dead))) as url:
             async with mcp_client(url) as client:
                 assert (
-                    len((await client.list_tools()).tools) == 18
+                    len((await client.list_tools()).tools) == 23
                 )  # listing still works
                 r = await client.call_tool("list_orders", {})
                 assert r.is_error and "Could not reach the store" in r.content[0].text
@@ -704,6 +709,208 @@ def test_cart_offers_check_every_number_against_the_store():
                 assert "already on sale" in res["results"][0]["error"]
                 # Duplicates are refused outright.
                 assert (await client.call_tool("create_cart_offers", {"items": [offer(10, *deo, 20, "199.20")] * 2})).is_error
+
+    asyncio.run(run())
+
+
+def _stock_store():
+    """The restock heroes, with 30 days of sales. Trail Mix (id 1) tracks no stock."""
+    fake = build_fake_woo()
+    now = datetime.now(timezone.utc)
+
+    def product(pid, name, price, cogs, stock):
+        fake.state.products[pid] = {"id": pid, "name": name, "regular_price": price, "price": price, "on_sale": False,
+                                    "manage_stock": True, "stock_quantity": stock, "cost_of_goods_sold": {"total_value": cogs}}
+
+    def sold(oid, days_ago, lines, status="completed"):
+        o = make_order(oid, (now - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%S"), status=status)
+        o["line_items"] = [{"product_id": pid, "name": "", "quantity": q, "total": "0"} for pid, q in lines]
+        fake.state.orders[oid] = o
+
+    product(20, "Fresh Deodorant 150ml", "249", 110, 54)
+    product(21, "Instant Noodles 12-pack", "168", 150, 40)
+    product(22, "Masala Chips 52g", "20", 11, 400)
+    product(23, "Diwali Gift Hamper", "1499", 950, 140)
+    product(24, "Brass Diya Set", "899", 420, 60)
+    product(25, "Green Tea 100 Bags", "349", 120, 0)
+    product(26, "Assorted Mystery Box", "499", 0, 30)  # Woo reports an unset cost as 0
+    # Last 30 days: deodorant 270 (9/day), noodles 240, chips 150, hamper 3, green tea 108, mystery box 30.
+    sold(500, 1, [(20, 100), (21, 120), (22, 50), (25, 60), (26, 10)])
+    sold(501, 10, [(20, 100), (21, 120), (22, 50), (23, 3), (25, 48), (26, 20)])
+    sold(502, 20, [(20, 70), (22, 50)])
+    sold(503, 2, [(20, 500)], status="cancelled")  # not a sale
+    sold(504, 40, [(21, 999)])  # outside the window
+    return fake
+
+
+def test_inventory_health_gives_stock_facts():
+    async def run():
+        fake = _stock_store()
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                out = _payload(await client.call_tool("get_inventory_health", {"days": 30}))
+                assert (out["untracked"], out["truncated"], out["lead_time_days"], out["cover_days"]) == (1, False, 7, 30)
+                by = {r["product_id"]: r for r in out["products"]}
+                deo = by[20]
+                assert (deo["per_day"], deo["days_left"], deo["status"], deo["reorder_qty"], deo["reorder_cost"]) == (
+                    9.0, 6.0, "at_risk", 279, "30690.00")
+                assert (deo["cash_tied_up"], deo["max_discount_pct"], deo["margin_pct"], deo["on_order"]) == ("5940.00", 40, 55.8, 0)
+                assert (by[21]["days_left"], by[21]["status"], by[21]["reorder_qty"]) == (5.0, "at_risk", 256)
+                assert (by[25]["per_day"], by[25]["days_left"], by[25]["status"], by[25]["reorder_qty"]) == (3.6, 0.0, "out_of_stock", 134)
+                assert (by[22]["days_left"], by[22]["status"], by[22]["reorder_qty"]) == (80.0, "healthy", 0)
+                assert (by[23]["days_left"], by[23]["status"], by[23]["cash_tied_up"], by[23]["max_discount_pct"]) == (
+                    1400.0, "overstock", "133000.00", 30)
+                assert (by[24]["days_left"], by[24]["status"], by[24]["units_sold"]) == (None, "overstock", 0)
+                assert (by[26]["reorder_qty"], by[26]["reorder_cost"], by[26]["cash_tied_up"]) == (7, None, None)
+                assert [r["product_id"] for r in out["products"]] == [25, 21, 20, 26, 22, 23, 24]
+                assert (out["reorder_cost"], out["cash_tied_up"]) == ("85170.00", "174540.00")
+                assert "email" not in str(out) and "Priya" not in str(out)
+                top = _payload(await client.call_tool("get_inventory_health", {"limit": 2}))
+                assert len(top["products"]) == 2 and top["truncated"]
+
+    asyncio.run(run())
+
+
+def test_inventory_health_on_a_store_without_the_data():
+    async def run():
+        fake = build_fake_woo()  # one product, no stock tracking, no purchase orders
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                out = _payload(await client.call_tool("get_inventory_health", {}))
+                assert (out["products"], out["untracked"], out["reorder_cost"], out["cash_tied_up"]) == ([], 1, "0.00", "0.00")
+                # A store from before the plugin: the facts still work, with nothing on order.
+                fake.state.flags["no_restock_plugin"] = True
+                assert _payload(await client.call_tool("get_inventory_health", {}))["products"] == []
+
+    asyncio.run(run())
+
+
+def test_restock_plan_checks_the_store_and_makes_one_purchase_order():
+    def item(pid, name, qty, cost):
+        return {"product_id": pid, "name": name, "qty": qty, "unit_cost": cost}
+
+    deo, tea = item(20, "Fresh Deodorant 150ml", 279, "110"), item(25, "Green Tea 100 Bags", 134, "120.00")
+
+    async def run():
+        fake = _stock_store()
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                cases = [
+                    (item(99, "Gone", 1, "1"), "product not found"),
+                    (item(20, "Deo", 1, "110"), "name"),
+                    (item(1, "Trail Mix", 1, "100"), "stock tracking is off"),
+                    (item(26, "Assorted Mystery Box", 7, "100"), "no cost of goods"),
+                    (item(20, "Fresh Deodorant 150ml", 1, "100"), "cost of goods is 110.00, not 100"),
+                    (item(23, "Diwali Gift Hamper", 10, "950"), "already overstocked: 1400 days of stock"),
+                    (item(24, "Brass Diya Set", 10, "420"), "nothing sold in the last 30 days"),
+                ]
+                for it, why in cases:
+                    res = _payload(await client.call_tool("create_restock_plan", {"items": [it]}))
+                    assert res["failed"] == 1 and why in res["results"][0]["error"], (why, res)
+                assert not fake.state.purchase_orders  # all refused: no purchase order
+                assert (await client.call_tool("create_restock_plan", {"items": [deo, deo]})).is_error
+
+                res = _payload(await client.call_tool("create_restock_plan", {
+                    "items": [deo, tea, item(24, "Brass Diya Set", 1, "420")], "note": "₹50k budget"}))
+                assert [r["ok"] for r in res["results"]] == [True, True, False]
+                assert res["results"][0]["detail"] == "PO #1: 279 x 110.00"
+                po = fake.state.purchase_orders[1]
+                assert (po["status"], po["total"], po["note"]) == ("ordered", "46770.00", "₹50k budget")
+                assert [(l["product_id"], l["qty"], l["unit_cost"]) for l in po["lines"]] == [(20, 279, "110.00"), (25, 134, "120.00")]
+
+                health = {r["product_id"]: r for r in _payload(await client.call_tool("get_inventory_health", {}))["products"]}
+                assert (health[20]["on_order"], health[20]["reorder_qty"]) == (279, 0)
+                listed = _payload(await client.call_tool("list_restock_orders", {"status": "open"}))
+                assert (listed["count"], listed["on_order_value"], listed["orders"][0]["id"]) == (1, "46770.00", 1)
+                assert listed["orders"][0]["lines"][0]["remaining"] == 279
+                assert _payload(await client.call_tool("list_restock_orders", {"status": "received"}))["orders"] == []
+
+    asyncio.run(run())
+
+
+def test_purchase_orders_on_a_store_without_the_data():
+    async def run():
+        fake = build_fake_woo()
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                assert _payload(await client.call_tool("list_restock_orders", {}))["orders"] == []
+                plan = _payload(await client.call_tool("create_restock_plan", {
+                    "items": [{"product_id": 1, "name": "Trail Mix", "qty": 5, "unit_cost": "100"}]}))
+                assert "stock tracking is off" in plan["results"][0]["error"]
+                fake.state.flags["no_restock_plugin"] = True
+                res = await client.call_tool("list_restock_orders", {})
+                assert res.is_error and "no restock plugin yet" in str(res.content)
+
+    asyncio.run(run())
+
+
+def test_receive_stock_is_bounded_by_the_purchase_order():
+    async def run():
+        fake = _stock_store()
+        fake.state.purchase_orders[1] = {
+            "id": 1, "status": "ordered", "ordered_at": "2026-10-15T10:00:00", "received_at": None, "total": "46770.00", "note": "",
+            "lines": [{"product_id": 20, "name": "Fresh Deodorant 150ml", "qty": 279, "unit_cost": "110.00", "received": 0},
+                      {"product_id": 25, "name": "Green Tea 100 Bags", "qty": 134, "unit_cost": "120.00", "received": 0}]}
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                async def receive(po_id, *lines):
+                    return _payload(await client.call_tool("receive_stock", {
+                        "po_id": po_id, "items": [{"product_id": p, "qty": q} for p, q in lines]}))
+
+                res = await receive(1, (20, 300), (21, 1))
+                assert [r["error"] for r in res["results"]] == [
+                    "only 279 left to receive on PO #1 (279 ordered, 0 received)", "product 21 is not on PO #1"]
+                assert fake.state.products[20]["stock_quantity"] == 54
+
+                res = await receive(1, (20, 200))
+                assert res["results"][0]["detail"] == "stock now 254 (200 of 279 received)"
+                assert fake.state.purchase_orders[1]["status"] == "partially_received"
+                listed = _payload(await client.call_tool("list_restock_orders", {"status": "open"}))
+                assert listed["on_order_value"] == "24770.00"  # 79 x 110 + 134 x 120
+                assert [l["remaining"] for l in listed["orders"][0]["lines"]] == [79, 134]
+                # Partly delivered still counts as on order: no second reorder suggested for it.
+                health = {r["product_id"]: r for r in _payload(await client.call_tool("get_inventory_health", {}))["products"]}
+                assert health[20]["on_order"] == 79
+                # The second delivery sees the first: 80 more would be one too many.
+                assert "only 79 left" in (await receive(1, (20, 80)))["results"][0]["error"]
+
+                res = await receive(1, (20, 79), (25, 134))
+                assert res["ok"] == 2
+                po = fake.state.purchase_orders[1]
+                assert (po["status"], fake.state.products[20]["stock_quantity"], fake.state.products[25]["stock_quantity"]) == (
+                    "received", 333, 134)
+                assert (await receive(1, (20, 1)))["results"][0]["error"] == "PO #1 is already fully received"
+                assert (await receive(9, (20, 1)))["results"][0]["error"] == "PO #9 not found"
+                done = _payload(await client.call_tool("list_restock_orders", {"status": "received"}))
+                assert (done["count"], done["on_order_value"]) == (1, "0.00")
+
+    asyncio.run(run())
+
+
+def test_clearance_offers_only_for_overstock():
+    def offer(pid, name, price, cogs, pct, sale, days=7):
+        return {"product_id": pid, "name": name, "regular_price": price, "cogs": cogs,
+                "discount_pct": pct, "sale_price": sale, "ends_in_days": days}
+
+    hamper = (23, "Diwali Gift Hamper", "1499", "950")
+
+    async def run():
+        fake = _stock_store()
+        with serve(fake) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                for item, why in [
+                    (offer(20, "Fresh Deodorant 150ml", "249", "110", 20, "199.20"), "not overstocked: it is at risk"),
+                    (offer(*hamper, 35, "974.35"), "under the floor 1045.00"),
+                    (offer(*hamper, 25, "1124.25", days=15), "ends_in_days must be 1 to 14"),
+                ]:
+                    res = _payload(await client.call_tool("create_clearance_offers", {"items": [item]}))
+                    assert res["failed"] == 1 and why in res["results"][0]["error"], (why, res)
+                res = _payload(await client.call_tool("create_clearance_offers", {"items": [
+                    offer(*hamper, 25, "1124.25", days=14), offer(24, "Brass Diya Set", "899", "420", 40, "539.40")]}))
+                assert res["ok"] == 2 and res["results"][0]["detail"].startswith("on sale at 1124.25 until ")
+                assert fake.state.products[23]["sale_price"] == "1124.25" and fake.state.products[24]["on_sale"]
+                again = _payload(await client.call_tool("create_clearance_offers", {"items": [offer(*hamper, 25, "1124.25")]}))
+                assert "already on sale" in again["results"][0]["error"]
 
     asyncio.run(run())
 

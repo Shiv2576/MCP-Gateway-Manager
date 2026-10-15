@@ -19,6 +19,8 @@ data:
 {{ .Files.Get "files/seed.php" | indent 4 }}
   cart-recovery.php: |-
 {{ .Files.Get "files/cart-recovery.php" | indent 4 }}
+  restock.php: |-
+{{ .Files.Get "files/restock.php" | indent 4 }}
   products: |
 {{- range .Values.setup.products }}
     {{ .name }}|{{ .price }}

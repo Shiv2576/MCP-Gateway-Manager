@@ -366,7 +366,7 @@ NetworkPolicies) and its own woo-mcp, registered in the gateway as server
   Failed, with the reason), its URL once Ready, owner and created time,
   refreshing every 3 seconds. Several stores can provision at the same time;
   the operator handles each `Store` resource independently.
-- Templates: `catalog-a` (300 products), `catalog-b` (300 products, other
+- Templates: `catalog-a` (40 everyday products, 90 days of sales history: the restock demo), `catalog-b` (300 products, other
   categories), `blank` (3 products). Each also seeds a few orders dated the day it is created.
 - At most 3 stores per admin; a store not Ready in 15 minutes is marked Failed with the reason.
 - Deleting a store removes its gateway server first, then its namespace, which

@@ -9,7 +9,8 @@ wooKeySecret: woo-mcp-credentials
 setup:
   currency: INR
   country: IN
-  # catalog-a | catalog-b: 300 generated products (files/seed.php); blank: the list below.
+  # catalog-a: restock demo (40 products, 90 days of sales); catalog-b: cart recovery demo
+  # (40 products, 300 shoppers); both in files/seed.php. blank: the list below.
   template: blank
   # true: the setup Job is a Helm hook (helm waits for it). The store operator
   # sets false so helm returns at once and the operator watches the Job instead.

@@ -189,7 +189,7 @@ def test_strictest_budget_admins_and_unbudgeted(db_url):
             # No team budget left, yet the approval tools stay listed: clients keep the list they connected with.
             async with gateway_client(w.edge, w.bob) as mcp:
                 names = {t.name for t in (await mcp.list_tools()).tools}
-            assert names == {DESC, REFUND, STATUS, "gateway__request_approval", "gateway__wait_for_approval"}
+            assert names == {DESC, REFUND, STATUS, "gateway__request_approval", "gateway__wait_for_approval", "gateway__list_team_alerts", "gateway__mark_team_alert_done"}
             # bob's refused calls above already filed a request; asking again adds nothing.
             err, msg = await w.call(w.bob, "gateway__request_approval", {"tool": DESC, "arguments": items(100)})
             assert err and "is still open" in msg, msg

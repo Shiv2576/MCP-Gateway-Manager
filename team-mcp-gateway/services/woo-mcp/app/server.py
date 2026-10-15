@@ -1,5 +1,6 @@
 """The MCP tools: six things an agent may do to the store, six reports, four bulk writes,
-and cart recovery (abandoned-cart facts, and sale offers that need an admin's approval).
+cart recovery (abandoned-cart facts, and sale offers that need an admin's approval), and
+restock planning (stock facts, purchase orders, receiving stock, clearance offers).
 
 The first six are thin, typed wrappers over one WooCommerce REST call. The
 reports page through orders or products and add them up here, so dates follow
@@ -11,6 +12,7 @@ reads when it decides which tool to call, so they are written for the model.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_CEILING, Decimal
@@ -299,12 +301,87 @@ class AbandonedCarts(BaseModel):
 class OfferItem(BaseModel):
     model_config = {"extra": "forbid"}
     product_id: int = Field(ge=1)
-    name: str = Field(min_length=1, max_length=200, description="Copied from get_abandoned_carts")
+    name: str = Field(min_length=1, max_length=200, description="Copied from get_abandoned_carts or get_inventory_health")
     regular_price: Money
     cogs: Money
     discount_pct: int = Field(ge=1, le=100, description="Whole percent off the regular price")
     sale_price: Money
     ends_in_days: int = Field(ge=1, le=90, description="The sale ends this many days from when it runs")
+
+
+# Restock planning. Stock and costs are WooCommerce's own fields; purchase orders
+# come from the store plugin (charts/store/files/restock.php).
+class StockRow(BaseModel):
+    product_id: int
+    name: str | None
+    regular_price: str
+    cogs: str | None = Field(description="Cost of goods per unit; null when the store has none")
+    margin_pct: float | None
+    stock: int = Field(description="Units in stock now")
+    on_order: int = Field(description="Units on open purchase orders, not yet received")
+    units_sold: int = Field(description="Units sold in the window")
+    per_day: float = Field(description="units_sold / days")
+    days_left: float | None = Field(description="stock / per_day; null when nothing sold")
+    reorder_qty: int = Field(description="Units to order now to last lead_time_days + cover_days, after stock and on_order")
+    reorder_cost: str | None = Field(description="reorder_qty x cogs")
+    cash_tied_up: str | None = Field(description="stock x cogs")
+    max_discount_pct: int = Field(description="Highest clearance discount that keeps the price at least min_margin_pct above cost")
+    status: Literal["out_of_stock", "at_risk", "healthy", "overstock"]
+
+
+class InventoryHealth(BaseModel):
+    days: int
+    lead_time_days: int
+    cover_days: int
+    overstock_days: int
+    cash_tied_up: str = Field(description="Sum over all stock-tracked products with a cost")
+    reorder_cost: str = Field(description="Cost of every suggested reorder that has a cost")
+    untracked: int = Field(description="Products that do not track stock, so are not listed")
+    products: list[StockRow]
+    truncated: bool
+
+
+class PlanItem(BaseModel):
+    model_config = {"extra": "forbid"}
+    product_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=200, description="Copied from get_inventory_health")
+    qty: int = Field(ge=1, le=100_000, description="Units to order")
+    unit_cost: Money = Field(description="The product's cogs, copied from get_inventory_health")
+
+
+class ReceiveItem(BaseModel):
+    model_config = {"extra": "forbid"}
+    product_id: int = Field(ge=1)
+    qty: int = Field(ge=1, le=100_000, description="Units that arrived")
+
+
+class PoLine(BaseModel):
+    product_id: int
+    name: str
+    qty: int = Field(description="Units ordered")
+    unit_cost: str
+    received: int
+    remaining: int = Field(description="qty - received: still to come")
+
+
+class PurchaseOrder(BaseModel):
+    id: int
+    status: Literal["ordered", "partially_received", "received"]
+    ordered_at: str = Field(description="UTC")
+    received_at: str | None = Field(None, description="UTC, when the last line came in")
+    total: str
+    note: str = ""
+    lines: list[PoLine]
+
+
+class RestockOrders(BaseModel):
+    count: int
+    on_order_value: str = Field(description="Cost of units ordered and not yet received, over the listed orders")
+    orders: list[PurchaseOrder]
+
+
+class NoRestockPlugin(ToolError):
+    """The store was set up before charts/store/files/restock.php existed."""
 
 
 def Items(model: type[BaseModel]) -> Any:
@@ -319,6 +396,7 @@ def _bulk(results: list[ItemResult]) -> BulkResult:
 # Statuses that count as a sale. "refunded" stays in, so its refund is subtracted
 # from net sales instead of the order silently vanishing from gross.
 SALE_STATUSES = {"processing", "completed", "on-hold", "refunded"}
+STOCK_WINDOW_DAYS = 30  # sales window behind the plan and clearance checks
 PER_PAGE = 100
 MAX_PAGES = 20  # shortcut: 2,000 rows per report, move to wc-analytics if stores outgrow it
 
@@ -390,7 +468,8 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         instructions=(
             "Tools for one WooCommerce store: its products, its orders, and "
             "reports over them (sales, refunds, best sellers, stock, product quality, "
-            "customer history), and cart recovery (abandoned carts and sale offers). "
+            "customer history), cart recovery (abandoned carts and sale offers), and "
+            "restock planning (inventory health, purchase orders, receiving stock, clearance sales). "
             "Prices and totals are strings in the store currency."
         ),
         version="0.1.0",
@@ -900,63 +979,45 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
             truncated=len(rows) > limit,
         )
 
-    @server.tool(title="Create cart recovery offers", annotations=WRITE)
-    async def create_cart_offers(items: Items(OfferItem)) -> BulkResult:
-        """Put products from abandoned carts on sale for a few days; the sale ends by itself.
-        Every call needs an admin's approval: when the gateway refuses it, call
-        gateway__request_approval with the same arguments and a `summary` of your analysis,
-        then tell the user the approval id (the offer runs when approved, whether or not you wait).
-        Per item: copy product_id, name, regular_price and cogs from get_abandoned_carts; pick
-        discount_pct <= max_discount_pct; sale_price = regular_price x (1 - discount_pct/100),
-        rounded UP to 2 decimals. When it runs, every number is checked against the store and an
-        item that does not match, is under the cost floor, is already on sale or is in no recent
-        cart is refused with the reason; the others still go on sale."""
+    def offer_refusal(it: OfferItem, p: dict | None) -> str | None:
+        """The checks every sale offer passes: its numbers match the store and the price stays above the floor."""
+        if p is None:
+            return "product not found"
+        price, cost, sale = Decimal(p.get("regular_price") or "0"), cogs_of(p), Decimal(it.sale_price)
+        if p.get("name") != it.name:
+            return f"the store's name is {p.get('name')!r}, not {it.name!r}"
+        if price != Decimal(it.regular_price):
+            return f"the store's regular price is {_money(price)}, not {it.regular_price}"
+        if cost is None:
+            return "the product has no cost of goods in the store, so no price floor can be checked"
+        if cost != Decimal(it.cogs):
+            return f"the store's cost of goods is {_money(cost)}, not {it.cogs}"
+        if p.get("on_sale"):
+            return "already on sale; discounts are not stacked"
+        if it.ends_in_days > settings.max_offer_days:
+            return f"ends_in_days must be 1 to {settings.max_offer_days}"
+        if sale >= price:
+            return "sale_price must be below the regular price"
+        floor = floor_of(cost)
+        if sale < floor:
+            return f"sale_price is under the floor {floor.quantize(Decimal('0.01'), ROUND_CEILING)} (cost + {min_margin * 100:g}%)"
+        actual = (1 - sale / price) * 100
+        if actual > settings.max_discount_pct:
+            return f"a {actual:.1f}% discount is over the store's limit of {settings.max_discount_pct}%"
+        if abs(actual - it.discount_pct) > 1:
+            return f"sale_price {it.sale_price} is a {actual:.1f}% discount, not {it.discount_pct}%"
+        return None
+
+    async def put_on_sale(items: list[OfferItem], not_eligible: Callable[[OfferItem], str | None]) -> BulkResult:
+        """Each item that passes offer_refusal and not_eligible goes on sale until now + ends_in_days; the rest say why."""
         ids = [it.product_id for it in items]
         if len(set(ids)) != len(ids):
             raise ToolError("Each product may appear only once per call")
-        window = settings.cart_window_days
-        in_carts = {
-            line["product_id"]
-            for cart in await call("GET", "/cart-recovery/carts", params={"days": window})
-            for line in cart.get("items") or []
-        }
         store = await products_by_id(set(ids))
-
-        def refusal(it: OfferItem) -> str | None:
-            p = store.get(it.product_id)
-            if p is None:
-                return "product not found"
-            price, cost, sale = Decimal(p.get("regular_price") or "0"), cogs_of(p), Decimal(it.sale_price)
-            if p.get("name") != it.name:
-                return f"the store's name is {p.get('name')!r}, not {it.name!r}"
-            if price != Decimal(it.regular_price):
-                return f"the store's regular price is {_money(price)}, not {it.regular_price}"
-            if cost is None:
-                return "the product has no cost of goods in the store, so no price floor can be checked"
-            if cost != Decimal(it.cogs):
-                return f"the store's cost of goods is {_money(cost)}, not {it.cogs}"
-            if p.get("on_sale"):
-                return "already on sale; discounts are not stacked"
-            if it.product_id not in in_carts:
-                return f"no cart changed in the last {window} days holds it"
-            if it.ends_in_days > settings.max_offer_days:
-                return f"ends_in_days must be 1 to {settings.max_offer_days}"
-            if sale >= price:
-                return "sale_price must be below the regular price"
-            floor = floor_of(cost)
-            if sale < floor:
-                return f"sale_price is under the floor {floor.quantize(Decimal('0.01'), ROUND_CEILING)} (cost + {min_margin * 100:g}%)"
-            actual = (1 - sale / price) * 100
-            if actual > settings.max_discount_pct:
-                return f"a {actual:.1f}% discount is over the store's limit of {settings.max_discount_pct}%"
-            if abs(actual - it.discount_pct) > 1:
-                return f"sale_price {it.sale_price} is a {actual:.1f}% discount, not {it.discount_pct}%"
-            return None
-
         results: dict[int, ItemResult] = {}
         passing = []
         for it in items:
-            why = refusal(it)
+            why = offer_refusal(it, store.get(it.product_id)) or not_eligible(it)
             if why:
                 results[it.product_id] = ItemResult(id=it.product_id, ok=False, error=why)
             else:
@@ -977,5 +1038,231 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
                     r.detail = f"on sale at {sales[r.id]} until {ends[r.id]} UTC"
                 results[r.id] = r
         return _bulk([results[i] for i in ids])
+
+    @server.tool(title="Create cart recovery offers", annotations=WRITE)
+    async def create_cart_offers(items: Items(OfferItem)) -> BulkResult:
+        """Put products from abandoned carts on sale for a few days; the sale ends by itself.
+        Every call needs an admin's approval: when the gateway refuses it, call
+        gateway__request_approval with the same arguments and a `summary` of your analysis,
+        then tell the user the approval id (the offer runs when approved, whether or not you wait).
+        Per item: copy product_id, name, regular_price and cogs from get_abandoned_carts; pick
+        discount_pct <= max_discount_pct; sale_price = regular_price x (1 - discount_pct/100),
+        rounded UP to 2 decimals. When it runs, every number is checked against the store and an
+        item that does not match, is under the cost floor, is already on sale or is in no recent
+        cart is refused with the reason; the others still go on sale."""
+        window = settings.cart_window_days
+        in_carts = {
+            line["product_id"]
+            for cart in await call("GET", "/cart-recovery/carts", params={"days": window})
+            for line in cart.get("items") or []
+        }
+        return await put_on_sale(
+            items, lambda it: None if it.product_id in in_carts else f"no cart changed in the last {window} days holds it"
+        )
+
+
+    # ---------------------------------------------------------- restock planning
+
+    async def restock(method: str, path: str, **kw: Any) -> Any:
+        """A call to the store plugin; a store from before the plugin gets a clear message."""
+        try:
+            return await woo.request(method, f"/restock{path}", **kw)
+        except WooError as exc:
+            if "No route was found" in str(exc):  # WordPress's 404 for a route nobody registered
+                raise NoRestockPlugin("This store has no restock plugin yet; upgrade the store") from exc
+            raise ToolError(str(exc)) from exc
+
+    def stock_row(p: dict, units: int, on_order: int, days: int) -> StockRow:
+        stock = p.get("stock_quantity") or 0
+        price = Decimal(p.get("regular_price") or "0")
+        cost = cogs_of(p)
+        per_day = Decimal(units) / days
+        days_left = None if not per_day else (Decimal(0) if stock <= 0 else stock / per_day)
+        need = int((per_day * (settings.lead_time_days + settings.cover_days)).to_integral_value(ROUND_CEILING))
+        reorder = max(0, need - stock - on_order)
+        if stock <= 0:
+            status = "out_of_stock"
+        elif days_left is None or days_left > settings.overstock_days:
+            status = "overstock"
+        elif days_left < settings.lead_time_days:
+            status = "at_risk"
+        else:
+            status = "healthy"
+        return StockRow(
+            product_id=p["id"],
+            name=p.get("name"),
+            regular_price=_money(price),
+            cogs=cost and _money(cost),
+            margin_pct=round(float((price - cost) / price * 100), 1) if cost and price else None,
+            stock=stock,
+            on_order=on_order,
+            units_sold=units,
+            per_day=round(float(per_day), 2),
+            days_left=None if days_left is None else round(float(days_left), 1),
+            reorder_qty=reorder,
+            reorder_cost=cost and _money(cost * reorder),
+            cash_tied_up=cost and _money(cost * max(stock, 0)),
+            max_discount_pct=max_discount(price, cost),
+            status=status,
+        )
+
+    async def inventory(days: int) -> tuple[dict[int, dict], list[StockRow], int, bool]:
+        """Every product by id, a row per stock-tracked one (soonest to run out first),
+        how many products track no stock, and whether a page limit cut the data."""
+        products, cut_products = await all_pages("/products", {})
+        now = datetime.now(timezone.utc)
+        fmt = "%Y-%m-%dT%H:%M:%S"
+        orders, cut_orders = await sales_in((now - timedelta(days=days)).strftime(fmt), now.strftime(fmt))
+        try:
+            open_pos = await restock("GET", "/orders", params={"status": "open"})  # partly delivered still counts
+        except NoRestockPlugin:
+            open_pos = []
+        sold: dict[Any, int] = defaultdict(int)
+        for o in orders:
+            for item in o.get("line_items") or []:
+                sold[item.get("product_id")] += item.get("quantity") or 0
+        on_order: dict[int, int] = defaultdict(int)
+        for po in open_pos:
+            for line in po.get("lines") or []:
+                on_order[line["product_id"]] += line["qty"] - line["received"]
+        rows = [stock_row(p, sold[p["id"]], on_order[p["id"]], days) for p in products if p.get("manage_stock")]
+        rows.sort(key=lambda r: (r.status != "out_of_stock", math.inf if r.days_left is None else r.days_left))
+        return {p["id"]: p for p in products}, rows, len(products) - len(rows), cut_products or cut_orders
+
+    @server.tool(title="Inventory health", annotations=READ)
+    async def get_inventory_health(
+        days: Annotated[int, Field(ge=7, le=90, description="Sales window: per_day is units sold in the last this many days / days")] = STOCK_WINDOW_DAYS,
+        limit: Annotated[int, Field(ge=1, le=100, description="How many products to return")] = 50,
+    ) -> InventoryHealth:
+        """Stock facts per product that tracks stock, soonest to run out first: stock, units on order,
+        sales per_day, days_left, a suggested reorder_qty (enough for lead_time_days + cover_days of sales,
+        after stock and on_order) with its reorder_cost, cash_tied_up (stock x cost of goods),
+        max_discount_pct for clearance, and status: out_of_stock; at_risk (runs out before a reorder
+        could arrive); healthy; overstock (nothing sold, or more than overstock_days of stock).
+        Reorders go through create_restock_plan, clearance sales through create_clearance_offers;
+        both need an admin's approval. No customer data."""
+        _, rows, untracked, truncated = await inventory(days)
+        priced = [r for r in rows if r.cogs]
+        return InventoryHealth(
+            days=days,
+            lead_time_days=settings.lead_time_days,
+            cover_days=settings.cover_days,
+            overstock_days=settings.overstock_days,
+            cash_tied_up=_money(sum((Decimal(r.cash_tied_up) for r in priced), Decimal(0))),
+            reorder_cost=_money(sum((Decimal(r.reorder_cost) for r in priced), Decimal(0))),
+            untracked=untracked,
+            products=rows[:limit],
+            truncated=truncated or len(rows) > limit,
+        )
+
+
+    @server.tool(title="Create restock plan", annotations=WRITE)
+    async def create_restock_plan(
+        items: Items(PlanItem),
+        note: Annotated[str, Field(max_length=500, description="Why, in a sentence; stored on the purchase order")] = "",
+    ) -> BulkResult:
+        """Order stock: the passing items become one purchase order (status "ordered") in the store.
+        Stock does not change until the goods arrive (receive_stock). Every call needs an admin's
+        approval: when the gateway refuses it, call gateway__request_approval with the same arguments
+        and a `summary` of your analysis (the budget, what you chose and why), then tell the user the
+        approval id. Per item: copy product_id, name and cogs (as unit_cost) from get_inventory_health;
+        qty is usually its reorder_qty. When it runs, an item whose name or cost does not match the
+        store, that has no cost of goods or no stock tracking, or that is overstocked is refused with
+        the reason; the others are still ordered."""
+        ids = [it.product_id for it in items]
+        if len(set(ids)) != len(ids):
+            raise ToolError("Each product may appear only once per call")
+        by_id, rows, _, _ = await inventory(STOCK_WINDOW_DAYS)
+        row_of = {r.product_id: r for r in rows}
+
+        def refusal(it: PlanItem) -> str | None:
+            p, r = by_id.get(it.product_id), row_of.get(it.product_id)
+            if p is None:
+                return "product not found"
+            if p.get("name") != it.name:
+                return f"the store's name is {p.get('name')!r}, not {it.name!r}"
+            if r is None:
+                return "stock tracking is off for this product"
+            if r.cogs is None:
+                return "the product has no cost of goods in the store"
+            if Decimal(r.cogs) != Decimal(it.unit_cost):
+                return f"the store's cost of goods is {r.cogs}, not {it.unit_cost}"
+            if r.status == "overstock":
+                if r.days_left is None:
+                    return f"already overstocked: nothing sold in the last {STOCK_WINDOW_DAYS} days"
+                return f"already overstocked: {r.days_left:g} days of stock"
+            return None
+
+        results = {it.product_id: ItemResult(id=it.product_id, ok=False, error=why) for it in items if (why := refusal(it))}
+        passing = [it for it in items if it.product_id not in results]
+        if passing:
+            po = await restock("POST", "/orders", json={
+                "note": note,
+                "lines": [{"product_id": it.product_id, "name": it.name, "qty": it.qty,
+                           "unit_cost": _money(Decimal(it.unit_cost))} for it in passing],
+            })
+            for it in passing:
+                results[it.product_id] = ItemResult(
+                    id=it.product_id, ok=True, detail=f"PO #{po['id']}: {it.qty} x {_money(Decimal(it.unit_cost))}")
+        return _bulk([results[i] for i in ids])
+
+    @server.tool(title="Purchase orders", annotations=READ)
+    async def list_restock_orders(
+        status: Annotated[Literal["open", "received"] | None,
+                          Field(description="open: goods still to come (ordered or partially_received); "
+                                            "received: complete; omit for both")] = None,
+        limit: Annotated[int, Field(ge=1, le=100, description="How many to return, newest first")] = 20,
+    ) -> RestockOrders:
+        """Purchase orders made by create_restock_plan, newest first, with status (ordered,
+        partially_received, received), each line's units ordered, received and remaining, and the
+        cost of what is still on order."""
+        rows = [
+            PurchaseOrder(**{**po, "lines": [{**l, "remaining": l["qty"] - l["received"]} for l in po["lines"]]})
+            for po in (await restock("GET", "/orders", params={"status": status}))[:limit]
+        ]
+        waiting = sum((Decimal(l.unit_cost) * (l.qty - l.received) for po in rows for l in po.lines), Decimal(0))
+        return RestockOrders(count=len(rows), on_order_value=_money(waiting), orders=rows)
+
+
+    @server.tool(title="Receive stock", annotations=WRITE)
+    async def receive_stock(
+        po_id: Annotated[int, Field(ge=1, description="Purchase order id, from create_restock_plan or list_restock_orders")],
+        items: Items(ReceiveItem),
+    ) -> BulkResult:
+        """Record goods that arrived on a purchase order: adds each item's qty to the product's stock.
+        No approval needed, but an item is refused when it is not on the order or when qty is more
+        than ordered minus already received. Partial deliveries are fine: the order becomes
+        "partially_received", then "received" when every line is in."""
+        out = await restock("POST", f"/orders/{po_id}/receive", json={"items": [it.model_dump() for it in items]})
+        return _bulk([
+            ItemResult(id=r["product_id"], ok=True, detail=f"stock now {r['stock']} ({r['received']} of {r['qty']} received)")
+            if r["ok"] else ItemResult(id=r["product_id"], ok=False, error=r["error"])
+            for r in out["results"]
+        ])
+
+
+    @server.tool(title="Create clearance offers", annotations=WRITE)
+    async def create_clearance_offers(items: Items(OfferItem)) -> BulkResult:
+        """Put overstocked products on sale for a few days to turn stock back into cash; the sale ends
+        by itself. Every call needs an admin's approval: when the gateway refuses it, call
+        gateway__request_approval with the same arguments and a `summary` of your analysis, then tell
+        the user the approval id. Per item: copy product_id, name, regular_price and cogs from
+        get_inventory_health (rows with status overstock); pick discount_pct <= max_discount_pct;
+        sale_price = regular_price x (1 - discount_pct/100), rounded UP to 2 decimals. When it runs,
+        every number is checked against the store, and an item that does not match, is under the cost
+        floor, is already on sale or is not overstocked now is refused with the reason; the others
+        still go on sale."""
+        _, rows, _, _ = await inventory(STOCK_WINDOW_DAYS)
+        row_of = {r.product_id: r for r in rows}
+
+        def not_overstocked(it: OfferItem) -> str | None:
+            r = row_of.get(it.product_id)
+            if r is None:
+                return "stock tracking is off for this product"
+            if r.status != "overstock":
+                return f"not overstocked: it is {r.status.replace('_', ' ')}"
+            return None
+
+        return await put_on_sale(items, not_overstocked)
 
     return server

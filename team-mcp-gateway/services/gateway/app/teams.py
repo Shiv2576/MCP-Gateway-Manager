@@ -25,6 +25,7 @@ def _views(conn, teams: list[dict]) -> list[dict]:
     ids = [t["id"] for t in teams]
     members, policies = collections.defaultdict(list), collections.defaultdict(lambda: collections.defaultdict(list))
     budgets = collections.defaultdict(lambda: collections.defaultdict(list))
+    alert_rules = collections.defaultdict(lambda: collections.defaultdict(list))
     if ids:
         for r in conn.execute(
             "SELECT tm.team_id, u.id, u.username FROM team_members tm JOIN users u ON u.id = tm.user_id"
@@ -48,8 +49,15 @@ def _views(conn, teams: list[dict]) -> list[dict]:
                 "server_id": r["server_id"], "tool": r["tool"], "max_items": r["max_items"],
                 "max_refund_total": r["max_refund_total"] and str(r["max_refund_total"]),
             })
+        for r in conn.execute(
+            "SELECT ar.team_id, g.slug, s.id AS server_id, s.name AS server, ar.tool FROM team_alert_rules ar"
+            " JOIN gateways g ON g.id = ar.gateway_id JOIN servers s ON s.id = ar.server_id"
+            " WHERE ar.team_id = ANY(?) ORDER BY g.slug, s.name, ar.tool",
+            (ids,),
+        ):
+            alert_rules[r["team_id"]][r["slug"]].append({"server_id": r["server_id"], "server": r["server"], "tool": r["tool"]})
     return [{"id": t["id"], "name": t["name"], "members": members[t["id"]], "policies": policies[t["id"]],
-             "budgets": budgets[t["id"]]} for t in teams]
+             "budgets": budgets[t["id"]], "alert_rules": alert_rules[t["id"]]} for t in teams]
 
 
 def _team(request: Request) -> dict:
@@ -119,20 +127,20 @@ def _gateway(request: Request) -> dict:
     return row
 
 
-async def _tool_rows(request: Request, gateway_id: int) -> list[tuple[int, str]]:
-    """The body's {tools: [{server_id, tool}]}, each server attached to this gateway.
+async def _tool_rows(request: Request, gateway_id: int, field: str = "tools") -> list[tuple[int, str]]:
+    """The body's {<field>: [{server_id, tool}]}, each server attached to this gateway.
     Tool names are not checked against the upstream, which may be down."""
-    tools = (await body(request)).get("tools", [])
+    tools = (await body(request)).get(field, [])
     if not isinstance(tools, list) or not all(
         isinstance(t, dict) and type(t.get("server_id")) is int
         and isinstance(t.get("tool"), str) and 0 < len(t["tool"]) <= TOOL_MAX
         for t in tools
     ):
-        raise HTTPError(400, f"tools must be a list of {{server_id, tool}} with tool 1-{TOOL_MAX} characters")
+        raise HTTPError(400, f"{field} must be a list of {{server_id, tool}} with tool 1-{TOOL_MAX} characters")
     attached = {r["server_id"] for r in request.app.state.db.execute(
         "SELECT server_id FROM gateway_servers WHERE gateway_id = ?", (gateway_id,))}
     if not {t["server_id"] for t in tools} <= attached:
-        raise HTTPError(400, "tools names a server that is not attached to this gateway")
+        raise HTTPError(400, f"{field} names a server that is not attached to this gateway")
     return sorted({(t["server_id"], t["tool"]) for t in tools})
 
 
@@ -146,6 +154,20 @@ async def set_tools(request: Request) -> Response:
     with request.app.state.db.transaction() as tx:
         tx.execute("DELETE FROM team_tools WHERE team_id = ? AND gateway_id = ?", (team["id"], gateway["id"]))
         tx.executemany("INSERT INTO team_tools (team_id, gateway_id, server_id, tool) VALUES (?, ?, ?, ?)",
+                       [(team["id"], gateway["id"], s, t) for s, t in rows])
+    return JSONResponse({"ok": True, "count": len(rows)})
+
+
+@handler
+async def set_alert_rules(request: Request) -> Response:
+    """Replace which tools on one gateway alert this team when a call of them succeeds."""
+    require_admin(request)
+    team = _team(request)
+    gateway = _gateway(request)
+    rows = await _tool_rows(request, gateway["id"], "rules")
+    with request.app.state.db.transaction() as tx:
+        tx.execute("DELETE FROM team_alert_rules WHERE team_id = ? AND gateway_id = ?", (team["id"], gateway["id"]))
+        tx.executemany("INSERT INTO team_alert_rules (team_id, gateway_id, server_id, tool) VALUES (?, ?, ?, ?)",
                        [(team["id"], gateway["id"], s, t) for s, t in rows])
     return JSONResponse({"ok": True, "count": len(rows)})
 
@@ -228,6 +250,7 @@ routes = [
     Route("/api/teams/{id:int}", delete_team, methods=["DELETE"]),
     Route("/api/teams/{id:int}/members", set_members, methods=["PUT"]),
     Route("/api/teams/{id:int}/gateways/{slug}/tools", set_tools, methods=["PUT"]),
+    Route("/api/teams/{id:int}/gateways/{slug}/alert-rules", set_alert_rules, methods=["PUT"]),
     Route("/api/teams/{id:int}/gateways/{slug}/budgets", set_budgets, methods=["PUT"]),
     Route("/api/users/{id:int}/gateways/{slug}/denies", set_denies, methods=["PUT"]),
 ]

@@ -283,11 +283,12 @@ class Upstreams:
                         }
                     )
                 )
-        from . import approvals  # here, not at the top: approvals imports api, which imports this module
+        from . import alerts, approvals  # here, not at the top: approvals imports api, which imports this module
 
         # Every member gets them, budget or not: MCP clients keep the list they got at connect
         # time, so tying it to budgets left agents without the tool when an admin added one later.
-        return out + (approvals.TOOLS if out and user["role"] != "admin" else [])
+        builtins = (approvals.TOOLS if user["role"] != "admin" else []) + alerts.TOOLS
+        return out + (builtins if out else [])
 
     async def call_tool(
         self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None, *,
@@ -366,6 +367,16 @@ class Upstreams:
                 audit_id,
             ),
         )
+        if not result.is_error and logged is not None and row is not None:
+            from . import alerts  # here, like approvals: avoids an import cycle through api
+
+            listed = next((t for t in self.status.get(row["id"], Status()).tools if t.name == tool), None)
+            try:
+                alerts.fire(self.db, user=user, gateway_slug=gateway_slug, server_id=row["id"], tool=tool,
+                            title=(listed and (listed.title or (listed.annotations and listed.annotations.title))) or tool,
+                            arguments=arguments or {}, result=logged, approval_id=approval_id, audit_id=audit_id)
+            except Exception:
+                log.exception("team alert for %s failed", name)  # the caller gets their result either way
         return result
 
     async def _builtin(self, user, gateway_slug: str, name: str, tool: str, arguments: dict, client):

@@ -256,6 +256,10 @@ async def builtin(ups, user: dict, gateway_slug: str, tool: str, arguments: dict
         return request(ups, user, gateway_slug, arguments, client)
     if tool == "wait_for_approval":
         return await wait(ups, user, arguments)
+    from . import alerts
+
+    if (result := alerts.builtin(ups.db, user, tool, arguments)) is not None:
+        return result, None, "bad input" if result.is_error else None
     return upstream.error_result(f"Unknown tool '{BUILTIN}__{tool}'. Tools are named <server>__<tool>."), None, "unknown tool"
 
 
