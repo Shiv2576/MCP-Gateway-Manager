@@ -9,7 +9,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: you@example.org                 # Let's Encrypt expiry notices; example.* addresses are rejected
+    email: shivangdixit004@gmail.com                # Let's Encrypt expiry notices; example.* addresses are rejected
     privateKeySecretRef: { name: letsencrypt-account }
     solvers:
       # HTTP-01 on port 80: no DNS provider token. No wildcards, so one certificate per host.
@@ -25,8 +25,9 @@ spec:
   secretName: wildcard-tls
   issuerRef: { name: letsencrypt, kind: ClusterIssuer }
   dnsNames:
-    - dash.example.com
-    - gateway.example.com
+    - dash.2001-41d0-303-2774--94.sslip.io
+    - gateway.2001-41d0-303-2774--94.sslip.io
+    - store.2001-41d0-303-2774--94.sslip.io
 ---
 # Traefik's default certificate: Ingresses without a tls: section get it too.
 apiVersion: traefik.io/v1alpha1

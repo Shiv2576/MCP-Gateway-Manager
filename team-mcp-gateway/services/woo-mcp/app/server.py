@@ -518,7 +518,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         ] = 10,
         page: Annotated[int, Field(ge=1, description="Page number, starting at 1")] = 1,
     ) -> ProductList:
-        """List products in the store, newest first. Use `search` to find one by name."""
+        """List products in the store, newest first, with price and stock status. Use `search` to find
+        one by name (for example to get its id). For stock levels use get_low_stock_products or
+        get_inventory_health; for products missing details use audit_product_quality."""
         rows = await call(
             "GET",
             "/products",
@@ -553,8 +555,10 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
             Field(max_length=64, description="Optional unique product code (an ID, not a quantity)"),
         ] = None,
     ) -> Product:
-        """Create a simple product with stock tracking on and publish it, so it appears
-        on the storefront at once."""
+        """Create a new simple product with stock tracking on and publish it, so it appears
+        on the storefront at once. Only for a product that does not exist yet: to change an existing
+        product's price or description use bulk_update_product_prices or
+        bulk_update_product_descriptions."""
         body: dict[str, Any] = {
             "name": name,
             "type": "simple",
@@ -597,7 +601,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
             int, Field(ge=1, le=50, description="How many to return")
         ] = 20,
     ) -> OrderList:
-        """List orders, newest first. For "what came in today", pass on_date='today'."""
+        """List orders, newest first, with status and total. For "what came in today", pass
+        on_date='today'. For one order's line items use get_order; for revenue or order counts over a
+        period use get_sales_summary; for one customer's history use get_customer_timeline."""
         params: dict[str, Any] = {
             "per_page": limit,
             "orderby": "date",
@@ -614,7 +620,8 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
     async def get_order(
         order_id: Annotated[int, Field(ge=1, description="The order's numeric id")],
     ) -> Order:
-        """Get one order with its line items, payment method and destination."""
+        """Get one order with its line items, payment method and destination. Needs the order id;
+        if the user gives none, find it with list_orders or get_customer_timeline first."""
         return _order(await call("GET", f"/orders/{order_id}"), full=True)
 
     @server.tool(title="Update order status", annotations=WRITE)
@@ -622,7 +629,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         order_id: Annotated[int, Field(ge=1, description="The order's numeric id")],
         status: Annotated[OrderStatus, Field(description="The new status")],
     ) -> OrderSummary:
-        """Move an order to a new status, for example 'processing' to 'completed'."""
+        """Move one order to a new status, for example 'processing' to 'completed'. For several
+        orders, or to change a shipping address, use bulk_update_orders; to give money back use
+        bulk_refund_orders."""
         return _order(await call("PUT", f"/orders/{order_id}", json={"status": status}))
 
     @server.tool(title="Sales summary", annotations=READ)
@@ -637,7 +646,8 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         ],
     ) -> SalesSummary:
         """Total sales, order count, refunds and average order value for orders placed
-        between two days. Counts processing, completed, on-hold and refunded orders."""
+        between two days. Counts processing, completed, on-hold and refunded orders. Use for any
+        "how much did we sell / how many orders" question; for a single day pass the same start and end."""
         after, before = date_range(start, end)
         orders, truncated = await sales_in(after, before)
         gross = sum((Decimal(o.get("total") or "0") for o in orders), Decimal(0))
@@ -669,7 +679,7 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         ],
     ) -> RefundSummary:
         """Refunds made between two days (by refund date, not order date): count, total
-        and each refund with its reason."""
+        and each refund with its reason. For sales net of refunds use get_sales_summary."""
         after, before = date_range(start, end)
         # A refund touches its order, so any order refunded in range was modified
         # since `after`, however old the order itself is.
@@ -751,7 +761,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         ] = 5,
     ) -> LowStockList:
         """Products with stock tracking on and fewer than `threshold` units, lowest first.
-        Variable products are only checked at the parent level, not per variation."""
+        Variable products are only checked at the parent level, not per variation. A quick
+        "what is running low" list; for days of stock left, reorder quantities or overstock use
+        get_inventory_health."""
         rows, truncated = await all_pages("/products", {})
         low = [
             p
@@ -773,7 +785,7 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
     @server.tool(title="Audit product quality", annotations=READ)
     async def audit_product_quality() -> QualityAudit:
         """Find products missing a description, an image, a price or a real category
-        ("Uncategorized" counts as missing)."""
+        ("Uncategorized" counts as missing). Fill in descriptions with bulk_update_product_descriptions."""
         rows, truncated = await all_pages("/products", {})
         flagged: list[ProductIssues] = []
         for p in rows:
@@ -854,19 +866,22 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
 
     @server.tool(title="Bulk update product descriptions", annotations=WRITE)
     async def bulk_update_product_descriptions(items: Items(DescriptionItem)) -> BulkResult:
-        """Set the description and/or short description of up to 100 products in one call.
-        Reports success or the error for each product."""
+        """Set the description and/or short description of up to 100 products in one call
+        (one product is fine too). Reports success or the error for each product."""
         return await batch("/products", *updates_of(items, "product_id"))
 
     @server.tool(title="Bulk update product prices", annotations=WRITE)
     async def bulk_update_product_prices(items: Items(PriceItem)) -> BulkResult:
-        """Set the regular and/or sale price of up to 100 products in one call.
-        An empty sale price is not allowed; omit it to leave the sale price as is."""
+        """Set the regular and/or sale price of up to 100 products in one call (one product is
+        fine too). An empty sale price is not allowed; omit it to leave the sale price as is.
+        To discount products in abandoned carts or overstocked ones, use create_cart_offers or
+        create_clearance_offers instead: they keep the price above cost and end the sale by themselves."""
         return await batch("/products", *updates_of(items, "product_id"))
 
     @server.tool(title="Bulk update orders", annotations=WRITE)
     async def bulk_update_orders(items: Items(OrderUpdateItem)) -> BulkResult:
-        """Change the status and/or shipping address of up to 100 orders in one call."""
+        """Change the status and/or shipping address of up to 100 orders in one call (one order is
+        fine too). To give money back use bulk_refund_orders."""
         return await batch("/orders", *updates_of(items, "order_id"))
 
     @server.tool(

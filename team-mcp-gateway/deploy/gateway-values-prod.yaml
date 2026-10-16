@@ -2,13 +2,13 @@
 #   helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-prod.yaml
 mode: control
 ingress:
-  host: gateway.example.com
+  host: gateway.2001-41d0-303-2774--94.sslip.io
 # Served over https (TLS ends at Traefik), so the session cookie is https-only.
 cookieSecure: true
 stores:
   enabled: true
-# Stores are <name>.example.com and edges <slug>.gw.example.com, over https.
-baseDomain: example.com
+# Stores are <name>.2001-41d0-303-2774--94.sslip.io and edges <slug>.gw.2001-41d0-303-2774--94.sslip.io, over https.
+baseDomain: 2001-41d0-303-2774--94.sslip.io
 urlScheme: https
 # The demo servers and the mercora store's woo-mcp live in this namespace (README).
 upstreamAllowHosts: "woo-mcp-woo-mcp.mercora.svc.cluster.local,notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"

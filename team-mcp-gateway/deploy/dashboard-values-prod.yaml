@@ -1,4 +1,4 @@
 # helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-prod.yaml
 gatewayUrl: http://team-gateway:8000
 ingress:
-  host: dash.example.com
+  host: dash.2001-41d0-303-2774--94.sslip.io

@@ -49,13 +49,13 @@ The same releases as `store-check`, in namespace `mercora`:
 |---|---|---|
 | `db` | postgres | `postgres:17-alpine` |
 | `mercora` | store | Bitnami WordPress + MariaDB |
-| `woo-mcp` | woo-mcp (the `mercora` store's MCP server) | `woo-mcp:0.4.0` |
+| `woo-mcp` | woo-mcp (the `mercora` store's MCP server) | `woo-mcp:0.5.0` |
 | `team` | gateway (control plane) | `gateway:0.7.3` |
 | `team-ui` | dashboard | `dashboard:0.7.3` |
 | `store-operator` | store-operator | `store-operator:0.5.3` |
 | `notes`, `fx` | demo-mcp | `demo-mcp:0.1.0` |
 | `gw-<slug>` | gateway (edge), installed by the operator | `gateway:0.6.1` |
-| `store-<name>` | store, installed by the operator | Bitnami WordPress + MariaDB, `woo-mcp:0.4.0` |
+| `store-<name>` | store, installed by the operator | Bitnami WordPress + MariaDB, `woo-mcp:0.5.0` |
 
 The tags are the chart defaults, not code versions: step 3 builds the current
 code under them. `gateway:0.6.1` is the same build as `gateway:0.7.3`, so
@@ -160,7 +160,7 @@ mkdir -p /tmp/img
 b() { docker buildx build --platform linux/amd64 -o type=docker,dest=/tmp/img/$1.tar -t $1:$2 "${@:3}"; }
 b gateway        0.7.3 services/gateway -t gateway:0.6.1
 b dashboard      0.7.3 services/dashboard
-b woo-mcp        0.4.0 services/woo-mcp
+b woo-mcp        0.5.0 services/woo-mcp
 b demo-mcp       0.1.0 services/demo-mcp
 b store-operator 0.5.3 -f services/store-operator/Dockerfile .
 
@@ -173,6 +173,10 @@ ssh root@VPS_IP 'k3s ctr images ls -q | grep -E "gateway|dashboard|operator|mcp"
 `pullPolicy: IfNotPresent` (chart default) makes the pods use these imported
 images. After rebuilding with the same tag, delete the pod so it restarts on
 the new one.
+
+**Later updates:** `scripts/deploy-vps.sh` does this step plus the app
+`helm upgrade`s and pod restarts, after showing what changes and asking.
+Override `VPS`, `PORT` or `KEY` in the environment for another server.
 
 ## 4. TLS (on the VPS)
 
@@ -319,6 +323,17 @@ On a headless server, follow the login prompt and finish signing in from your
 laptop's browser. `kubectl` works inside it because `KUBECONFIG` is in
 `.bashrc`. This is the live cluster, so read each command before approving it,
 especially `helm uninstall`, `kubectl delete`, and anything touching PVCs.
+
+## NAT / IPv6-only / LXC servers
+
+Some cheap VPSes share one IPv4 behind NAT (only SSH forwarded) and give each
+server its own IPv6, often as an LXC container. Use the IPv6 as `BASE`
+(`2001-41d0-...--94.sslip.io`, colons → dashes, `::` → `--`) and add four
+things: k3s settings for LXC, legacy iptables (kube-router fails on nftables in LXC), a socat forwarder from IPv6 80/443 to Traefik,
+and a CoreDNS override so pods resolve `*.BASE` to Traefik over IPv4. See
+[vps-setup-log.md](vps-setup-log.md), which also records the live server's setup.
+Clients without IPv6 can't reach such a server, Claude's connector included:
+publish the gateway edge through Tailscale Funnel (same file) for IPv4.
 
 ## Known limits
 

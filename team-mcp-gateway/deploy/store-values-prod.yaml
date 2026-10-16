@@ -5,4 +5,4 @@ wordpress:
   # on first install only. It must equal woo-mcp's store.publicUrl.
   wordpressScheme: https
   ingress:
-    hostname: store.example.com
+    hostname: store.2001-41d0-303-2774--94.sslip.io

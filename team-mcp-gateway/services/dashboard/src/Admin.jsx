@@ -331,6 +331,7 @@ export function Audit() {
           <tr>
             <th>When</th>
             <th>User</th>
+            <th>Server</th>
             <th>Tool</th>
             <th>Gateway</th>
             <th title="Whose credential the call carried upstream">Identity</th>
@@ -344,6 +345,7 @@ export function Audit() {
             <tr key={r.id} onClick={() => show(r.id)} style={{ cursor: 'pointer' }} title="Show the payload">
               <td>{when(r.at)}</td>
               <td>{r.username}</td>
+              <td>{r.server || <span className="muted">—</span>}</td>
               <td className="mono">{r.tool}</td>
               <td>{r.gateway || <span className="muted">—</span>}</td>
               <td>{r.identity || <span className="muted">—</span>}</td>

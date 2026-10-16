@@ -29,6 +29,10 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ required "existingSecret is required" .Values.existingSecret }}
+          # kopf's health endpoint answers once the operator has started watching.
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 20

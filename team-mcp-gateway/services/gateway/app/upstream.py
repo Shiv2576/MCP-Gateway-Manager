@@ -262,7 +262,7 @@ class Upstreams:
     def list_tools(self, user, gateway_slug: str) -> list[Tool]:
         # Enabled flag, attachments and team policies read from the database on
         # every request, so any change applies at once.
-        rows = self.db.execute("SELECT id, name FROM servers WHERE enabled = 1").fetchall()
+        rows = self.db.execute("SELECT id, name, store FROM servers WHERE enabled = 1").fetchall()
         allowed = allowed_tools(self.db, user, gateway_slug)
         protected = self._protected(gateway_slug)
         out = []
@@ -277,7 +277,9 @@ class Upstreams:
                     tool.model_copy(
                         update={
                             "name": row["name"] + SEP + tool.name,
-                            "description": f"[{row['name']}] {tool.description or ''}".strip(),
+                            # Several stores expose the same tools; the prefix says which one this acts on.
+                            "description": (f"[store {row['store']}] " if row["store"] else f"[{row['name']}] ")
+                            + (tool.description or ""),
                             # MCP clients check structuredContent against it; masked values may not fit.
                             "output_schema": None if protected else tool.output_schema,
                         }

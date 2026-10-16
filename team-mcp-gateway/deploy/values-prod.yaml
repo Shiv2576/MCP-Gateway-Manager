@@ -4,7 +4,7 @@
 store:
   internalUrl: http://mercora-wordpress.mercora.svc.cluster.local
   # The WordPress Site Address. Calls inside the cluster stay http; woo-mcp signs with that scheme.
-  publicUrl: https://store.example.com
+  publicUrl: https://store.2001-41d0-303-2774--94.sslip.io
 resources:
   limits:
     cpu: 500m

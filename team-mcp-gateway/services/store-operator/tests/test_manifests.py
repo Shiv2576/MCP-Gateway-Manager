@@ -29,8 +29,12 @@ def test_credentials_secret_is_only_built_once_per_call():
 
 def test_network_policies_isolate_the_store():
     pols = {p["metadata"]["name"]: p for p in m.network_policies()}
-    assert set(pols) == {"default-deny", "allow-dns", "wordpress-ingress", "wordpress-egress", "setup-egress", "mariadb-ingress"}
+    assert set(pols) == {"default-deny", "allow-dns", "wordpress-ingress", "wordpress-egress", "setup-egress", "mariadb-ingress",
+                         "acme-solver-ingress"}
     assert pols["default-deny"]["spec"] == {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
+    acme = pols["acme-solver-ingress"]["spec"]
+    assert acme["podSelector"] == {"matchLabels": {"acme.cert-manager.io/http01-solver": "true"}}
+    assert acme["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8089}]
     db_from = pols["mariadb-ingress"]["spec"]["ingress"][0]["from"]
     # Only pods in this namespace (no namespaceSelector) may reach MariaDB.
     assert all("namespaceSelector" not in f for f in db_from)
@@ -161,6 +165,7 @@ def test_hosted_deployment_and_secret():
     assert {"name": "DEMO_SERVER", "value": "notes"} in c["env"]
     assert {"name": "AUTH_TOKEN", "valueFrom": {"secretKeyRef": {"name": m.HOSTED_SECRET, "key": "token"}}} in c["env"]
     assert c["readinessProbe"]["tcpSocket"]["port"] == 8000
+    assert c["livenessProbe"]["tcpSocket"]["port"] == 8000
     gh = m.hosted_deployment({"image": "ghcr.io/github/github-mcp-server", "args": ["http"], "port": 8082, "path": "/"})
     gc = gh["spec"]["template"]["spec"]["containers"][0]
     assert gc["args"] == ["http"] and gc["env"] == []

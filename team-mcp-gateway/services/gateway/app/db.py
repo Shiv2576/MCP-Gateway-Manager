@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     username    TEXT NOT NULL,
     tool        TEXT NOT NULL,
     server      TEXT,
-    gateway     TEXT,  -- the edge's slug; NULL for calls from the dashboard and chat
+    gateway     TEXT,  -- the gateway the call went through (edge, dashboard and chat alike); NULL only in old rows
     ok          INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
     error       TEXT

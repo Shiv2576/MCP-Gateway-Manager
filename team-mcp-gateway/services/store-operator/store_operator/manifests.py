@@ -140,6 +140,9 @@ def network_policies() -> list[dict]:
             "from": [{"podSelector": {"matchLabels": WORDPRESS}}, {"podSelector": {"matchLabels": SETUP_LABEL}}],
             "ports": _tcp(3306),
         }]),
+        # cert-manager's HTTP-01 solver pod (clusterIssuer set): Traefik must reach it or the store's certificate never issues.
+        _policy("acme-solver-ingress", {"acme.cert-manager.io/http01-solver": "true"},
+                ingress=[{"from": [kube_system], "ports": _tcp(8089)}]),
     ]
 
 
@@ -352,6 +355,7 @@ def hosted_deployment(spec: dict) -> dict:
         "ports": [{"name": "mcp", "containerPort": spec["port"]}],
         # TCP, not HTTP: we know the port, not what each image answers on GET.
         "readinessProbe": {"tcpSocket": {"port": spec["port"]}, "periodSeconds": 5},
+        "livenessProbe": {"tcpSocket": {"port": spec["port"]}, "initialDelaySeconds": 30, "periodSeconds": 20},
         "resources": HOSTED_RESOURCES,
         # Not runAsNonRoot: many published images run as root and would never start.
         "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
