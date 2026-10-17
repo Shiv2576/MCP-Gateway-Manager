@@ -29,7 +29,7 @@ echo "gateway:$(tag gateway) + gateway:$EDGE (edges), dashboard:$(tag dashboard)
 echo "demo-mcp:$(tag demo-mcp), store-operator:$(tag store-operator)"
 echo
 echo "== Then on the VPS =="
-echo "helm upgrade woo-mcp notes fx team team-ui store-operator (mercora), every gw-* edge,"
+echo "helm upgrade notes fx team team-ui store-operator (mercora), every gw-* edge,"
 echo "woo-mcp in every store-* namespace; restart all pods on those images."
 echo
 read -rp "Deploy to $VPS? [y/N] " ok
@@ -49,7 +49,7 @@ b store-operator "$(tag store-operator)" -f services/store-operator/Dockerfile .
 "${SSH[@]}" 'rm -rf /tmp/deploy-img && mkdir /tmp/deploy-img'
 scp -i "$KEY" -P "$PORT" "$IMG"/*.tar "$VPS:/tmp/deploy-img/"
 
-"${SSH[@]}" bash -s <<'EOF'
+"${SSH[@]}" bash -s "$EDGE" <<'EOF'
 set -euo pipefail
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 cd /opt/team-mcp-gateway
@@ -57,15 +57,15 @@ for f in /tmp/deploy-img/*.tar; do k3s ctr images import "$f"; done
 rm -rf /tmp/deploy-img
 
 n=mercora
-helm upgrade --install woo-mcp        charts/woo-mcp        -n $n -f deploy/values-prod.yaml
 helm upgrade --install notes          charts/demo-mcp       -n $n -f deploy/notes-values-local.yaml
 helm upgrade --install fx             charts/demo-mcp       -n $n -f deploy/fx-values-local.yaml
 helm upgrade --install team           charts/gateway        -n $n -f deploy/gateway-values-prod.yaml
 helm upgrade --install team-ui        charts/dashboard      -n $n -f deploy/dashboard-values-prod.yaml
+kubectl apply -f charts/store-operator/crds/   # helm never upgrades crds/
 helm upgrade --install store-operator charts/store-operator -n $n -f deploy/store-operator-values-prod.yaml
 # Operator-installed releases: new chart defaults, values the operator set.
 for r in $(helm ls -n $n -q | grep '^gw-' || true); do
-  helm upgrade "$r" charts/gateway -n $n --reset-then-reuse-values
+  helm upgrade "$r" charts/gateway -n $n --reset-then-reuse-values --set image.tag="$1"
 done
 for ns in $(kubectl get ns -o name | sed -n 's|^namespace/\(store-.*\)|\1|p'); do
   helm status woo-mcp -n "$ns" >/dev/null 2>&1 && helm upgrade woo-mcp charts/woo-mcp -n "$ns" --reset-then-reuse-values

@@ -1,6 +1,6 @@
 image:
   repository: store-operator
-  tag: "0.5.3"
+  tag: "0.7.1"
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
@@ -13,7 +13,7 @@ baseDomain: localhost
 urlScheme: http
 clusterIssuer: ""
 # Gateway image tag every edge (McpGateway) is installed with.
-edgeImageTag: "0.6.1"
+edgeImageTag: "0.10.1"
 resources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { memory: 512Mi }

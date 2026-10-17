@@ -87,6 +87,8 @@ See the header of `services/woo-mcp/app/check.py`. Do this first.
 
 ## Build and install (local k3d)
 
+Upgrading and rolling back any release afterwards: [docs/upgrades.md](docs/upgrades.md).
+
 Store first. The Secret holds the API key the setup Job registers in WooCommerce,
 and woo-mcp later reads the same Secret, so there is only one copy of the key.
 

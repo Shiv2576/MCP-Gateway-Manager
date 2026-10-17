@@ -1,7 +1,7 @@
 # VPS (k3s), after deploy/tls-prod.yaml is applied:
 #   helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-prod.yaml
 gatewayUrl: http://team-gateway:8000
-edgeImageTag: "0.6.1"
+edgeImageTag: "0.10.1"
 # Stores at https://<name>.2001-41d0-303-2774--94.sslip.io, edges at https://<slug>.gw.2001-41d0-303-2774--94.sslip.io,
 # each Ingress with its own Let's Encrypt certificate (HTTP-01).
 baseDomain: 2001-41d0-303-2774--94.sslip.io
