@@ -54,6 +54,8 @@ def test_store_api(db_url):
             bob = await login(gw, "bob", "bob-password-123")
 
             assert (await bob.get("/api/stores")).status_code == 403
+            assert (await bob.get("/api/stores/limit")).status_code == 403
+            assert (await admin.get("/api/stores/limit")).json() == {"max_per_admin": 3}
             for name in ("A", "x", "shop_1", "a" * 21, "-ab", "ab-"):
                 r = await admin.post("/api/stores", json={"name": name, "template": "blank"})
                 assert r.status_code == 400, name

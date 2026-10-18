@@ -127,3 +127,21 @@ def test_gateways_off_outside_a_cluster(db_url):
             assert r.status_code == 503 and "not configured" in r.json()["error"]
 
     asyncio.run(run())
+
+
+def test_tailnet_gives_every_new_gateway_a_public_url(db_url):
+    fake = FakeGateways()
+
+    async def run():
+        settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP, tailnet_domain="tail1234.ts.net")
+        with serve(create_app(settings, gateways=fake)) as gw:
+            admin = await setup_admin(gw)
+            r = await admin.post("/api/gateways", json={"slug": "ts", "name": "Tailscale"})
+            assert r.json()["mcp_url"] == "https://ts-gw.tail1234.ts.net/mcp"
+            assert fake.items["ts"]["spec"]["publicUrl"] == "https://ts-gw.tail1234.ts.net"
+            # A typed public URL still wins; a retry of the first request is still safe.
+            r = await admin.post("/api/gateways", json={"slug": "ext", "name": "Ext", "public_url": "https://gw.example.com"})
+            assert r.json()["mcp_url"] == "https://gw.example.com/mcp"
+            assert (await admin.post("/api/gateways", json={"slug": "ts", "name": "Tailscale"})).status_code == 200
+
+    asyncio.run(run())

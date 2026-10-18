@@ -105,6 +105,11 @@ def test_edge_values():
         "mode": "edge", "slug": "prod", "replicas": 2, "image": {"tag": "0.2.0"},
         "ingress": {"host": "prod.gw.localhost"}, "stores": {"enabled": False},
     }
+    v = m.edge_values("ts", {"publicUrl": "https://ts-gw.tail1234.ts.net"}, "0.2.0")
+    assert v["tailscale"] == {"hostname": "ts-gw"} and "extraHosts" not in v["ingress"]
+    # A hand-made Funnel name (another machine) still goes through Traefik.
+    v = m.edge_values("prod", {"publicUrl": "https://mcp-gateway.tail1234.ts.net"}, "0.2.0")
+    assert "tailscale" not in v and v["ingress"]["extraHosts"] == ["mcp-gateway.tail1234.ts.net"]
     v = m.edge_values("ext", {"displayName": "External", "publicUrl": "https://gw.example.com"}, "0.2.0")
     assert v["publicUrl"] == "https://gw.example.com"
     # The public host gets its own Ingress rule; the local one stays.

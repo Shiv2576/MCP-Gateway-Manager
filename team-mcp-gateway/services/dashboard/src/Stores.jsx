@@ -6,13 +6,17 @@ const TEMPLATES = [
   { id: 'catalog-b', title: 'Catalog B', text: 'Cart recovery demo: 40 products with costs, 300 shoppers with abandoned carts' },
   { id: 'blank', title: 'Blank', text: '3 basic products' },
 ]
-const MAX = 3
 const DOT = { Ready: 'ok', Failed: 'unreachable', Provisioning: 'pending', Deleting: 'pending' }
 
 export default function Stores({ user }) {
   const [stores, setStores] = useState([])
   const [error, setError] = useState('')
   const [form, setForm] = useState({ name: '', template: 'catalog-a' })
+  const [max, setMax] = useState(3)
+
+  useEffect(() => {
+    api('/stores/limit').then((d) => setMax(d.max_per_admin)).catch(() => {})
+  }, [])
 
   const load = useCallback(() => {
     api('/stores').then(setStores).catch((e) => setError(e.message))
@@ -52,7 +56,7 @@ export default function Stores({ user }) {
       <div className="toolbar">
         <h2>Stores</h2>
         <span className="muted small">
-          {mine}/{MAX} of your stores used
+          {mine}/{max} of your stores used
         </span>
       </div>
       <form className="card" onSubmit={create}>
@@ -80,7 +84,7 @@ export default function Stores({ user }) {
             onChange={(e) => setForm({ ...form, name: e.target.value.toLowerCase() })}
             required
           />
-          <button className="primary" disabled={mine >= MAX}>
+          <button className="primary" disabled={mine >= max}>
             Create store
           </button>
         </div>

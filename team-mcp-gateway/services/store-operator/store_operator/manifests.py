@@ -16,7 +16,7 @@ EDGE_TIMEOUT_S = 5 * 60
 OWNER_LABEL = f"{GROUP}/owner-id"
 STORE_LABEL = f"{GROUP}/store"
 SETUP_LABEL = {f"{GROUP}/role": "store-setup"}
-MAX_STORES = 3
+MAX_STORES = int(os.environ.get("MAX_STORES", "3"))  # per admin; same value as the gateway's
 # PriorityClass from the store-operator chart: below everything else, so on a
 # full node the operator and gateway can always evict a store pod to start.
 STORE_PRIORITY = "store-workload"
@@ -261,7 +261,10 @@ def edge_values(slug: str, spec: dict, image_tag: str) -> dict:
         values["publicUrl"] = spec["publicUrl"]
         # A tunnel or proxy in front sends the public Host header; route it too.
         public_host = urlsplit(spec["publicUrl"]).hostname
-        if public_host != values["ingress"]["host"]:
+        if public_host.startswith(f"{slug}-gw.") and public_host.endswith(".ts.net"):
+            # The gateway's automatic Tailscale name: the Tailscale operator serves it, not Traefik.
+            values["tailscale"] = {"hostname": f"{slug}-gw"}
+        elif public_host != values["ingress"]["host"]:
             values["ingress"]["extraHosts"] = [public_host]
     return values
 

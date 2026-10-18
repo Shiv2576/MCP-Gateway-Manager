@@ -2,7 +2,7 @@
 
 image:
   repository: gateway
-  tag: "0.10.1"
+  tag: "0.10.4"
   pullPolicy: IfNotPresent
 
 # control: the /api behind the dashboard (one replica). edge: /mcp for one
@@ -48,6 +48,15 @@ ingress:
   # A cert-manager ClusterIssuer: set, this Ingress gets its own certificate for its hosts.
   clusterIssuer: ""
 
+# Control plane: a tailnet DNS name (tail1234.ts.net) gives every new gateway
+# https://<slug>-gw.<tailnet> unless the admin types a public URL. Needs the
+# Tailscale Kubernetes operator with Funnel allowed (docs/deploy-vps.md).
+tailnetDomain: ""
+# Edge: set by the store operator to "<slug>-gw"; adds a Tailscale Ingress with Funnel on.
+tailscale:
+  hostname: ""
+  namespace: tailscale  # where the Tailscale operator runs its proxies
+
 service:
   port: 8000
 
@@ -87,3 +96,5 @@ networkPolicy:
 # own namespace. Needs the store-operator chart (it installs the CRD).
 stores:
   enabled: false
+  # Stores each admin may have. Keep equal to the store operator's maxStores.
+  maxPerAdmin: 3

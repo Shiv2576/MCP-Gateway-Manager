@@ -105,6 +105,9 @@ async def create_gateway(request: Request) -> Response:
     if not SLUG.match(slug):
         raise HTTPError(400, "slug: 2-20 of a-z 0-9 and -, starting with a letter")
     public_url = _url(_str(data, "public_url")).rstrip("/") if data.get("public_url") else None
+    tailnet = request.app.state.settings.tailnet_domain
+    if public_url is None and tailnet:
+        public_url = f"https://{slug}-gw.{tailnet}"  # the edge chart gets a Tailscale Funnel Ingress for it
     pii = data.get("pii_protection", False)
     if not isinstance(pii, bool):
         raise HTTPError(400, "pii_protection must be true or false")

@@ -78,6 +78,9 @@ class Settings:
     # Stores are <name>.<base_domain>, edges <slug>.gw.<base_domain>, over url_scheme.
     base_domain: str = "localhost"
     url_scheme: str = "http"
+    # Tailscale tailnet DNS name (e.g. tail1234.ts.net). Set, a gateway created
+    # without a public URL gets https://<slug>-gw.<tailnet>, published by Funnel.
+    tailnet_domain: str = ""
     # Hosts an admin may add as upstreams although they resolve to private or
     # cluster addresses (e.g. demo servers in this namespace). Exact names only.
     upstream_allow_hosts: tuple[str, ...] = ()
@@ -119,6 +122,7 @@ class Settings:
             public_url=env("PUBLIC_URL", "").strip().rstrip("/"),
             base_domain=env("BASE_DOMAIN", cls.base_domain).strip(),
             url_scheme=env("URL_SCHEME", cls.url_scheme).strip(),
+            tailnet_domain=env("TAILNET_DOMAIN", "").strip().strip("."),
             upstream_allow_hosts=tuple(
                 h.strip().lower() for h in env("UPSTREAM_ALLOW_HOSTS", "").split(",") if h.strip()
             ),

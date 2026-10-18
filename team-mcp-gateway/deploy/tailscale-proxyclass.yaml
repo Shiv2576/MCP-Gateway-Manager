@@ -1,0 +1,15 @@
+# The VPS is an LXC container without /dev/net/tun, so Tailscale's proxy pods
+# run in userspace mode (as tailscaled on the host does). Made the operator's
+# default with --set proxyConfig.defaultProxyClass=userspace (docs/deploy-vps.md).
+#   kubectl apply -f deploy/tailscale-proxyclass.yaml
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: userspace
+spec:
+  statefulSet:
+    pod:
+      tailscaleContainer:
+        env:
+          - name: TS_USERSPACE
+            value: "true"

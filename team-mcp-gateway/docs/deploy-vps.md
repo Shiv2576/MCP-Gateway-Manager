@@ -335,6 +335,30 @@ and a CoreDNS override so pods resolve `*.BASE` to Traefik over IPv4. See
 Clients without IPv6 can't reach such a server, Claude's connector included:
 publish the gateway edge through Tailscale Funnel (same file) for IPv4.
 
+## Every gateway on IPv4: Tailscale Kubernetes operator
+
+With `tailnetDomain` set in `deploy/gateway-values-prod.yaml`, a gateway created
+with no public URL gets `https://<slug>-gw.<tailnet>` (OAuth on), and its edge
+gets a second Ingress (`ingressClassName: tailscale`, Funnel on) that Tailscale's
+operator serves over IPv4 and IPv6. Nothing to do per gateway. One-time setup:
+
+1. Tailscale policy: `tagOwners` `"tag:k8s-operator": []`, `"tag:k8s": ["tag:k8s-operator"]`,
+   and a `nodeAttrs` entry `{"target": ["tag:k8s"], "attr": ["funnel"]}`.
+2. Settings → OAuth clients: Devices Core and Auth Keys, write, tag `tag:k8s-operator`.
+3. On the VPS (LXC has no `/dev/net/tun`, so proxies run in userspace):
+
+```
+helm repo add tailscale https://pkgs.tailscale.com/helmcharts && helm repo update
+helm upgrade --install tailscale-operator tailscale/tailscale-operator -n tailscale --create-namespace \
+  --set-string oauth.clientId=<ID> --set-string oauth.clientSecret=<SECRET> \
+  --set proxyConfig.defaultProxyClass=userspace --wait
+kubectl apply -f deploy/tailscale-proxyclass.yaml
+```
+
+Each gateway is one Tailscale device (free plan: 100). A new name answers within a
+minute or two once its certificate is issued. Gateways created before this keep
+their URL; recreate one with an empty public URL to move it.
+
 ## Known limits
 
 - **URLs depend on the IP.** If the VPS's IP changes (usually only when the

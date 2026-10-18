@@ -5,6 +5,7 @@ server in the gateway when it is ready."""
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from datetime import datetime
 
@@ -15,7 +16,7 @@ from starlette.routing import Route
 from .api import HTTPError, _str, body, handler, require_admin
 from .kube import OWNER_LABEL, AlreadyExists
 
-MAX_STORES = 3
+MAX_STORES = int(os.environ.get("MAX_STORES", "3"))  # per admin; the operator enforces the same
 TEMPLATES = ("catalog-a", "catalog-b", "blank")
 # 2-20 chars: "<name>__<tool>" must stay within the 64 chars the chat agent accepts.
 STORE_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,18}[a-z0-9])$")
@@ -61,6 +62,12 @@ async def list_stores(request: Request) -> Response:
     me = require_admin(request)
     items = await _backend(request).list()
     return JSONResponse(sorted((_view(request, c, me) for c in items), key=lambda s: s["created"] or 0))
+
+
+@handler
+async def store_limit(request: Request) -> Response:
+    require_admin(request)
+    return JSONResponse({"max_per_admin": MAX_STORES})
 
 
 @handler
@@ -116,6 +123,7 @@ async def delete_all_for(request: Request, user_id: int) -> None:
 
 routes = [
     Route("/api/stores", list_stores, methods=["GET"]),
+    Route("/api/stores/limit", store_limit, methods=["GET"]),
     Route("/api/stores", create_store, methods=["POST"]),
     Route("/api/stores/{name}", delete_store, methods=["DELETE"]),
 ]

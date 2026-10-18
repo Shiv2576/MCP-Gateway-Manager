@@ -1,0 +1,21 @@
+{{- with .Values.tailscale.hostname }}
+# Public over IPv4 and IPv6 through Tailscale Funnel: the Tailscale operator gives
+# this Ingress the name <hostname>.<tailnet>.ts.net with its own certificate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gateway.name" $ }}-tailscale
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: {{ include "gateway.name" $ }}
+      port:
+        number: {{ $.Values.service.port }}
+  tls:
+    - hosts: [{{ . | quote }}]
+{{- end }}

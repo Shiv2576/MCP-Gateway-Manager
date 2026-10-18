@@ -23,6 +23,10 @@ spec:
         - podSelector: { matchLabels: { app.kubernetes.io/name: dashboard } }
         - podSelector: { matchLabels: { app.kubernetes.io/name: store-operator } }
         {{- end }}
+        {{- if .Values.tailscale.hostname }}
+        # The Tailscale Funnel proxy for this edge.
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.tailscale.namespace }} } }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8000 }
   egress:

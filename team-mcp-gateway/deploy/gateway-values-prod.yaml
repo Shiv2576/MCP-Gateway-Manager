@@ -7,6 +7,7 @@ ingress:
 cookieSecure: true
 stores:
   enabled: true
+  maxPerAdmin: 10
 # Stores are <name>.2001-41d0-303-2774--94.sslip.io and edges <slug>.gw.2001-41d0-303-2774--94.sslip.io, over https.
 baseDomain: 2001-41d0-303-2774--94.sslip.io
 urlScheme: https
@@ -15,3 +16,5 @@ upstreamAllowHosts: "woo-mcp-woo-mcp.mercora.svc.cluster.local,notes.mercora.svc
 # The mercora store's woo-mcp (charts/store + charts/woo-mcp), registered at first-run setup.
 seedServer:
   url: http://woo-mcp-woo-mcp.mercora.svc.cluster.local:8000/mcp
+# Every new gateway: https://<slug>-gw.tailff0a64.ts.net over Tailscale Funnel (IPv4 too).
+tailnetDomain: tailff0a64.ts.net

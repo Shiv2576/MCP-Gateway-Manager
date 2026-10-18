@@ -66,6 +66,10 @@ spec:
             - name: URL_SCHEME
               value: {{ .Values.urlScheme | quote }}
             {{- end }}
+            {{- if and (eq .Values.mode "control") .Values.tailnetDomain }}
+            - name: TAILNET_DOMAIN
+              value: {{ .Values.tailnetDomain | quote }}
+            {{- end }}
             - name: LLM_MODEL
               value: {{ .Values.llmModel | quote }}
             {{- with .Values.publicUrl }}
@@ -93,6 +97,8 @@ spec:
             {{- if and (eq .Values.mode "control") .Values.stores.enabled }}
             - name: STORES_NAMESPACE
               value: {{ .Release.Namespace }}
+            - name: MAX_STORES
+              value: {{ .Values.stores.maxPerAdmin | quote }}
             {{- end }}
           {{- if eq .Values.mode "control" }}
           envFrom:
