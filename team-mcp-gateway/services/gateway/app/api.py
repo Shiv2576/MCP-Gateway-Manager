@@ -338,10 +338,14 @@ async def revoke_key(request: Request) -> Response:
     key = conn.execute("SELECT * FROM api_keys WHERE id = ?", (key_id,)).fetchone()
     if key is None or (user["role"] != "admin" and key["user_id"] != user["id"]):
         raise HTTPError(404, "no such key")
-    conn.execute(
-        "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-        (time.time(), key_id),
-    )
+    # First DELETE revokes; a second one, on a key already revoked, removes the row.
+    if key["revoked_at"] is not None:
+        conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+    else:
+        conn.execute(
+            "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (time.time(), key_id),
+        )
     return JSONResponse({"ok": True})
 
 

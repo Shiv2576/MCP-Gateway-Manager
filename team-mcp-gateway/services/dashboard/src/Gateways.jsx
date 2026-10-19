@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
+import { ask } from './confirm.jsx'
 
 const DOT = { Ready: 'ok', Failed: 'unreachable', Missing: 'unreachable', Provisioning: 'pending', Deleting: 'pending' }
 const EMPTY = { slug: '', name: '', public_url: '', pii_protection: false }
@@ -41,18 +42,22 @@ export default function Gateways({ user }) {
       setForm(EMPTY)
     })
   }
-  const remove = (g) =>
-    confirm(`Delete gateway ${g.name}? Clients using ${g.mcp_url} stop working.`) &&
+  const remove = async (g) =>
+    (await ask({ title: `Delete gateway ${g.name}?`, description: `Clients using ${g.mcp_url} stop working.`, action: 'Delete' })) &&
     act(() => api(`/gateways/${g.slug}`, { method: 'DELETE' }))
   const edit = (g) => {
     setEditing(g.slug)
     setPicked(g.servers.map((s) => s.id))
   }
   const toggle = (id) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id])
-  const save = () => {
+  const save = async () => {
     const g = gateways.find((x) => x.slug === editing)
     const dropped = g.servers.filter((s) => !picked.includes(s.id)).map((s) => s.name)
-    if (dropped.length && !confirm(`Detach ${dropped.join(', ')} from ${g.name}? Team policies and member denies for ${dropped.length > 1 ? 'them' : 'it'} on this gateway are deleted, and re-attaching starts empty.`)) return
+    if (dropped.length && !(await ask({
+      title: `Detach ${dropped.join(', ')} from ${g.name}?`,
+      description: `Team policies and member denies for ${dropped.length > 1 ? 'them' : 'it'} on this gateway are deleted, and re-attaching starts empty.`,
+      action: 'Detach',
+    }))) return
     act(async () => {
       await api(`/gateways/${editing}/servers`, { method: 'PUT', body: { server_ids: picked } })
       setEditing(null)

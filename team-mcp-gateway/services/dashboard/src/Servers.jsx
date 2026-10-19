@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { ask } from './confirm.jsx'
 import { Icon, PasswordInput } from './App.jsx'
 
 const EMPTY = { name: '', url: '', authType: 'none', token: '', header: '', value: '', personal: '' }
@@ -68,8 +69,8 @@ export default function Servers({ user }) {
   const hostedBy = Object.fromEntries(hosted.map((h) => [h.name, h]))
   // Deploying or failed: not a registered server yet, so not in the table.
   const pending = hosted.filter((h) => !servers.some((s) => s.name === h.name))
-  const removeHosted = (name) =>
-    confirm(`Remove ${name}? Its tools disappear for every client, then its pod and namespace are deleted.`) &&
+  const removeHosted = async (name) =>
+    (await ask({ title: `Remove ${name}?`, description: 'Its tools disappear for every client, then its pod and namespace are deleted.', action: 'Remove' })) &&
     act(() => api(`/hosted/${name}`, { method: 'DELETE' }))
 
   const up = servers.filter((s) => s.status === 'ok').length
@@ -204,10 +205,10 @@ export default function Servers({ user }) {
                           className="icon-btn danger"
                           aria-label={`Delete ${s.name}`}
                           title="Delete"
-                          onClick={() =>
+                          onClick={async () =>
                             hostedBy[s.name]
                               ? removeHosted(s.name)
-                              : confirm(`Remove ${s.name}? Its tools disappear for every client.`) &&
+                              : (await ask({ title: `Remove ${s.name}?`, description: 'Its tools disappear for every client.', action: 'Remove' })) &&
                                 act(() => api(`/servers/${s.id}`, { method: 'DELETE' }))
                           }
                         >

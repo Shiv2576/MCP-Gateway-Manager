@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { ask } from './confirm.jsx'
 import { PasswordInput } from './App.jsx'
 
 function useLoad(path) {
@@ -29,14 +30,18 @@ export function Keys({ user }) {
     }
   }
 
-  async function revoke(id) {
-    if (!confirm('Revoke this key? Clients using it stop working at once.')) return
-    await api(`/keys/${id}`, { method: 'DELETE' }).catch((e) => setError(e.message))
+  // DELETE revokes an active key, and deletes a revoked one.
+  async function revoke(k) {
+    const ok = k.revoked_at
+      ? await ask({ title: `Delete key ${k.name}?`, description: 'It is already revoked. This removes it from the list for good.', action: 'Delete' })
+      : await ask({ title: `Revoke key ${k.name}?`, description: 'Clients using it stop working at once.', action: 'Revoke' })
+    if (!ok) return
+    await api(`/keys/${k.id}`, { method: 'DELETE' }).catch((e) => setError(e.message))
     load()
   }
 
   async function disconnect(c) {
-    if (!confirm(`Disconnect ${c.client_name || 'this app'}? It must sign in again to use the gateway.`)) return
+    if (!(await ask({ title: `Disconnect ${c.client_name || 'this app'}?`, description: 'It must sign in again to use the gateway.', action: 'Disconnect' }))) return
     await api(`/oauth/connections/${c.user_id}/${encodeURIComponent(c.client_id)}`, { method: 'DELETE' }).catch((e) =>
       setError(e.message),
     )
@@ -82,11 +87,9 @@ export function Keys({ user }) {
               <td>{when(k.created_at)}</td>
               <td>{k.revoked_at ? <span className="pill bad">revoked</span> : <span className="pill ok">active</span>}</td>
               <td>
-                {!k.revoked_at && (
-                  <button className="ghost danger" onClick={() => revoke(k.id)}>
-                    Revoke
-                  </button>
-                )}
+                <button className="ghost danger" onClick={() => revoke(k)}>
+                  {k.revoked_at ? 'Delete' : 'Revoke'}
+                </button>
               </td>
             </tr>
           ))}
@@ -157,9 +160,9 @@ export function Users({ user }) {
     })
   }
 
-  const remove = (u) => {
+  const remove = async (u) => {
     const extra = u.role === 'admin' ? ' Their stores and everything in them will be deleted too.' : ''
-    if (!confirm(`Delete ${u.username}? Their API keys stop working at once.${extra}`)) return
+    if (!(await ask({ title: `Delete ${u.username}?`, description: `Their API keys stop working at once.${extra}`, action: 'Delete' }))) return
     act(() => api(`/users/${u.id}`, { method: 'DELETE' }))
   }
 
@@ -310,8 +313,17 @@ function pretty(s) {
 
 export function Audit() {
   const [rows, load, error] = useLoad('/audit?limit=200')
-  const [entry, setEntry] = useState(null)
-  const show = (id) => api(`/audit/${id}`).then(setEntry).catch(() => {})
+  const [open, setOpen] = useState({}) // id -> full entry, or null while it loads
+  const toggle = (id) => {
+    if (id in open) {
+      const { [id]: _, ...rest } = open
+      return setOpen(rest)
+    }
+    setOpen((o) => ({ ...o, [id]: null }))
+    api(`/audit/${id}`)
+      .then((e) => setOpen((o) => (id in o ? { ...o, [id]: e } : o)))
+      .catch((e) => setOpen((o) => (id in o ? { ...o, [id]: { error_loading: e.message } } : o)))
+  }
   useEffect(() => {
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
@@ -329,46 +341,71 @@ export function Audit() {
       <table className="card">
         <thead>
           <tr>
+            <th aria-label="Expand" />
             <th>When</th>
             <th>User</th>
             <th>Server</th>
             <th>Tool</th>
             <th>Gateway</th>
             <th title="Whose credential the call carried upstream">Identity</th>
-            <th>Result</th>
+            <th>Outcome</th>
             <th title="What PII protection masked in this result">PII</th>
             <th>Time</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} onClick={() => show(r.id)} style={{ cursor: 'pointer' }} title="Show the payload">
-              <td>{when(r.at)}</td>
-              <td>{r.username}</td>
-              <td>{r.server || <span className="muted">—</span>}</td>
-              <td className="mono">{r.tool}</td>
-              <td>{r.gateway || <span className="muted">—</span>}</td>
-              <td>{r.identity || <span className="muted">—</span>}</td>
-              <td>{r.ok ? <span className="pill ok">ok</span> : <span className="pill bad" title={r.error}>error</span>} <span className="muted small">{r.error}</span></td>
-              <td>
-                {r.pii ? Object.entries(JSON.parse(r.pii)).map(([n, c]) => <span key={n} className="pill">{n} {c}</span>) : <span className="muted">—</span>}
-                {r.payload_masked_for_log && <span className="pill bad" title="Member saw unmasked data; log copy masked">unmasked</span>}
-              </td>
-              <td>{r.duration_ms} ms</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const entry = open[r.id]
+            return (
+              <Fragment key={r.id}>
+                <tr onClick={() => toggle(r.id)} style={{ cursor: 'pointer' }}>
+                  <td>
+                    <button
+                      className="ghost tiny"
+                      aria-expanded={r.id in open}
+                      aria-label={`${r.id in open ? 'Hide' : 'Show'} result of call #${r.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggle(r.id)
+                      }}
+                    >
+                      {r.id in open ? '▾' : '▸'}
+                    </button>
+                  </td>
+                  <td>{when(r.at)}</td>
+                  <td>{r.username}</td>
+                  <td>{r.server || <span className="muted">—</span>}</td>
+                  <td className="mono">{r.tool}</td>
+                  <td>{r.gateway || <span className="muted">—</span>}</td>
+                  <td>{r.identity || <span className="muted">—</span>}</td>
+                  <td>{r.ok ? <span className="pill ok">ok</span> : <span className="pill bad" title={r.error}>error</span>} <span className="muted small">{r.error}</span></td>
+                  <td>
+                    {r.pii ? Object.entries(JSON.parse(r.pii)).map(([n, c]) => <span key={n} className="pill">{n} {c}</span>) : <span className="muted">—</span>}
+                    {r.payload_masked_for_log && <span className="pill bad" title="Member saw unmasked data; log copy masked">unmasked</span>}
+                  </td>
+                  <td>{r.duration_ms} ms</td>
+                </tr>
+                {r.id in open && (
+                  <tr>
+                    <td colSpan={10}>
+                      {entry === null ? (
+                        <span className="muted small">Loading…</span>
+                      ) : entry.error_loading ? (
+                        <p className="error">{entry.error_loading}</p>
+                      ) : (
+                        <>
+                          {entry.payload_masked_for_log && <p className="muted small">Member saw unmasked data; log copy masked.</p>}
+                          <pre className="mono small">{entry.payload ? pretty(entry.payload) : entry.error || 'Not kept (the PII filter failed, or no result).'}</pre>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
-      {entry && (
-        <div className="card">
-          <div className="row">
-            <div className="title grow">Payload #{entry.id}: <span className="mono">{entry.tool}</span></div>
-            <button className="ghost" onClick={() => setEntry(null)}>Close</button>
-          </div>
-          {entry.payload_masked_for_log && <p className="muted small">Member saw unmasked data; log copy masked.</p>}
-          <pre className="mono small">{entry.payload ? pretty(entry.payload) : 'Not kept (the PII filter failed, or no result).'}</pre>
-        </div>
-      )}
     </>
   )
 }

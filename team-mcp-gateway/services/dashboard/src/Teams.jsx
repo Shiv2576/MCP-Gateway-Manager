@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
+import { ask } from './confirm.jsx'
 
 const key = (serverId, tool) => `${serverId}:${tool}`
 const REFUND_TOOL = 'bulk_refund_orders' // the one tool with a money budget too
@@ -287,8 +288,8 @@ export default function Teams({ user }) {
       setName('')
     })
   }
-  const remove = (t) =>
-    confirm(`Delete team ${t.name}? Its members lose the tools it allows.`) &&
+  const remove = async (t) =>
+    (await ask({ title: `Delete team ${t.name}?`, description: 'Its members lose the tools it allows.', action: 'Delete' })) &&
     act(() => api(`/teams/${t.id}`, { method: 'DELETE' }))
 
   return (

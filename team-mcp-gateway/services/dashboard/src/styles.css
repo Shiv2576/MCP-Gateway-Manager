@@ -91,6 +91,14 @@ button:disabled { opacity: 0.6; cursor: default; }
 .primary { background: var(--primary); color: var(--primary-foreground); }
 .ghost { background: transparent; border-color: var(--border); color: var(--foreground); }
 .danger { color: var(--destructive); }
+.destructive { background: var(--destructive); color: #fff; }
+.destructive:hover { background: color-mix(in srgb, var(--destructive) 90%, #000); }
+.alert-dialog { width: min(512px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--background); color: var(--foreground); box-shadow: 0 10px 38px rgb(0 0 0 / 0.2); }
+.alert-dialog::backdrop { background: rgb(0 0 0 / 0.5); }
+.alert-dialog h2 { font-size: 18px; margin: 0 0 8px; }
+.alert-dialog p { margin: 0; font-size: 14px; line-height: 1.5; }
+.alert-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .link { background: none; color: var(--primary); padding: 0 0 0 10px; }
 
 .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }

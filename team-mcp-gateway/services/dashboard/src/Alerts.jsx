@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { ask } from './confirm.jsx'
 
 const STATUS_PILL = { executed: 'pill ok', failed: 'pill bad', rejected: 'pill bad', expired: 'pill', running: 'pill' }
 
@@ -56,7 +57,7 @@ function PendingCard({ a, onDone }) {
   const [done, setDone] = useState(null)
 
   async function decide(action) {
-    if (action === 'approve' && !confirm(`Run ${a.tool} on ${a.items} items now, as ${a.username}?`)) return
+    if (action === 'approve' && !(await ask({ title: `Run ${a.tool} now?`, description: `It runs on ${a.items} items, as ${a.username}.`, action: 'Approve and run', destructive: false }))) return
     setError('')
     setBusy(action)
     try {

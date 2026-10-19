@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { ask } from './confirm.jsx'
 
 const TEMPLATES = [
   { id: 'catalog-a', title: 'Catalog A', text: '40 everyday products with stock and 90 days of sales: restock planning demo' },
@@ -46,8 +47,8 @@ export default function Stores({ user }) {
       setForm({ ...form, name: '' })
     })
   }
-  const remove = (s) => {
-    if (!confirm(`Delete store ${s.name}? Its data, volumes and MCP tools are removed.`)) return
+  const remove = async (s) => {
+    if (!(await ask({ title: `Delete store ${s.name}?`, description: 'Its data, volumes and MCP tools are removed.', action: 'Delete' }))) return
     act(() => api(`/stores/${s.name}`, { method: 'DELETE' }))
   }
 

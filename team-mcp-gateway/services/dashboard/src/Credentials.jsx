@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, when } from './api.js'
+import { ask } from './confirm.jsx'
 import { PasswordInput } from './App.jsx'
 
 // The member's own upstream credentials, for gateways set to personal identity.
@@ -33,8 +34,8 @@ export default function Credentials() {
       setEditing(null)
     })
   }
-  const remove = (r) =>
-    confirm(`Remove your credential for ${r.server}? Your calls to it on personal gateways stop working until you add one again.`) &&
+  const remove = async (r) =>
+    (await ask({ title: `Remove your credential for ${r.server}?`, description: 'Your calls to it on personal gateways stop working until you add one again.', action: 'Remove' })) &&
     act(() => api(`/me/credentials/${r.server_id}`, { method: 'DELETE' }))
 
   return (

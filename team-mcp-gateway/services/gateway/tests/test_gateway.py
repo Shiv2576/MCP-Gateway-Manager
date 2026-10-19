@@ -327,6 +327,9 @@ def test_the_whole_gateway(db_url):
                     headers={"Authorization": f"Bearer {key}"},
                 )
                 assert r.status_code == 401
+            # Deleting the revoked key removes it.
+            assert (await member.delete(f"/api/keys/{key_id}")).status_code == 200
+            assert key_id not in {k["id"] for k in (await member.get("/api/keys")).json()}
 
             # The dashboard sees the same tools and can try one, audited as the admin.
             tools = {t["name"] for t in (await admin.get("/api/tools?gateway=main")).json()}

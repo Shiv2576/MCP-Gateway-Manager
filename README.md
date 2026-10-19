@@ -1,5 +1,33 @@
 # MCP-Gateway-Manager
 
+## Source code
+
+All paths are under `team-mcp-gateway/`.
+
+| Part                                                      | Where                                                                  |
+| --------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Dashboard (React + Vite, served by nginx)                 | `services/dashboard/src`                                               |
+| Backend and gateway (API, `/mcp`, OAuth, policies, audit) | `services/gateway/app`                                                 |
+| WooCommerce MCP server                                    | `services/woo-mcp/app`                                                 |
+| Chat agent                                                | `services/gateway/app/chat.py` (UI: `services/dashboard/src/Chat.jsx`) |
+| Store operator (stores, gateway edges, hosted servers)    | `services/store-operator/store_operator`                               |
+
+## Helm charts and values files
+
+Charts in `team-mcp-gateway/charts/`, values in `team-mcp-gateway/deploy/`:
+
+| Chart            | What it installs                               | Local values                       | Production values                 |
+| ---------------- | ---------------------------------------------- | ---------------------------------- | --------------------------------- |
+| `gateway`        | gateway control plane and edges                | `gateway-values-local.yaml`        | `gateway-values-prod.yaml`        |
+| `dashboard`      | dashboard                                      | `dashboard-values-local.yaml`      | `dashboard-values-prod.yaml`      |
+| `postgres`       | gateway database                               | `postgres-values-local.yaml`       | `postgres-values-prod.yaml`       |
+| `store-operator` | operator, CRDs, RBAC                           | `store-operator-values-local.yaml` | `store-operator-values-prod.yaml` |
+| `store`          | WordPress + MariaDB + setup Job, one per store | `store-values-local.yaml`          | `store-values-prod.yaml`          |
+| `woo-mcp`        | a store's WooCommerce MCP server               | `values-local.yaml`                | `values-prod.yaml`                |
+
+The operator installs `store` and `woo-mcp` for each store with its own values. Production also uses
+`tls-prod.yaml` (Let's Encrypt issuer) and `tailscale-proxyclass.yaml` (Tailscale proxies).
+
 ## Local setup (k3d)
 
 Needs Docker, k3d, kubectl, Helm and Python 3. Run from `team-mcp-gateway/` (`cd team-mcp-gateway`).
@@ -180,3 +208,14 @@ The client sees only the tools your teams allow on that gateway, named `<store>_
    "Best sellers over the last 30 days".
 3. Before any change (create a product, change an order, refund) it shows the exact call;
    nothing is written until you click **Confirm**.
+
+## Source code
+
+| Part                   | Where                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| Dashboard              | `services/dashboard/src`                                                             |
+| Backend and gateway    | `services/gateway/app`                                                               |
+| WooCommerce MCP server | `services/woo-mcp/app`                                                               |
+| Chat agent             | `services/gateway/app/chat.py`, UI in `services/dashboard/src/Chat.jsx`              |
+| Store operator         | `services/store-operator/store_operator`                                             |
+| Helm charts            | `charts/*`; values per environment in `deploy/*-local.yaml` and `deploy/*-prod.yaml` |
