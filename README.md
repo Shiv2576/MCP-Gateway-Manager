@@ -2,85 +2,77 @@
 
 ## Source code
 
-All paths are under `team-mcp-gateway/`.
+All under `team-mcp-gateway/`.
 
-| Part                                                      | Where                                                                  |
-| --------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Dashboard (React + Vite, served by nginx)                 | `services/dashboard/src`                                               |
-| Backend and gateway (API, `/mcp`, OAuth, policies, audit) | `services/gateway/app`                                                 |
-| WooCommerce MCP server                                    | `services/woo-mcp/app`                                                 |
-| Chat agent                                                | `services/gateway/app/chat.py` (UI: `services/dashboard/src/Chat.jsx`) |
-| Store operator (stores, gateway edges, hosted servers)    | `services/store-operator/store_operator`                               |
+| Part | Where |
+| --- | --- |
+| Dashboard (React + Vite, nginx) | `services/dashboard/src` |
+| Backend and gateway (API, `/mcp`, OAuth, policies, audit) | `services/gateway/app` |
+| WooCommerce MCP server | `services/woo-mcp/app` |
+| Chat agent | `services/gateway/app/chat.py`, UI `services/dashboard/src/Chat.jsx` |
+| Store operator (stores, gateway edges, hosted servers) | `services/store-operator/store_operator` |
 
 ## Helm charts and values files
 
-Charts in `team-mcp-gateway/charts/`, values in `team-mcp-gateway/deploy/`:
+Charts in `charts/`, values in `deploy/`.
 
-| Chart            | What it installs                               | Local values                       | Production values                 |
-| ---------------- | ---------------------------------------------- | ---------------------------------- | --------------------------------- |
-| `gateway`        | gateway control plane and edges                | `gateway-values-local.yaml`        | `gateway-values-prod.yaml`        |
-| `dashboard`      | dashboard                                      | `dashboard-values-local.yaml`      | `dashboard-values-prod.yaml`      |
-| `postgres`       | gateway database                               | `postgres-values-local.yaml`       | `postgres-values-prod.yaml`       |
-| `store-operator` | operator, CRDs, RBAC                           | `store-operator-values-local.yaml` | `store-operator-values-prod.yaml` |
-| `store`          | WordPress + MariaDB + setup Job, one per store | `store-values-local.yaml`          | `store-values-prod.yaml`          |
-| `woo-mcp`        | a store's WooCommerce MCP server               | `values-local.yaml`                | `values-prod.yaml`                |
+| Chart | Installs | Local | Production |
+| --- | --- | --- | --- |
+| `gateway` | control plane and edges | `gateway-values-local.yaml` | `gateway-values-prod.yaml` |
+| `dashboard` | dashboard | `dashboard-values-local.yaml` | `dashboard-values-prod.yaml` |
+| `postgres` | gateway database | `postgres-values-local.yaml` | `postgres-values-prod.yaml` |
+| `store-operator` | operator, CRDs, RBAC | `store-operator-values-local.yaml` | `store-operator-values-prod.yaml` |
+| `store` | WordPress + MariaDB + setup Job, per store | `store-values-local.yaml` | `store-values-prod.yaml` |
+| `woo-mcp` | a store's MCP server | `values-local.yaml` | `values-prod.yaml` |
 
-The operator installs `store` and `woo-mcp` for each store with its own values. Production also uses
-`tls-prod.yaml` (Let's Encrypt issuer) and `tailscale-proxyclass.yaml` (Tailscale proxies).
+The operator installs `store` and `woo-mcp` per store with its own values; the `store`/`woo-mcp` files above are only
+for installing one store by hand. Production adds `tls-prod.yaml` (Let's Encrypt); `tailscale-proxyclass.yaml` is only
+for the optional Tailscale setup in `docs/deploy-vps.md`.
 
 ## Local setup (k3d)
 
-Needs Docker, k3d, kubectl, Helm and Python 3. Run from `team-mcp-gateway/` (`cd team-mcp-gateway`).
+Needs Docker, k3d, kubectl, Helm, Python 3. Run in `team-mcp-gateway/`.
 
 ```sh
-# 1. Cluster
-k3d cluster create store-check -p "80:80@loadbalancer"
-kubectl create namespace mercora
+k3d cluster create store-check -p "80:80@loadbalancer" && kubectl create namespace mercora
 
-# 2. Secrets (random values; none are in git)
+# Secrets (random, none in git); omit OPENROUTER_API_KEY to run without chat
 APP_PW=$(openssl rand -hex 16)
-kubectl -n mercora create secret generic gateway-db \
-  --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
-  --from-literal=APP_PASSWORD=$APP_PW \
-  --from-literal=DATABASE_URL=postgresql://gateway:$APP_PW@db-postgres:5432/gateway
-kubectl -n mercora create secret generic gateway-admin \
-  --from-literal=SETUP_TOKEN=$(openssl rand -hex 16) \
-  --from-literal=OPENROUTER_API_KEY=sk-or-...          # chat agent; omit to run without chat
+kubectl -n mercora create secret generic gateway-db --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
+  --from-literal=APP_PASSWORD=$APP_PW --from-literal=DATABASE_URL=postgresql://gateway:$APP_PW@db-postgres:5432/gateway
+kubectl -n mercora create secret generic gateway-admin --from-literal=SETUP_TOKEN=$(openssl rand -hex 16) \
+  --from-literal=OPENROUTER_API_KEY=sk-or-...
 kubectl -n mercora create secret generic gateway-credentials \
   --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 
-# 3. Images (tags = chart defaults)
+# Images (tags = chart defaults)
 helm dependency build charts/store
-docker build -t gateway:0.10.3 services/gateway
+docker build -t gateway:0.10.4 services/gateway
 docker build -t dashboard:0.9.8 services/dashboard
 docker build -t woo-mcp:0.5.0 services/woo-mcp
-docker build -t store-operator:0.7.2 -f services/store-operator/Dockerfile .
-k3d image import -c store-check gateway:0.10.3 dashboard:0.9.8 woo-mcp:0.5.0 store-operator:0.7.2
+docker build -t store-operator:0.7.3 -f services/store-operator/Dockerfile .
+k3d image import -c store-check gateway:0.10.4 dashboard:0.9.8 woo-mcp:0.5.0 store-operator:0.7.3
 
-# 4. Install
 helm upgrade --install db      charts/postgres  -n mercora -f deploy/postgres-values-local.yaml --wait
 helm upgrade --install team    charts/gateway   -n mercora -f deploy/gateway-values-local.yaml --set seedServer.url= --wait
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-local.yaml --wait
 
-# 5. First admin: open http://dash.localhost and enter this token, org name, admin login
+# First admin: open http://dash.localhost, enter this token, org name, admin login
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
 
-# 6. Operator: dashboard → API keys → create "store-operator", paste it here
+# Operator: dashboard → API keys → create "store-operator", paste it below
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml --wait
-
-# 7. Check
 kubectl -n mercora get pods
 ```
 
-Then in the dashboard: **Stores** → create `shop1` (`catalog-a`; Ready in ~5–10 min at
-http://shop1.localhost) → **Gateways** → create `prod` and attach `shop1`
-(MCP endpoint http://prod.gw.localhost/mcp) → **Teams** → give members tools.
+Then: **Stores** → create `shop1` (`catalog-a`, Ready in ~5–10 min at http://shop1.localhost) →
+**Gateways** → create `prod` → **Servers** → tick `shop1` → **Save** (MCP at http://prod.gw.localhost/mcp) → **Teams** → give members tools.
 
 Tests:
 
 ```sh
-(cd services/woo-mcp && pip install -r requirements-dev.txt && python -m pytest -q tests/tests_woo_mcp.py)
+(cd services/woo-mcp && uv run pytest -q tests/tests_woo_mcp.py)
 (cd services/store-operator && uv run pytest -q)
 docker run -d --name gw-test-pg -e POSTGRES_PASSWORD=t -p 5433:5432 postgres:17-alpine
 (cd services/gateway && TEST_DATABASE_URL=postgresql://postgres:t@127.0.0.1:5433/postgres uv run pytest -q)
@@ -88,11 +80,10 @@ docker run -d --name gw-test-pg -e POSTGRES_PASSWORD=t -p 5433:5432 postgres:17-
 
 ## VPS setup (k3s)
 
-One Ubuntu VPS (2 vCPU, 8 GB, x86_64), ports 22, 80 and 443 open. Names come from
-[sslip.io](https://sslip.io), certificates from Let's Encrypt. Background and
-troubleshooting (IPv6-only/LXC hosts included): [docs/deploy-vps.md](team-mcp-gateway/docs/deploy-vps.md).
+One Ubuntu VPS (2 vCPU, 8 GB, x86_64), ports 22/80/443 open. Hostnames from sslip.io, certificates from
+Let's Encrypt. IPv6-only/LXC hosts and troubleshooting: `docs/deploy-vps.md`.
 
-**On the VPS** — k3s, Helm, cert-manager:
+**VPS** — k3s, Helm, cert-manager:
 
 ```sh
 curl -sfL https://get.k3s.io | sh -
@@ -102,120 +93,99 @@ helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true --wait
 ```
 
-**On your laptop**, in `team-mcp-gateway/` — set the domain, build amd64 images, copy everything:
+**Laptop** (in `team-mcp-gateway/`; needs Docker with buildx, Helm, rsync) — set domain, build amd64 images, copy:
 
 ```sh
-VPS_IP=203.0.113.7
-BASE=203-0-113-7.sslip.io                              # the IP with dashes + .sslip.io
+VPS_IP=203.0.113.7; BASE=203-0-113-7.sslip.io     # IP with dashes + .sslip.io; on Linux use sed -i without ''
 sed -i '' "s/2001-41d0-303-2774--94\.sslip\.io/$BASE/g" deploy/*-prod.yaml
-sed -i '' "s/email: .*#/email: you@yourmail.com  #/" deploy/tls-prod.yaml   # Let's Encrypt notices
+sed -i '' "s/email: .*#/email: you@yourmail.com  #/" deploy/tls-prod.yaml      # Let's Encrypt notices; not example.*
+sed -i '' '/^tailnetDomain:/d' deploy/gateway-values-prod.yaml                # Tailscale off (on: docs/deploy-vps.md)
 
-helm dependency build charts/store
-mkdir -p /tmp/img
+helm dependency build charts/store && mkdir -p /tmp/img
 b() { docker buildx build --platform linux/amd64 -o type=docker,dest=/tmp/img/$1.tar -t $1:$2 "${@:3}"; }
-b gateway        0.10.3 services/gateway
-b dashboard      0.9.8  services/dashboard
-b woo-mcp        0.5.0  services/woo-mcp
-b store-operator 0.7.2  -f services/store-operator/Dockerfile .
+b gateway 0.10.4 services/gateway; b dashboard 0.9.8 services/dashboard; b woo-mcp 0.5.0 services/woo-mcp
+b store-operator 0.7.3 -f services/store-operator/Dockerfile .
 
 rsync -a --exclude .git --exclude node_modules --exclude .venv ./ root@$VPS_IP:/opt/team-mcp-gateway/
 scp /tmp/img/*.tar root@$VPS_IP:/tmp/
 ssh root@$VPS_IP 'for f in /tmp/*.tar; do k3s ctr images import $f; done'
 ```
 
-**On the VPS** — TLS, Secrets, install:
+**VPS** — TLS, Secrets, install:
 
 ```sh
 cd /opt/team-mcp-gateway
-kubectl apply -f deploy/tls-prod.yaml
-kubectl -n kube-system get certificate -w             # READY True within ~2 min
+kubectl apply -f deploy/tls-prod.yaml && kubectl -n kube-system get certificate -w   # wait for READY True (~2 min), Ctrl-C
 
 kubectl create namespace mercora
-APP_PW=$(openssl rand -hex 16)
-kubectl -n mercora create secret generic gateway-db \
-  --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
-  --from-literal=APP_PASSWORD=$APP_PW \
-  --from-literal=DATABASE_URL=postgresql://gateway:$APP_PW@db-postgres:5432/gateway
-kubectl -n mercora create secret generic gateway-admin \
-  --from-literal=SETUP_TOKEN=$(openssl rand -hex 16) \
-  --from-literal=OPENROUTER_API_KEY=sk-or-...
-kubectl -n mercora create secret generic gateway-credentials \
-  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+# Same three Secrets as local: gateway-db, gateway-admin, gateway-credentials (copy those commands)
 
 helm upgrade --install db      charts/postgres  -n mercora -f deploy/postgres-values-prod.yaml --wait
 helm upgrade --install team    charts/gateway   -n mercora -f deploy/gateway-values-prod.yaml --set seedServer.url= --wait
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-prod.yaml --wait
 
-# First admin, right away (setup is public until done): open https://dash.$BASE
+# First admin right away (setup is public until done): https://dash.$BASE
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
 
-# Dashboard → API keys → create "store-operator", then:
+# Dashboard → API keys → create "store-operator", paste it below
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-prod.yaml --wait
-
 kubectl get pods -A; kubectl get certificate -A
 ```
 
-Then in the dashboard: **Stores** → create a store (at `https://<name>.$BASE`) →
-**Gateways** → create `prod` with public URL `https://prod.gw.$BASE` (turns on
-OAuth for Claude) and attach the store.
+Then: **Stores** → create a store (`https://<name>.$BASE`) → **Gateways** → create `prod` with public URL
+`https://prod.gw.$BASE` (turns on OAuth for Claude), attach the store.
 
-Later updates, from the laptop: `scripts/deploy-vps.sh` (shows the changes, asks,
-then builds, copies, imports and runs every `helm upgrade`; set `VPS`, `PORT`,
-`KEY` for your server). Rollback: [docs/upgrades.md](team-mcp-gateway/docs/upgrades.md).
+Updates from the laptop: `scripts/deploy-vps.sh` (shows changes, asks, then builds, copies, imports, runs every
+`helm upgrade`; set `VPS`, `PORT`, `KEY`). Rollback: `docs/upgrades.md`.
 
 ## Using the online store
 
-Everything starts from the dashboard: `https://dash.2001-41d0-303-2774--94.sslip.io`
-(locally `http://dash.localhost`). Log in with your gateway username and password.
+Start at the dashboard, `https://dash.2001-41d0-303-2774--94.sslip.io` (local: `http://dash.localhost`), and log in
+with your gateway username and password.
 
-### Create and open a store
+**Create and open a store:** **Stores** → name + template (**Catalog A**, **Catalog B**, **Blank**) → **Create store**
+→ wait for **Ready** (~5–10 min) → open its URL from **Stores** (WordPress admin login shown there too).
 
-1. **Stores** → enter a name, pick a template (**Catalog A**, **Catalog B** or **Blank**) → **Create store**.
-2. Wait until its status is **Ready** (about 5–10 minutes).
-3. Open the store with its URL on the **Stores** page. The WordPress admin login is shown there too.
+**Place an order:**
+1. Open the store → product → **Add to cart** → **View cart** → **Proceed to checkout**.
+2. Name, address, email, phone; payment **Cash on delivery** → **Place order** (number on the confirmation page).
+3. Check it: **Tools** → gateway → `<store>__list_orders` `{"on_date": "today"}` → **Run tool**; advance it with
+   `<store>__update_order_status` `{"order_id": 123, "status": "completed"}`.
 
-### Place an order
+**Connect an external MCP client:**
+1. **Gateways** → pick one → **Copy** its MCP URL (none yet? slug + name → **Create gateway** → **Servers** → tick the store → **Save**).
+2. **API keys** → create a key (shown once, `mcpg_...`).
+3. `claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."`
+   — or claude.ai / Claude Desktop: **Settings** → **Connectors** → **Add custom connector** → MCP URL → **Connect**
+   → sign in with your gateway username and password. **API keys** → **Connected apps** lists it; **Disconnect** revokes it.
 
-1. Open the store from the **Stores** page.
-2. Pick a product → **Add to cart** → **View cart** → **Proceed to checkout**.
-3. Fill in name, address, email and phone; payment is **Cash on delivery**.
-4. **Place order**. The order number is shown on the confirmation page.
-5. Check it: **Tools** → pick the gateway → `<store>__list_orders` with `{"on_date": "today"}`.
-   Move it on with `<store>__update_order_status` (`{"order_id": 123, "status": "completed"}`).
+The client sees only the tools its teams allow on that gateway, named `<store>__<tool>`.
 
-### Connect an external MCP client
+**Use the chat agent:** **Chat** → pick the gateway → ask in plain language ("Today's orders in shop1?", "Which
+products are low on stock?", "Best sellers over the last 30 days"). Every change (new product, order update, refund)
+shows the exact call first; nothing is written until you click **Confirm**.
 
-1. **Gateways** → pick a gateway → **Copy** its MCP URL (if none exists, fill in a slug and name → **Create gateway**,
-   then attach the store's server to it).
-2. **API keys** → create a key; it is shown once (`mcpg_...`).
-3. Add it to the client:
+## Design and trade-offs
 
-   ```sh
-   claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."
-   ```
+| Choice | Why | Trade-off |
+| --- | --- | --- |
+| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache. |
+| Stateless edges and chat | No MCP sessions: any replica serves any request, restarts don't break clients. Chat uses the same `call_tool` path as `/mcp`, so policy and audit are identical. | No server push (e.g. tools-changed notifications). |
+| One central Postgres | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request. | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
+| Write budgets + admin approval | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure. | A big job waits for an admin. |
 
-   For claude.ai or Claude Desktop: **Settings** → **Connectors** → **Add custom connector** →
-   paste the MCP URL → **Connect** → sign in with your gateway username and password.
-   **API keys** → **Connected apps** lists it; **Disconnect** ends its access.
+**Routing:** every 30 s each edge fetches `tools/list` from its enabled servers in parallel (5 s timeout each) and
+caches it. Tools are named `<server>__<tool>`; `tools/list` is served from cache, filtered by the caller's policy.
+`tools/call` finds the server from the name, re-checks permission, rate limit and budget, adds the upstream credential
+server-side, and audits.
 
-The client sees only the tools your teams allow on that gateway, named `<store>__<tool>`.
+**Failures:** a dead upstream costs 5 s in the background loop, never on a request, and shows as Unreachable with the
+reason. Each call has a 10 s timeout and fails alone. Permission is checked live on every call, so a stale cache can't
+grant access. The audit row is written before the call, so a crash still leaves a trace.
 
-### Use the chat agent
-
-1. **Chat** → pick the gateway.
-2. Ask in plain language: "What were today's orders in shop1?", "Which products are low on stock?",
-   "Best sellers over the last 30 days".
-3. Before any change (create a product, change an order, refund) it shows the exact call;
-   nothing is written until you click **Confirm**.
-
-## Source code
-
-| Part                   | Where                                                                                |
-| ---------------------- | ------------------------------------------------------------------------------------ |
-| Dashboard              | `services/dashboard/src`                                                             |
-| Backend and gateway    | `services/gateway/app`                                                               |
-| WooCommerce MCP server | `services/woo-mcp/app`                                                               |
-| Chat agent             | `services/gateway/app/chat.py`, UI in `services/dashboard/src/Chat.jsx`              |
-| Store operator         | `services/store-operator/store_operator`                                             |
-| Helm charts            | `charts/*`; values per environment in `deploy/*-local.yaml` and `deploy/*-prod.yaml` |
+**Production:** same charts, only `*-local.yaml` → `*-prod.yaml` values change.
+- DNS: `*.localhost` → sslip.io (VPS) → a real domain.
+- Ingress: Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect.
+- Storage: `local-path` (one node's disk) → replicated or cloud block storage, with backups.
+- Secrets: created by hand, never in charts → k3s secrets encryption or Vault/KMS; rotate `CREDENTIALS_KEY` with MultiFernet.
