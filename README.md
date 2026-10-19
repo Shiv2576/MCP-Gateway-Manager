@@ -1,33 +1,8 @@
-# MCP-Gateway-Manager
+<h1 align="center">MCP-Gateway-Manager</h1>
 
-## Source code
-
-All under `team-mcp-gateway/`.
-
-| Part | Where |
-| --- | --- |
-| Dashboard (React + Vite, nginx) | `services/dashboard/src` |
-| Backend and gateway (API, `/mcp`, OAuth, policies, audit) | `services/gateway/app` |
-| WooCommerce MCP server | `services/woo-mcp/app` |
-| Chat agent | `services/gateway/app/chat.py`, UI `services/dashboard/src/Chat.jsx` |
-| Store operator (stores, gateway edges, hosted servers) | `services/store-operator/store_operator` |
-
-## Helm charts and values files
-
-Charts in `charts/`, values in `deploy/`.
-
-| Chart | Installs | Local | Production |
-| --- | --- | --- | --- |
-| `gateway` | control plane and edges | `gateway-values-local.yaml` | `gateway-values-prod.yaml` |
-| `dashboard` | dashboard | `dashboard-values-local.yaml` | `dashboard-values-prod.yaml` |
-| `postgres` | gateway database | `postgres-values-local.yaml` | `postgres-values-prod.yaml` |
-| `store-operator` | operator, CRDs, RBAC | `store-operator-values-local.yaml` | `store-operator-values-prod.yaml` |
-| `store` | WordPress + MariaDB + setup Job, per store | `store-values-local.yaml` | `store-values-prod.yaml` |
-| `woo-mcp` | a store's MCP server | `values-local.yaml` | `values-prod.yaml` |
-
-The operator installs `store` and `woo-mcp` per store with its own values; the `store`/`woo-mcp` files above are only
-for installing one store by hand. Production adds `tls-prod.yaml` (Let's Encrypt); `tailscale-proxyclass.yaml` is only
-for the optional Tailscale setup in `docs/deploy-vps.md`.
+<p align="center">
+  <img src="MCP-Gateway.png" alt="MCP-Gateway-Manager architecture" width="800">
+</p>
 
 ## Local setup (k3d)
 
@@ -141,39 +116,53 @@ Updates from the laptop: `scripts/deploy-vps.sh` (shows changes, asks, then buil
 
 ## Using the online store
 
-Start at the dashboard, `https://dash.2001-41d0-303-2774--94.sslip.io` (local: `http://dash.localhost`), and log in
-with your gateway username and password.
+Dashboard: `https://dash.2001-41d0-303-2774--94.sslip.io` (local: `http://dash.localhost`). Log in with your gateway
+username and password.
 
-**Create and open a store:** **Stores** → name + template (**Catalog A**, **Catalog B**, **Blank**) → **Create store**
-→ wait for **Ready** (~5–10 min) → open its URL from **Stores** (WordPress admin login shown there too).
+### Create and open a store
 
-**Place an order:**
-1. Open the store → product → **Add to cart** → **View cart** → **Proceed to checkout**.
-2. Name, address, email, phone; payment **Cash on delivery** → **Place order** (number on the confirmation page).
-3. Check it: **Tools** → gateway → `<store>__list_orders` `{"on_date": "today"}` → **Run tool**; advance it with
-   `<store>__update_order_status` `{"order_id": 123, "status": "completed"}`.
+1. **Stores** → enter a name → pick **Catalog A**, **Catalog B** or **Blank** → **Create store**.
+2. Wait for **Ready** (~5–10 min).
+3. Open the store from its link on **Stores** (the WordPress admin login is shown there too).
 
-**Connect an external MCP client:**
-1. **Gateways** → pick one → **Copy** its MCP URL (none yet? slug + name → **Create gateway** → **Servers** → tick the store → **Save**).
-2. **API keys** → create a key (shown once, `mcpg_...`).
-3. `claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."`
-   — or claude.ai / Claude Desktop: **Settings** → **Connectors** → **Add custom connector** → MCP URL → **Connect**
-   → sign in with your gateway username and password. **API keys** → **Connected apps** lists it; **Disconnect** revokes it.
+### Place an order
+
+1. In the store: pick a product → **Add to cart** → **View cart** → **Proceed to checkout**.
+2. Fill in name, address, email, phone → **Cash on delivery** → **Place order**.
+3. Back in the dashboard: **Tools** → pick the gateway → `<store>__list_orders` with `{"on_date": "today"}` → **Run tool**.
+4. To complete it: `<store>__update_order_status` with `{"order_id": <id>, "status": "completed"}` → **Run tool**.
+
+### Connect an external MCP client
+
+1. **Gateways** → **Copy** the gateway's MCP URL. No gateway yet? Enter slug + name → **Create gateway** →
+   **Servers** → tick the store → **Save**.
+2. **API keys** → create a key and copy it (shown once, `mcpg_...`).
+3. Claude Code:
+   ```sh
+   claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."
+   ```
+   claude.ai / Claude Desktop: **Settings** → **Connectors** → **Add custom connector** → paste the MCP URL →
+   **Connect** → sign in with your gateway username and password.
+4. **API keys** → **Connected apps** lists connected clients; **Disconnect** revokes one.
 
 The client sees only the tools its teams allow on that gateway, named `<store>__<tool>`.
 
-**Use the chat agent:** **Chat** → pick the gateway → ask in plain language ("Today's orders in shop1?", "Which
-products are low on stock?", "Best sellers over the last 30 days"). Every change (new product, order update, refund)
-shows the exact call first; nothing is written until you click **Confirm**.
+### Use the chat agent
+
+1. **Chat** → pick the gateway.
+2. Ask in plain language: "Today's orders in shop1?", "Which products are low on stock?", "Best sellers over the
+   last 30 days".
+3. For any change (new product, order update, refund) it shows the exact call; nothing is written until you click
+   **Confirm**.
 
 ## Design and trade-offs
 
-| Choice | Why | Trade-off |
-| --- | --- | --- |
-| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache. |
-| Stateless edges and chat | No MCP sessions: any replica serves any request, restarts don't break clients. Chat uses the same `call_tool` path as `/mcp`, so policy and audit are identical. | No server push (e.g. tools-changed notifications). |
-| One central Postgres | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request. | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
-| Write budgets + admin approval | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure. | A big job waits for an admin. |
+| Choice                                       | Why                                                                                                                                                                                                                                                                | Trade-off                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache.                  |
+| Stateless edges and chat                     | No MCP sessions: any replica serves any request, restarts don't break clients. Chat uses the same `call_tool` path as `/mcp`, so policy and audit are identical.                                                                                                   | No server push (e.g. tools-changed notifications).                         |
+| One central Postgres                         | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request.                                                                                                               | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
+| Write budgets + admin approval               | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure.                                                                                                                                              | A big job waits for an admin.                                              |
 
 **Routing:** every 30 s each edge fetches `tools/list` from its enabled servers in parallel (5 s timeout each) and
 caches it. Tools are named `<server>__<tool>`; `tools/list` is served from cache, filtered by the caller's policy.
@@ -185,6 +174,7 @@ reason. Each call has a 10 s timeout and fails alone. Permission is checked live
 grant access. The audit row is written before the call, so a crash still leaves a trace.
 
 **Production:** same charts, only `*-local.yaml` → `*-prod.yaml` values change.
+
 - DNS: `*.localhost` → sslip.io (VPS) → a real domain.
 - Ingress: Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect.
 - Storage: `local-path` (one node's disk) → replicated or cloud block storage, with backups.
