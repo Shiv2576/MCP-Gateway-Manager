@@ -1,0 +1,19 @@
+{{- with .Values.tailscale.hostname }}
+# Public over IPv4 and IPv6 through Tailscale Funnel (the store operator sets this
+# when it has a tailnet): <hostname>.<tailnet>.ts.net, certificate from Tailscale.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $.Release.Name }}-tailscale
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: {{ $.Release.Name }}-wordpress
+      port:
+        number: 80
+  tls:
+    - hosts: [{{ . | quote }}]
+{{- end }}

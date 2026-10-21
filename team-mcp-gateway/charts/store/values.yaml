@@ -21,6 +21,11 @@ setup:
     - { name: "Filter Coffee 500g", price: "549" }
     - { name: "Brass Tumbler", price: "799" }
 
+# Set by the store operator on a tailnet: serve the store through Tailscale Funnel
+# (templates/ingress-tailscale.yaml) instead of the WordPress chart's Ingress.
+tailscale:
+  hostname: ""
+
 # Everything below goes to the Bitnami WordPress chart.
 wordpress:
   image:

@@ -16,17 +16,16 @@ from .upstream import Status
 
 
 def _view(r: dict) -> dict:
-    return {k: r[k] for k in ("id", "name", "type", "match", "server_id", "tool")}
+    checked = pii.CHECKED.get((r["name"], r["match"]))
+    return {**{k: r[k] for k in ("id", "name", "type", "match", "server_id", "tool", "is_default")},
+            "note": checked.note if checked else ""}
 
 
 @handler
 async def list_rules(request: Request) -> Response:
     require_admin(request)
-    rows = request.app.state.db.execute("SELECT * FROM pii_rules ORDER BY id").fetchall()
-    return JSONResponse({
-        "builtin": [{"name": r.name, "type": r.type, "match": r.match, "note": r.note} for r in pii.BUILTIN],
-        "custom": [_view(r) for r in rows],
-    })
+    rows = request.app.state.db.execute("SELECT * FROM pii_rules ORDER BY is_default, id").fetchall()
+    return JSONResponse({"rules": [_view(r) for r in rows]})
 
 
 @handler
@@ -60,8 +59,6 @@ async def create_rule(request: Request) -> Response:
             raise HTTPError(400, "no such server")
     else:
         raise HTTPError(400, "type must be pattern, key or field")
-    if kind != "field" and name in pii.BUILTIN_NAMES:
-        raise HTTPError(400, f"{name} is a built-in rule; pick another name")
     row = conn.execute(  # a duplicate is a 409 from @handler
         "INSERT INTO pii_rules (name, type, match, server_id, tool, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
         (name, kind, match, server_id, tool, time.time()),

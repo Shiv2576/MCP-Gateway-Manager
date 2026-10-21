@@ -2,3 +2,6 @@
 gatewayUrl: http://team-gateway:8000
 ingress:
   host: dash.2001-41d0-303-2774--94.sslip.io
+# Also at https://dash.tailff0a64.ts.net through Tailscale Funnel (IPv4 too).
+tailscale:
+  hostname: dash

@@ -10,9 +10,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
+import ssl
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import kopf
 import kubernetes
@@ -144,6 +147,28 @@ def _job_state(batch: BatchV1Api, ns: str, name: str) -> str:
     return "running"
 
 
+def _public_ready(url: str) -> bool:
+    """Every address the public name resolves to (each Tailscale Funnel relay) answers
+    HTTPS for it. IPv4 only: the relays serve both families alike, and this box's IPv6 is flaky."""
+    host = urlsplit(url).hostname
+    try:
+        addrs = {a[4][0] for a in socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)}
+    except socket.gaierror:
+        return False  # not in DNS yet
+    tls = ssl.create_default_context()
+    for addr in addrs:
+        try:
+            with socket.create_connection((addr, 443), timeout=10) as raw, \
+                    tls.wrap_socket(raw, server_hostname=host) as s:
+                s.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+                status = s.recv(64).split(b" ", 2)[1]
+            if int(status) >= 500:
+                return False
+        except (OSError, ValueError, IndexError):
+            return False
+    return bool(addrs)
+
+
 @kopf.timer(m.GROUP, m.VERSION, m.PLURAL, interval=15)
 def reconcile_store(name, meta, status, patch, logger, **_):
     if status.get("phase") != "Provisioning":
@@ -155,15 +180,20 @@ def reconcile_store(name, meta, status, patch, logger, **_):
         _job_state(BatchV1Api(), ns, "store-store-setup"),
         _deployment_ready(apps, ns, "woo-mcp-woo-mcp"),
     )
+    if state == "ready" and m.TAILNET_DOMAIN:
+        state, message = m.progress(True, "succeeded", True, _public_ready(m.store_url(name)))
     message = message.replace("<namespace>", ns)
     now = datetime.now(timezone.utc)
+    if state == "waiting" and message == m.PUBLIC_WAIT and m.timed_out(meta["creationTimestamp"], now):
+        # The store works; only its name is slow. Don't fail it for Tailscale.
+        state, message = "ready", "public URL may need a few more minutes"
     if state == "failed":
         patch.status.update(phase="Failed", message=message)
     elif state == "ready":
         secret = CoreV1Api().read_namespaced_secret("woo-mcp-credentials", ns)
         token = base64.b64decode(secret.data["MCP_AUTH_TOKEN"]).decode()
         gateway.upsert_server(name, m.mcp_url(name), token, store=name)
-        patch.status.update(phase="Ready", message="", readyAt=now.isoformat())
+        patch.status.update(phase="Ready", message=message, readyAt=now.isoformat())
         logger.info(f"{name}: ready and registered in the gateway")
     elif m.timed_out(meta["creationTimestamp"], now):
         patch.status.update(phase="Failed", message=f"timed out after {m.TIMEOUT_S // 60} min: {message}")

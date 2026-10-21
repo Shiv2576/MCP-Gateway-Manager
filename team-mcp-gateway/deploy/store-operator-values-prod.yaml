@@ -8,3 +8,5 @@ edgeImageTag: "0.10.4"
 baseDomain: 2001-41d0-303-2774--94.sslip.io
 urlScheme: https
 clusterIssuer: letsencrypt
+# Optional: tailnetDomain: <tailnet>.ts.net serves stores through Tailscale Funnel instead
+# (IPv4 too, but each new store name takes ~5-10 min to work; docs/deploy-vps.md). Off.

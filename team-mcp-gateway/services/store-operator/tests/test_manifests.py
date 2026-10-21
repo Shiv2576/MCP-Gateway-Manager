@@ -63,6 +63,7 @@ def test_progress():
     assert m.progress(True, "running", False) == ("waiting", "seeding products (setup job)")
     assert m.progress(True, "succeeded", False) == ("waiting", "waiting for woo-mcp")
     assert m.progress(True, "succeeded", True) == ("ready", "")
+    assert m.progress(True, "succeeded", True, public_ready=False) == ("waiting", m.PUBLIC_WAIT)
     state, msg = m.progress(True, "failed", True)
     assert state == "failed" and "kubectl logs job/store-store-setup" in msg
 
@@ -131,6 +132,27 @@ def test_vps_base_domain(monkeypatch):
     v = m.edge_values("prod", {"publicUrl": "https://prod.gw.203-0-113-7.sslip.io"}, "0.6.1")
     assert v["ingress"] == {"host": "prod.gw.203-0-113-7.sslip.io", "clusterIssuer": "letsencrypt"}
     assert (v["baseDomain"], v["urlScheme"]) == ("203-0-113-7.sslip.io", "https")
+
+
+def test_tailnet_serves_stores_through_tailscale(monkeypatch):
+    monkeypatch.setattr(m, "BASE_DOMAIN", "203-0-113-7.sslip.io")
+    monkeypatch.setattr(m, "SCHEME", "https")
+    monkeypatch.setattr(m, "CLUSTER_ISSUER", "letsencrypt")
+    monkeypatch.setattr(m, "TAILNET_DOMAIN", "tail1234.ts.net")
+    assert m.store_url("shop1") == "https://shop1-shop.tail1234.ts.net"
+    v = m.store_values("shop1", "blank")
+    assert v["tailscale"] == {"hostname": "shop1-shop"}
+    wp = v["wordpress"]
+    # No Traefik Ingress or certificate; WordPress builds its links from the Tailscale host.
+    assert wp["ingress"] == {"enabled": False}
+    assert (wp["wordpressHost"], wp["wordpressScheme"]) == ("shop1-shop.tail1234.ts.net", "https")
+    assert m.woo_mcp_values("shop1", "mercora")["store"]["publicUrl"] == "https://shop1-shop.tail1234.ts.net"
+    wp_in = next(p for p in m.network_policies() if p["metadata"]["name"] == "wordpress-ingress")
+    sources = wp_in["spec"]["ingress"][0]["from"]
+    assert {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "tailscale"}}} in sources
+    assert not any("kube-system" in str(s) for s in sources)
+    # Edges keep their own rules.
+    assert m.edge_url("prod") == "https://prod.gw.203-0-113-7.sslip.io"
 
 
 def test_local_values_have_no_vps_keys():

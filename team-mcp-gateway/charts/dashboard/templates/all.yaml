@@ -78,8 +78,26 @@ spec:
                 port:
                   name: http
 {{- end }}
+{{- with .Values.tailscale.hostname }}
 ---
-# Deny by default: Traefik in, the gateway API (and DNS to find it) out.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}-tailscale
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: {{ $name }}
+      port:
+        number: 80
+  tls:
+    - hosts: [{{ . | quote }}]
+{{- end }}
+---
+# Deny by default: Traefik (and the Tailscale proxy) in, the gateway API (and DNS to find it) out.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -93,6 +111,9 @@ spec:
   ingress:
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+        {{- if .Values.tailscale.hostname }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.tailscale.namespace }} } }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 8080 }
   egress:

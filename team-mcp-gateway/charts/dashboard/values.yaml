@@ -11,6 +11,12 @@ ingress:
   className: traefik
   host: dash.localhost
 
+# Set (e.g. "dash"): also serve the dashboard at https://dash.<tailnet>.ts.net through
+# Tailscale Funnel (IPv4 too). Needs the Tailscale operator in tailscale.namespace.
+tailscale:
+  hostname: ""
+  namespace: tailscale
+
 resources:
   requests:
     cpu: 10m

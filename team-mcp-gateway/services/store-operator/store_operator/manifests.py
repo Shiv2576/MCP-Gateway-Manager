@@ -31,6 +31,10 @@ CLUSTER_CIDRS = ["10.42.0.0/16", "10.43.0.0/16", "169.254.0.0/16"]
 BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "localhost")
 SCHEME = os.environ.get("URL_SCHEME", "http")
 CLUSTER_ISSUER = os.environ.get("CLUSTER_ISSUER", "")
+# Set (e.g. tail1234.ts.net): stores are https://<name>-shop.<tailnet> through Tailscale
+# Funnel instead of Traefik, so they answer over IPv4 and need no inbound IPv6.
+TAILNET_DOMAIN = os.environ.get("TAILNET_DOMAIN", "").strip().strip(".")
+TAILSCALE_NAMESPACE = "tailscale"
 
 WORDPRESS = {"app.kubernetes.io/name": "wordpress"}
 MARIADB = {"app.kubernetes.io/name": "mariadb"}
@@ -42,6 +46,8 @@ def namespace_name(store: str) -> str:
 
 
 def store_url(store: str) -> str:
+    if TAILNET_DOMAIN:
+        return f"https://{store}-shop.{TAILNET_DOMAIN}"
     return f"{SCHEME}://{store}.{BASE_DOMAIN}"
 
 
@@ -119,6 +125,9 @@ def network_policies() -> list[dict]:
     """Deny everything, then allow only the paths a store needs. woo-mcp's own
     ingress (gateway only) and egress (WordPress only) come with its chart."""
     kube_system = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}
+    # The store's front door: Traefik, or the Tailscale Funnel proxy.
+    front = ({"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": TAILSCALE_NAMESPACE}}}
+             if TAILNET_DOMAIN else kube_system)
     internet = {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": CLUSTER_CIDRS}}],
                 "ports": _tcp(80) + _tcp(443)}
     to_db = {"to": [{"podSelector": {"matchLabels": MARIADB}}], "ports": _tcp(3306)}
@@ -127,7 +136,7 @@ def network_policies() -> list[dict]:
          "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}},
         _policy("allow-dns", {}, egress=[{"to": [kube_system], "ports": [{"protocol": "UDP", "port": 53}, *_tcp(53)]}]),
         _policy("wordpress-ingress", WORDPRESS, ingress=[{
-            "from": [kube_system,  # Traefik
+            "from": [front,
                      {"podSelector": {"matchLabels": WOO_MCP}},
                      {"podSelector": {"matchLabels": SETUP_LABEL}}],
             "ports": _tcp(8080),
@@ -188,6 +197,12 @@ def store_values(store: str, template: str) -> dict:
         },
     }
     wordpress = values["wordpress"]
+    if TAILNET_DOMAIN:
+        # charts/store renders the Tailscale Ingress; WordPress still needs its public host.
+        wordpress.update(wordpressScheme="https", wordpressHost=f"{store}-shop.{TAILNET_DOMAIN}",
+                         ingress={"enabled": False})
+        values["tailscale"] = {"hostname": f"{store}-shop"}
+        return values
     if SCHEME == "https":
         # Bitnami writes WP_HOME = <scheme>://<hostname> on first install; it must equal store_url.
         wordpress["wordpressScheme"] = "https"
@@ -217,7 +232,10 @@ def over_cap(store: str, owner_stores: list[dict]) -> bool:
     return store in names and names.index(store) >= MAX_STORES
 
 
-def progress(wordpress_ready: bool, job: str, woo_ready: bool) -> tuple[str, str]:
+PUBLIC_WAIT = "waiting for the public URL (Tailscale DNS and relays)"
+
+
+def progress(wordpress_ready: bool, job: str, woo_ready: bool, public_ready: bool = True) -> tuple[str, str]:
     if job == "failed":
         # The handler fills in <namespace>.
         return "failed", "setup job failed: kubectl logs job/store-store-setup -n <namespace>"
@@ -227,6 +245,10 @@ def progress(wordpress_ready: bool, job: str, woo_ready: bool) -> tuple[str, str
         return "waiting", "seeding products (setup job)"
     if not woo_ready:
         return "waiting", "waiting for woo-mcp"
+    if not public_ready:
+        # A Tailscale name resolves and reaches every Funnel relay minutes after the pods are up.
+        # Ready (and the link) waits for it, so nobody's browser caches "name not found".
+        return "waiting", PUBLIC_WAIT
     return "ready", ""
 
 

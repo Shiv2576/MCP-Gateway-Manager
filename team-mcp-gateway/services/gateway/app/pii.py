@@ -2,8 +2,8 @@
 
 Three kinds of rule. A pattern is a regex run over every string value; a key is
 a JSON key whose whole value is replaced, at any depth; a field is one path in
-one tool's result, ticked in the dashboard. Built-in rules live here, custom
-rules in the pii_rules table. Everything but load_rules is pure, so it can run
+one tool's result, ticked in the dashboard. Every rule lives in the pii_rules
+table; DEFAULTS are put there on the first start and admins delete them like any other. Everything but load_rules is pure, so it can run
 in a worker thread under a time limit (see Upstreams.call_tool).
 """
 
@@ -34,8 +34,8 @@ class Rule:
     match: str
     server_id: int | None = None  # field rules only
     tool: str | None = None  # field rules only
-    check: Callable[[str], bool] | None = None  # built-in patterns: a match must also pass this
-    note: str = ""  # shown in the dashboard next to a built-in
+    check: Callable[[str], bool] | None = None  # default patterns: a match must also pass this
+    note: str = ""  # shown in the dashboard next to a default
 
 
 def _luhn(text: str) -> bool:
@@ -60,7 +60,7 @@ def _phone(text: str) -> bool:
 _OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 
 # Order matters: a card or an IP address must not be taken for a phone number.
-BUILTIN = [
+DEFAULTS = [
     # Starts only at the beginning of a run and never backtracks (++): without that,
     # "1-1-1-…a@" or "a@a.a.a.…1" is rescanned from every character (quadratic).
     Rule("EMAIL", "pattern", r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]++@(?:[A-Za-z0-9-]++\.)++[A-Za-z]{2,}+"),
@@ -75,14 +75,27 @@ BUILTIN = [
                                            "ship_to", "billing", "shipping")),
     Rule("FREE_TEXT", "key", "customer_note"),
 ]
-BUILTIN_NAMES = {r.name for r in BUILTIN}
+# A default pattern keeps its extra check (and note) for as long as its regex is unchanged.
+CHECKED = {(r.name, r.match): r for r in DEFAULTS if r.check}
+
+
+def seed_defaults(conn) -> None:
+    """DEFAULTS into pii_rules on the first start only, so a deleted default stays deleted."""
+    with conn.transaction() as tx:
+        if tx.execute("INSERT INTO pii_seeded VALUES (true) ON CONFLICT DO NOTHING RETURNING done").fetchone():
+            now = time.time()
+            tx.executemany(
+                "INSERT INTO pii_rules (name, type, match, is_default, created_at) VALUES (?, ?, ?, true, ?)"
+                " ON CONFLICT DO NOTHING",
+                [(r.name, r.type, r.match, now) for r in DEFAULTS],
+            )
 
 
 def load_rules(conn) -> list[Rule]:
-    """Custom rules first: an admin's specific pattern beats a broad built-in
+    """Admin-added rules before the defaults: a specific pattern beats a broad one
     (AADHAAR before PHONE). Read on every call, so a change applies at once."""
-    rows = conn.execute("SELECT name, type, match, server_id, tool FROM pii_rules ORDER BY id").fetchall()
-    return [Rule(**r) for r in rows] + BUILTIN
+    rows = conn.execute("SELECT name, type, match, server_id, tool FROM pii_rules ORDER BY is_default, id").fetchall()
+    return [CHECKED.get((r["name"], r["match"])) or Rule(**r) for r in rows]
 
 
 @functools.lru_cache(maxsize=512)

@@ -25,8 +25,8 @@ helm dependency build charts/store
 docker build -t gateway:0.10.4 services/gateway
 docker build -t dashboard:0.9.8 services/dashboard
 docker build -t woo-mcp:0.5.0 services/woo-mcp
-docker build -t store-operator:0.7.3 -f services/store-operator/Dockerfile .
-k3d image import -c store-check gateway:0.10.4 dashboard:0.9.8 woo-mcp:0.5.0 store-operator:0.7.3
+docker build -t store-operator:0.7.5 -f services/store-operator/Dockerfile .
+k3d image import -c store-check gateway:0.10.4 dashboard:0.9.8 woo-mcp:0.5.0 store-operator:0.7.5
 
 helm upgrade --install db      charts/postgres  -n mercora -f deploy/postgres-values-local.yaml --wait
 helm upgrade --install team    charts/gateway   -n mercora -f deploy/gateway-values-local.yaml --set seedServer.url= --wait
@@ -79,7 +79,7 @@ sed -i '' '/^tailnetDomain:/d' deploy/gateway-values-prod.yaml                # 
 helm dependency build charts/store && mkdir -p /tmp/img
 b() { docker buildx build --platform linux/amd64 -o type=docker,dest=/tmp/img/$1.tar -t $1:$2 "${@:3}"; }
 b gateway 0.10.4 services/gateway; b dashboard 0.9.8 services/dashboard; b woo-mcp 0.5.0 services/woo-mcp
-b store-operator 0.7.3 -f services/store-operator/Dockerfile .
+b store-operator 0.7.5 -f services/store-operator/Dockerfile .
 
 rsync -a --exclude .git --exclude node_modules --exclude .venv ./ root@$VPS_IP:/opt/team-mcp-gateway/
 scp /tmp/img/*.tar root@$VPS_IP:/tmp/

@@ -25,6 +25,7 @@ spec:
             - { name: BASE_DOMAIN, value: {{ .Values.baseDomain | quote }} }
             - { name: URL_SCHEME, value: {{ .Values.urlScheme | quote }} }
             - { name: CLUSTER_ISSUER, value: {{ .Values.clusterIssuer | quote }} }
+            - { name: TAILNET_DOMAIN, value: {{ .Values.tailnetDomain | quote }} }
             - { name: MAX_STORES, value: {{ .Values.maxStores | quote }} }
             - { name: WORKLOADS_ROLE, value: "{{ .Release.Namespace }}-store-operator-workloads" }
           envFrom:

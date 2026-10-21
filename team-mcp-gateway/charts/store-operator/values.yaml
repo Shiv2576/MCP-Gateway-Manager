@@ -1,6 +1,6 @@
 image:
   repository: store-operator
-  tag: "0.7.3"
+  tag: "0.7.5"
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
@@ -12,6 +12,9 @@ existingSecret: store-operator-gateway
 baseDomain: localhost
 urlScheme: http
 clusterIssuer: ""
+# Set (e.g. tail1234.ts.net): stores are served at https://<name>-shop.<tailnet> through
+# Tailscale Funnel instead of <name>.baseDomain. Needs the Tailscale operator.
+tailnetDomain: ""
 # Stores each admin may have. Keep equal to the gateway's stores.maxPerAdmin.
 maxStores: 3
 # Gateway image tag every edge (McpGateway) is installed with.

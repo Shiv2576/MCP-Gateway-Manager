@@ -12,6 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel
 
 import app.upstream as upstream_mod
+from app import db as store, pii
 from app.main import Settings, create_app
 from tests import KEY
 from tests.test_gateway import (
@@ -218,14 +219,13 @@ def test_pii_rules_api(db_url):
 
             new = lambda **b: admin.post("/api/pii-rules", json=b)
             assert (await new(name="AADHAAR", type="pattern", match=r"\b\d{4}\s?\d{4}\s?\d{4}\b")).status_code == 201
-            assert (await new(name="AADHAAR", type="key", match="aadhaar")).status_code == 409
+            assert (await new(name="AADHAAR", type="pattern", match=r"\b\d{4}\s?\d{4}\s?\d{4}\b")).status_code == 409
             r = await new(name="BAD", type="pattern", match="(")
             assert r.status_code == 400 and "regex" in r.json()["error"]
             assert (await new(name="LONG", type="pattern", match="a" * 201)).status_code == 400
             for empty in ("z*", "x?", r"\b"):  # matches the empty string: would wrap every character
                 r = await new(name="EMPTY", type="pattern", match=empty)
                 assert r.status_code == 400 and "empty" in r.json()["error"], empty
-            assert (await new(name="EMAIL", type="key", match="mail")).status_code == 400  # a built-in's name
             assert (await new(name="lower", type="key", match="x")).status_code == 400
             assert (await new(name="X1", type="nope", match="x")).status_code == 400
             assert (await new(name="PAY", type="field", match="payment_method")).status_code == 400  # no server/tool
@@ -237,8 +237,8 @@ def test_pii_rules_api(db_url):
             assert (await new(name="REDACTED", type="field", match="gone_field", server_id=sid, tool="get_order")).status_code == 201
 
             listed = (await admin.get("/api/pii-rules")).json()
-            assert {r["name"] for r in listed["builtin"]} >= {"EMAIL", "PHONE", "PERSON", "ADDRESS", "FREE_TEXT"}
-            assert [r["name"] for r in listed["custom"]] == ["AADHAAR", "REDACTED", "REDACTED"]
+            assert {r["name"] for r in listed["rules"] if r["is_default"]} == {r.name for r in pii.DEFAULTS}
+            assert [r["name"] for r in listed["rules"] if not r["is_default"]] == ["AADHAAR", "REDACTED", "REDACTED"]
 
             for _ in range(50):  # the control plane's health loop has to see the shop first
                 fields = (await admin.get("/api/pii-rules/fields")).json()
@@ -276,6 +276,18 @@ def test_pii_rules_api(db_url):
             assert (await admin.delete(f"/api/pii-rules/{slow['id']}")).status_code == 404
 
             await admin.delete(f"/api/servers/{sid}")  # field rules go with their server
-            assert [r["name"] for r in (await admin.get("/api/pii-rules")).json()["custom"]] == ["AADHAAR"]
+            rules = (await admin.get("/api/pii-rules")).json()["rules"]
+            assert [r["name"] for r in rules if not r["is_default"]] == ["AADHAAR"]
+
+            # Defaults are rules like any other: deleted, they stop masking and are not seeded back.
+            email = next(r for r in rules if r["name"] == "EMAIL")
+            assert (await admin.delete(f"/api/pii-rules/{email['id']}")).status_code == 200
+            t = await admin.post("/api/pii-rules/test", json={"payload": "mail a@b.co, ssn 123-45-6789"})
+            assert t.json()["payload"] == "mail a@b.co, ssn [SSN]"
+            conn = store.connect(db_url)
+            pii.seed_defaults(conn)
+            assert "EMAIL" not in {r.name for r in pii.load_rules(conn)}
+            conn.close()
+            assert (await new(name="EMAIL", type="pattern", match=email["match"])).status_code == 201  # and come back by hand
 
     asyncio.run(run())

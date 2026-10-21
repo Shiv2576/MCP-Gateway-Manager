@@ -6,7 +6,7 @@ const EMPTY = { name: '', type: 'pattern', match: '' }
 
 // The global redaction schema, the fields each tool returns, and a test box.
 export default function Pii() {
-  const [rules, setRules] = useState({ builtin: [], custom: [] })
+  const [rules, setRules] = useState({ rules: [] })
   const [servers, setServers] = useState([])
   const [form, setForm] = useState(EMPTY)
   const [error, setError] = useState('')
@@ -63,7 +63,7 @@ export default function Pii() {
     }
   }
 
-  const global = [...rules.builtin.map((r) => ({ ...r, builtin: true })), ...rules.custom.filter((r) => r.type !== 'field')]
+  const global = rules.rules.filter((r) => r.type !== 'field')
 
   return (
     <>
@@ -79,13 +79,16 @@ export default function Pii() {
           <tr><th>Name</th><th>Type</th><th>Match</th><th>Becomes</th><th /></tr>
         </thead>
         <tbody>
-          {global.map((r, i) => (
-            <tr key={r.id ?? `b${i}`}>
-              <td>{r.name} {r.builtin && <span className="pill">built-in</span>}</td>
+          {global.length === 0 && (
+            <tr><td colSpan={5} className="muted">No rules: results pass through unmasked.</td></tr>
+          )}
+          {global.map((r) => (
+            <tr key={r.id}>
+              <td>{r.name} {r.is_default && <span className="pill">default</span>}</td>
               <td>{r.type}</td>
               <td className="mono small">{r.match}{r.note && <span className="muted"> ({r.note})</span>}</td>
               <td className="mono">[{r.name}]</td>
-              <td>{!r.builtin && <button className="ghost danger tiny" onClick={() => remove(r.id)}>Delete</button>}</td>
+              <td><button className="ghost danger tiny" onClick={() => remove(r.id)}>Delete</button></td>
             </tr>
           ))}
         </tbody>

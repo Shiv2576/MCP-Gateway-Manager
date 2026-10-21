@@ -188,7 +188,12 @@ CREATE TABLE IF NOT EXISTS pii_rules (
     CHECK ((type = 'field') = (server_id IS NOT NULL AND tool IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS pii_rules_field ON pii_rules (server_id, tool, match) WHERE type = 'field';
-CREATE UNIQUE INDEX IF NOT EXISTS pii_rules_name ON pii_rules (name) WHERE type <> 'field';
+-- Rules are fully configurable: the defaults (pii.DEFAULTS) are rows like any other,
+-- seeded once (pii_seeded). Many keys share one name ([PERSON]), so a name is no longer unique.
+DROP INDEX IF EXISTS pii_rules_name;
+CREATE UNIQUE INDEX IF NOT EXISTS pii_rules_rule ON pii_rules (name, type, match) WHERE type <> 'field';
+ALTER TABLE pii_rules ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS pii_seeded (done BOOLEAN PRIMARY KEY);
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS pii TEXT;      -- JSON counts per rule, never values
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS payload TEXT;  -- the result as returned, filtered
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS payload_masked_for_log BOOLEAN NOT NULL DEFAULT false;

@@ -359,6 +359,18 @@ Each gateway is one Tailscale device (free plan: 100). A new name answers within
 minute or two once its certificate is issued. Gateways created before this keep
 their URL; recreate one with an empty public URL to move it.
 
+The same operator serves stores and the dashboard, because inbound IPv6 to this VPS
+drops a share of new connections (pages hang on first load):
+
+- `tailnetDomain` in `deploy/store-operator-values-prod.yaml` (off on this VPS: each new
+  store name takes ~5-10 min to resolve and reach every Funnel relay; the operator keeps
+  the store out of Ready until then): a new store is
+  `https://<name>-shop.<tailnet>`. The store chart renders the Tailscale Ingress
+  instead of the WordPress chart's Traefik one, and WordPress takes that host as
+  its URL. Stores created before keep their sslip.io URL; recreate them to move.
+- `tailscale.hostname: dash` in `deploy/dashboard-values-prod.yaml`: the dashboard
+  is also at `https://dash.<tailnet>`; the sslip.io name keeps working.
+
 ## Known limits
 
 - **URLs depend on the IP.** If the VPS's IP changes (usually only when the

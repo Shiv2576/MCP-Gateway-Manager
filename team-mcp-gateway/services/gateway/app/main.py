@@ -27,7 +27,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import alerts, api, approvals, chat, credentials, oauth, pii_api, setup, teams
+from . import alerts, api, approvals, chat, credentials, oauth, pii, pii_api, setup, teams
 from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
@@ -264,6 +264,8 @@ def create_app(
             "CREDENTIALS_KEY must be a Fernet key (32 url-safe base64 bytes)"
         ) from None
     conn = store.connect(settings.database_url, create_schema=not edge)
+    if not edge:
+        pii.seed_defaults(conn)
     if (
         not edge
         and conn.execute("SELECT 1 FROM org").fetchone() is None
