@@ -190,3 +190,56 @@ grant access. The audit row is written before the call, so a crash still leaves 
 - Ingress: Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect.
 - Storage: `local-path` (one node's disk) → replicated or cloud block storage, with backups.
 - Secrets: created by hand, never in charts → k3s secrets encryption or Vault/KMS; rotate `CREDENTIALS_KEY` with MultiFernet.
+
+<h2 align="center">Stand Out Features (Optional)</h2>
+
+> [!IMPORTANT]
+> **Live dashboard:** `https://dash.2001-41d0-303-2774--94.sslip.io/`
+> **Username:** `admin` · **Password:** `admin@1234`
+
+### 1. Production-like VPS deployment
+
+- **Images + deploy:** the same Helm charts run on a k3s VPS. Images are built for amd64 into tarballs, copied with
+  `scp`, loaded with `k3s ctr images import` (no registry), then installed with `helm upgrade --install`.
+- **Helm values:** only `*-local.yaml` → `*-prod.yaml` changes: domain `*.localhost` → sslip.io hosts, Traefik ingress
+  with HTTPS, `local-path` storage. Secrets are created by hand in the cluster with `kubectl create secret`, never in git.
+- **TLS:** cert-manager gets a Let's Encrypt certificate through a `ClusterIssuer` (HTTP-01 via Traefik). A Traefik
+  `TLSStore` makes it the default certificate for every host, and Traefik redirects HTTP to HTTPS.
+
+### 2. OAuth server for Claude custom connector
+
+_Description:_
+
+**Video:** _link_
+
+### 3. Tool and team provisioning
+
+_Description:_
+
+**Video:** _link_
+
+### 4. Rate limit and write budget
+
+_Description:_
+
+### 5. PII guardrails
+
+_Description:_
+
+### 6. Store provisioning
+
+_Description:_
+
+### 7. Cart recovery (targeted cart discounts)
+
+_Description:_
+
+### 8. Inventory optimization
+
+_Description:_
+
+### 9. Observability metrics
+
+Per-pod CPU usage and PHP-FPM worker saturation.
+
+_Description:_

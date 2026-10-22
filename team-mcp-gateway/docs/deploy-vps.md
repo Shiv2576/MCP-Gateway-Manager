@@ -61,19 +61,7 @@ The tags are the chart defaults, not code versions: step 3 builds the current
 code under them. `gateway:0.6.1` is the same build as `gateway:0.7.3`, so
 edges run the control plane's code.
 
-Only Helm values differ from local:
-
-| Chart | Value | Local (k3d) | VPS |
-|---|---|---|---|
-| gateway | `ingress.host` | `gateway.localhost` | `gateway.BASE` |
-| gateway | `cookieSecure` | `false` | `true` (https only) |
-| gateway | `baseDomain` / `urlScheme` | `localhost` / `http` | `BASE` / `https` |
-| dashboard | `ingress.host` | `dash.localhost` | `dash.BASE` |
-| postgres | `persistence.size` | `1Gi` | `5Gi` |
-| store (`mercora`) | `wordpress.ingress.hostname` / `wordpressScheme` | `store.localhost` / `http` | `store.BASE` / `https` |
-| woo-mcp | `store.publicUrl` | `http://store.localhost` | `https://store.BASE` |
-| store-operator | `baseDomain` / `urlScheme` / `clusterIssuer` | `localhost` / `http` / none | `BASE` / `https` / `letsencrypt` |
-| notes, fx | — | same files (`*-local.yaml`) | same files |
+Only Helm values differ from local: see `docs/production-values.md`.
 
 Same on both: the gateway's `upstreamAllowHosts` (the in-cluster `woo-mcp`,
 `notes` and `fx` Services) and `seedServer.url` (the `mercora` store's woo-mcp).
