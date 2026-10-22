@@ -157,12 +157,12 @@ The client sees only the tools its teams allow on that gateway, named `<store>__
 
 ## Design and trade-offs
 
-| Choice                                       | Why                                                                                                                                                                                                                                                                | Trade-off                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache.                  |
-| Stateless edges and chat                     | No MCP sessions: any replica serves any request, restarts don't break clients. Chat uses the same `call_tool` path as `/mcp`, so policy and audit are identical.                                                                                                   | No server push (e.g. tools-changed notifications).                         |
-| One central Postgres                         | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request.                                                                                                               | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
-| Write budgets + admin approval               | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure.                                                                                                                                              | A big job waits for an admin.                                              |
+| Choice                                       | Why                                                                                                                                                                                                                                                                                                              | Trade-off                                                                  |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token.                                               | More moving parts; each edge has its own 30 s tool cache.                  |
+| Stateless edges and chat                     | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | No server push (e.g. tools-changed notifications).                         |
+| One central Postgres                         | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request.                                                                                                                                                             | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
+| Write budgets + admin approval               | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure.                                                                                                                                                                                            | A big job waits for an admin.                                              |
 
 **Routing:** every 30 s each edge fetches `tools/list` from its enabled servers in parallel (5 s timeout each) and
 caches it. Tools are named `<server>__<tool>`; `tools/list` is served from cache, filtered by the caller's policy.
@@ -172,6 +172,17 @@ server-side, and audits.
 **Failures:** a dead upstream costs 5 s in the background loop, never on a request, and shows as Unreachable with the
 reason. Each call has a 10 s timeout and fails alone. Permission is checked live on every call, so a stale cache can't
 grant access. The audit row is written before the call, so a crash still leaves a trace.
+
+**Threat model:**
+
+- Shared credentials: a member never sees the key, but can do anything its allowed tools do with it, and upstream sees
+  one identity; only the gateway audit says who. Echoed keys are scrubbed from results; personal identity fixes this.
+- Client tokens are never forwarded upstream: a gateway token sent on would let any upstream replay it against the
+  gateway or other servers, and the upstream would trust a token not meant for it.
+- Untrusted upstreams: tool descriptions reach the model as written (only a `[server]` prefix), so a malicious one can
+  steer it. Only admins add servers, tools are allow-listed one by one, and writes in chat need a click to Confirm.
+- Member vs member: no access to another's keys or credentials, audit is admin-only, limits and budgets are per member.
+  On a shared credential, though, one member's writes (prices, refunds) change the same store everyone uses.
 
 **Production:** same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
