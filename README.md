@@ -194,7 +194,7 @@ grant access. The audit row is written before the call, so a crash still leaves 
 <h2 align="center">Stand Out Features (Optional)</h2>
 
 > [!IMPORTANT]
-> **Live dashboard:** `https://dash.2001-41d0-303-2774--94.sslip.io/`
+> **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
 > **Username:** `admin` · **Password:** `admin@1234`
 
 ### 1. Production-like VPS deployment
