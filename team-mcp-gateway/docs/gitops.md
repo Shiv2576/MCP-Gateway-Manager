@@ -15,7 +15,7 @@ push to main ─▶ CI: tests ─▶ CI: build the affected ─▶ CI: commit th
 | CI | `.github/workflows/ci.yaml` | PRs: tests + check the affected images build. `main`: also push them and bump their tags. |
 | Registry | `ghcr.io/shiv2576/<service>:<commit SHA>` | One immutable tag per commit, kept for rollback. Public, so k3s pulls without a secret. |
 | Desired state | `deploy/*-prod.yaml` `image:` blocks | CI's bot commit sets the tag; git history is the deploy history. |
-| Argo CD | `deploy/argocd/` | `root.yaml` (app of apps) watches `apps/`: `team`, `team-ui`, `store-operator`, `notes`, `fx`. Auto-sync, prune, self-heal. |
+| Argo CD | `deploy/argocd/` | `root.yaml` (app of apps) watches `apps/`: `team`, `team-ui`, `store-operator`. Auto-sync, prune, self-heal. |
 | Store operator | `edgeImage*`, `wooMcpImage` in its values | Upgrades the `gw-*` edges and each store's woo-mcp when its image values change. |
 
 **Selective builds.** The `changes` job maps the changed folders to images
@@ -27,12 +27,14 @@ bumps `wooMcpImage.tag`; the operator rolls both out. Tests always run in full.
 
 Tags therefore differ per service: each one is the last commit that changed it.
 If a main run fails, its services are not bumped; re-run it, or use *Run workflow*
-(builds and deploys all five) so prod catches up with `main`.
+(builds and deploys all four) so prod catches up with `main`.
 
 **Kept outside Argo, on purpose:**
 - `db`: holds the data; an auto-synced, auto-pruned app is the wrong owner for it.
 - `gw-*` and `store-*`: created at runtime by the store operator from McpGateway/Store
   resources, not declared in git. The operator is their controller; Argo is the operator's.
+- `notes` and `fx` (demo MCP servers): plain Helm releases with the local `demo-mcp`
+  image, installed by hand (`docs/deploy-vps.md`); not built by CI.
 - Secrets (`gateway-db`, `gateway-admin`, `gateway-credentials`, the MCP credentials):
   made by hand on the VPS (`docs/deploy-vps.md`), never in git.
 
@@ -40,12 +42,12 @@ If a main run fails, its services are not bumped; re-run it, or use *Run workflo
 
 **1. First CI run.** Push these changes to `main`, then Actions → ci → *Run workflow*
 on `main`: a push only builds what it changed, but every image is still `pending-ci`,
-so the first deploy builds all five. Watch `changes` → `test` → `images` → `deploy`.
+so the first deploy builds all four. Watch `changes` → `test` → `images` → `deploy`.
 The `deploy` job commits `deploy: <services> at <sha>`; run `git pull` before your
 next push (true after every deploy).
 
 **2. Make the packages public.** New GHCR packages start private. For each of
-gateway, dashboard, woo-mcp, demo-mcp, store-operator: github.com/Shiv2576 →
+gateway, dashboard, woo-mcp, store-operator: github.com/Shiv2576 →
 Packages → the package → Package settings → Change visibility → Public. Check from
 the VPS (it is NAT/IPv6-only, so this also proves it can reach ghcr.io):
 
@@ -70,8 +72,8 @@ kubectl -n argocd get applications          # all Synced / Healthy after a few m
 kubectl get deploy -A -o wide | grep ghcr   # platform, then edges and woo-mcps within ~1 min
 ```
 
-Argo takes over the existing resources of `team`, `team-ui`, `store-operator`,
-`notes` and `fx` in place (same names), so there is no downtime beyond the image
+Argo takes over the existing resources of `team`, `team-ui` and `store-operator`
+in place (same names), so there is no downtime beyond the image
 rollout.
 
 **5. UI** (optional), through an SSH tunnel:

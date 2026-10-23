@@ -23,7 +23,7 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ github.event_name == 'workflow_dispatch' && '["gateway","dashboard","woo-mcp","demo-mcp","store-operator"]' || steps.filter.outputs.changes }}
+      services: ${{ github.event_name == 'workflow_dispatch' && '["gateway","dashboard","woo-mcp","store-operator"]' || steps.filter.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
       - if: github.event_name != 'workflow_dispatch'
@@ -34,7 +34,6 @@ jobs:
             gateway: team-mcp-gateway/services/gateway/**
             dashboard: team-mcp-gateway/services/dashboard/**
             woo-mcp: team-mcp-gateway/services/woo-mcp/**
-            demo-mcp: team-mcp-gateway/services/demo-mcp/**
             store-operator:
               - team-mcp-gateway/services/store-operator/**
               # copied into the operator image: it installs stores and edges from them
