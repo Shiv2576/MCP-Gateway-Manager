@@ -3,14 +3,14 @@
 # Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
 image:
   repository: ghcr.io/shiv2576/store-operator
-  tag: "pending-ci"
+  tag: "30c026d6a3850bab839982646944ecaa2de46471"
 gatewayUrl: http://team-gateway:8000
 maxStores: 5
 edgeImageRepository: ghcr.io/shiv2576/gateway
-edgeImageTag: "pending-ci"
+edgeImageTag: "30c026d6a3850bab839982646944ecaa2de46471"
 wooMcpImage:
   repository: ghcr.io/shiv2576/woo-mcp
-  tag: "pending-ci"
+  tag: "30c026d6a3850bab839982646944ecaa2de46471"
 # Stores at https://<name>.2001-41d0-303-2774--94.sslip.io, edges at https://<slug>.gw.2001-41d0-303-2774--94.sslip.io,
 # each Ingress with its own Let's Encrypt certificate (HTTP-01).
 baseDomain: 2001-41d0-303-2774--94.sslip.io

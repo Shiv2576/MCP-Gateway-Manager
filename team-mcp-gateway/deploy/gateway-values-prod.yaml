@@ -3,7 +3,7 @@
 # Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
 image:
   repository: ghcr.io/shiv2576/gateway
-  tag: "pending-ci"
+  tag: "30c026d6a3850bab839982646944ecaa2de46471"
 mode: control
 ingress:
   host: gateway.2001-41d0-303-2774--94.sslip.io
