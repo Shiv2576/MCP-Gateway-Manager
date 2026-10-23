@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: team
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Shiv2576/MCP-Gateway-Manager.git
+    targetRevision: main
+    path: team-mcp-gateway/charts/gateway
+    helm:
+      releaseName: team
+      valueFiles:
+        - ../../deploy/gateway-values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mercora
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

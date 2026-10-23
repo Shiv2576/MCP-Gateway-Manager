@@ -1,0 +1,5 @@
+# VPS: the image of the notes and fx releases, on top of deploy/{notes,fx}-values-local.yaml.
+# Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
+image:
+  repository: ghcr.io/shiv2576/demo-mcp
+  tag: "pending-ci"

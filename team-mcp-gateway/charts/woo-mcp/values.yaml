@@ -1,5 +1,5 @@
-# Defaults. Environment differences live in deploy/values-local.yaml and
-# deploy/values-prod.yaml; nothing in templates/ changes between environments.
+# Defaults. The store operator installs this chart next to every store with values
+# from store_operator/manifests.py; nothing in templates/ changes between environments.
 
 replicaCount: 1
 

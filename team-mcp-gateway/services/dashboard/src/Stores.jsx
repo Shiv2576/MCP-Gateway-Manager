@@ -13,7 +13,7 @@ export default function Stores({ user }) {
   const [stores, setStores] = useState([])
   const [error, setError] = useState('')
   const [form, setForm] = useState({ name: '', template: 'catalog-a' })
-  const [max, setMax] = useState(3)
+  const [max, setMax] = useState(5)
 
   useEffect(() => {
     api('/stores/limit').then((d) => setMax(d.max_per_admin)).catch(() => {})

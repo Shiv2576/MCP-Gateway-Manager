@@ -27,7 +27,6 @@ spec:
   dnsNames:
     - dash.2001-41d0-303-2774--94.sslip.io
     - gateway.2001-41d0-303-2774--94.sslip.io
-    - store.2001-41d0-303-2774--94.sslip.io
 ---
 # Traefik's default certificate: Ingresses without a tls: section get it too.
 apiVersion: traefik.io/v1alpha1

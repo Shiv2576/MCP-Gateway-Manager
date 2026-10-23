@@ -1,6 +1,6 @@
 image:
   repository: store-operator
-  tag: "0.7.5"
+  tag: "0.7.7"
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
@@ -17,8 +17,13 @@ clusterIssuer: ""
 tailnetDomain: ""
 # Stores each admin may have. Keep equal to the gateway's stores.maxPerAdmin.
 maxStores: 3
-# Gateway image tag every edge (McpGateway) is installed with.
-edgeImageTag: "0.10.4"
+# Gateway image every edge (McpGateway) is installed with, and woo-mcp image of every
+# store. On a change the operator upgrades its existing edges and woo-mcps to it.
+edgeImageRepository: gateway
+edgeImageTag: "0.10.5"
+wooMcpImage:
+  repository: woo-mcp
+  tag: "0.5.0"
 resources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { memory: 512Mi }

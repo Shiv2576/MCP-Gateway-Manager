@@ -6,8 +6,5 @@ ingress:
 cookieSecure: false
 stores:
   enabled: true
-# The demo servers and the mercora store's woo-mcp live in this namespace (README).
-upstreamAllowHosts: "woo-mcp-woo-mcp.mercora.svc.cluster.local,notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"
-# The mercora store's woo-mcp (charts/store + charts/woo-mcp), registered at first-run setup.
-seedServer:
-  url: http://woo-mcp-woo-mcp.mercora.svc.cluster.local:8000/mcp
+# The demo servers live in this namespace (README).
+upstreamAllowHosts: "notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"

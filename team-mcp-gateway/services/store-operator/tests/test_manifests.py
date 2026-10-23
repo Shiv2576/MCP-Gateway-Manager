@@ -50,6 +50,7 @@ def test_helm_values():
     assert w["store"]["internalUrl"] == "http://store-wordpress.store-shop1.svc.cluster.local"
     assert w["store"]["publicUrl"] == "http://shop1.localhost"
     assert w["networkPolicy"]["allowFromNamespace"] == "mercora"
+    assert m.image_ref(w["image"]) == "woo-mcp:0.5.0"
 
 
 def test_over_cap_orders_by_creation_time():
@@ -103,7 +104,7 @@ def test_edge_values():
     assert m.edge_url("prod") == "http://prod.gw.localhost"
     v = m.edge_values("prod", {"displayName": "Production", "publicUrl": ""}, "0.2.0")
     assert v == {
-        "mode": "edge", "slug": "prod", "replicas": 2, "image": {"tag": "0.2.0"},
+        "mode": "edge", "slug": "prod", "replicas": 2, "image": {"repository": "gateway", "tag": "0.2.0"},
         "ingress": {"host": "prod.gw.localhost"}, "stores": {"enabled": False},
     }
     v = m.edge_values("ts", {"publicUrl": "https://ts-gw.tail1234.ts.net"}, "0.2.0")
@@ -217,3 +218,14 @@ def test_hosted_progress():
     assert m.hosted_progress(False, [("ContainerCreating", "")]) == ("waiting", "waiting for the pod")
     state, msg = m.hosted_progress(False, [("ImagePullBackOff", "Back-off pulling image x")])
     assert state == "waiting" and msg.startswith("ImagePullBackOff")
+
+
+def test_unschedulable():
+    now = datetime(2026, 10, 10, 10, 5, tzinfo=timezone.utc)
+    msg = "0/1 nodes are available: 1 Insufficient cpu. preemption: 0/1 nodes are available."
+    assert m.unschedulable([], now) == ""
+    assert m.unschedulable([("wp-0", msg, now - timedelta(seconds=10))], now) == ""  # inside the grace
+    got = m.unschedulable([("wp-0", msg, now - timedelta(minutes=2))], now)
+    assert got.startswith("not enough cpu left in the cluster (wp-0: 0/1 nodes")
+    other = m.unschedulable([("wp-0", "0/1 nodes are available: 1 node(s) had untolerated taint", now - timedelta(minutes=2))], now)
+    assert other.startswith("no node can run it")

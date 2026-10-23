@@ -40,6 +40,9 @@ def test_gateway_api(db_url):
             assert (g["slug"], g["name"], g["phase"], g["servers"]) == ("prod", "Production", "Provisioning", [])
             assert (g["url"], g["mcp_url"]) == ("http://prod.gw.localhost", "http://prod.gw.localhost/mcp")
             assert fake.items["prod"]["kind"] == "McpGateway"
+            assert g["pods"] == ""  # no edge yet
+            fake.items["prod"]["status"] = {"phase": "Ready", "pods": "2/2"}  # what the operator writes
+            assert (await admin.get("/api/gateways")).json()[0]["pods"] == "2/2"
             assert fake.items["prod"]["spec"] == {"displayName": "Production", "publicUrl": ""}
             # The same request again is a safe retry; a different one is a conflict.
             assert (await admin.post("/api/gateways", json={"slug": "prod", "name": "Production"})).status_code == 200

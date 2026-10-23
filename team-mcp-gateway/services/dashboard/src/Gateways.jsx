@@ -100,6 +100,7 @@ export default function Gateways({ user }) {
             <div className="grow">
               <div className="title">
                 {g.name} <span className="pill">{g.phase}</span>
+                {g.pods && <span className="pill">{g.pods} pods</span>}
                 {g.public_url && <span className="pill ok">OAuth</span>}
                 {g.pii_protection && <span className="pill ok">PII protected</span>}
               </div>

@@ -15,7 +15,7 @@ Store provisioning works as on local: create a store from the dashboard
 and it comes up at `https://<name>.BASE` with its own certificate.
 
 Sized for: 2 vCPU, 8 GB RAM, 80 GB disk, Ubuntu 24.04, x86_64, public IPv4.
-The core (including the `mercora` store) uses about 3.5 GB; each store you
+The core uses about 2.2 GB (measured October 2026); each store you
 create adds about 1.5 GB.
 
 Where stores and edges are served comes from three store-operator values,
@@ -35,7 +35,6 @@ two). Local defaults are `localhost`, `http` and none, so k3d is unchanged.
 | `http://dash.localhost` | `https://dash.BASE` (dashboard) |
 | `http://gateway.localhost` | `https://gateway.BASE` (gateway API) |
 | `http://prod.gw.localhost/mcp` | `https://prod.gw.BASE/mcp` (MCP endpoint for Claude) |
-| `http://store.localhost` | `https://store.BASE` (the `mercora` store) |
 | `http://<store>.localhost` | `https://<store>.BASE` (each store you create) |
 
 These URLs stay the same across restarts and redeploys. They change only if
@@ -48,8 +47,6 @@ The same releases as `store-check`, in namespace `mercora`:
 | Release | Chart | Image |
 |---|---|---|
 | `db` | postgres | `postgres:17-alpine` |
-| `mercora` | store | Bitnami WordPress + MariaDB |
-| `woo-mcp` | woo-mcp (the `mercora` store's MCP server) | `woo-mcp:0.5.0` |
 | `team` | gateway (control plane) | `gateway:0.7.3` |
 | `team-ui` | dashboard | `dashboard:0.7.3` |
 | `store-operator` | store-operator | `store-operator:0.5.3` |
@@ -63,8 +60,8 @@ edges run the control plane's code.
 
 Only Helm values differ from local: see `docs/production-values.md`.
 
-Same on both: the gateway's `upstreamAllowHosts` (the in-cluster `woo-mcp`,
-`notes` and `fx` Services) and `seedServer.url` (the `mercora` store's woo-mcp).
+Same on both: the gateway's `upstreamAllowHosts` (the in-cluster `notes` and `fx`
+Services).
 
 - **Storage:** both use the built-in `local-path` StorageClass. Volumes live on
   the VPS disk under `/var/lib/rancher/k3s/storage`.
@@ -102,8 +99,7 @@ On your laptop, in `team-mcp-gateway`, replace the placeholder domain once
 sed -i '' 's/example\.com/203-0-113-7.sslip.io/g' deploy/*-prod.yaml
 ```
 
-This covers every VPS file: gateway, dashboard, store-operator, the `mercora`
-store (`store-values-prod.yaml`), its woo-mcp (`values-prod.yaml`) and TLS.
+This covers every VPS file: gateway, dashboard, store-operator and TLS.
 
 Check that the names resolve (any prefix works):
 
@@ -162,7 +158,8 @@ ssh root@VPS_IP 'k3s ctr images ls -q | grep -E "gateway|dashboard|operator|mcp"
 images. After rebuilding with the same tag, delete the pod so it restarts on
 the new one.
 
-**Later updates:** `scripts/deploy-vps.sh` does this step plus the app
+**Later updates:** once Argo CD is set up, merging to `main` deploys (`docs/gitops.md`);
+before that, `scripts/deploy-vps.sh` does this step plus the app
 `helm upgrade`s and pod restarts, after showing what changes and asking.
 Override `VPS`, `PORT` or `KEY` in the environment for another server.
 
@@ -171,8 +168,7 @@ Override `VPS`, `PORT` or `KEY` in the environment for another server.
 Edit `deploy/tls-prod.yaml`:
 
 - set your email (Let's Encrypt expiry notices; addresses at example.* are rejected),
-- add `store.BASE` under `dnsNames`, beside `dash.BASE` and `gateway.BASE`.
-  The `mercora` store's Ingress has no certificate of its own and uses this one.
+- `dnsNames` lists `dash.BASE` and `gateway.BASE`.
 
 The file holds:
 
@@ -208,26 +204,16 @@ kubectl -n mercora create secret generic gateway-admin \
   --from-literal=SETUP_TOKEN=$(openssl rand -hex 16)      # add OPENROUTER_API_KEY for chat
 kubectl -n mercora create secret generic gateway-credentials \
   --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
-kubectl -n mercora create secret generic woo-mcp-credentials \
-  --from-literal=WOO_CONSUMER_KEY=ck_$(openssl rand -hex 20) \
-  --from-literal=WOO_CONSUMER_SECRET=cs_$(openssl rand -hex 20) \
-  --from-literal=MCP_AUTH_TOKEN="$(openssl rand -hex 24)"
 kubectl -n mercora create secret generic notes-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 kubectl -n mercora create secret generic fx-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
 
-`woo-mcp-credentials` is shared: the `mercora` store's setup Job registers the
-key in WooCommerce, woo-mcp reads it, and the gateway reads `MCP_AUTH_TOKEN`
-from it to register woo-mcp at first-run setup. Each operator-created store's
-Secrets are made by the operator, as on local.
+Each store's Secrets are made by the operator, as on local.
 
 ## 6. Install, one by one
 
 ```
 helm upgrade --install db charts/postgres -n mercora -f deploy/postgres-values-prod.yaml --wait
-helm upgrade --install mercora charts/store -n mercora -f deploy/store-values-prod.yaml --wait --timeout 15m
-kubectl -n mercora logs job/mercora-store-setup        # ends with "store setup done"
-helm upgrade --install woo-mcp charts/woo-mcp -n mercora -f deploy/values-prod.yaml
 helm upgrade --install notes charts/demo-mcp -n mercora -f deploy/notes-values-local.yaml
 helm upgrade --install fx    charts/demo-mcp -n mercora -f deploy/fx-values-local.yaml
 helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-prod.yaml
@@ -237,9 +223,7 @@ helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-v
 Right away (the setup page is public until done): open `https://dash.BASE`,
 enter the `SETUP_TOKEN`
 (`kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d`),
-create the organization and first admin. Setup also registers the `mercora`
-store's woo-mcp as server `woo-mcp`, so it is listed on first login.
-Then API keys → create an admin key, and:
+create the organization and first admin. Then API keys → create an admin key, and:
 
 ```
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY=<key>
@@ -250,10 +234,6 @@ helm upgrade --install store-operator charts/store-operator -n mercora -f deploy
 `urlScheme: https` and `clusterIssuer: letsencrypt`. The operator
 chart also installs the Store, McpGateway and HostedServer CRDs; until it is
 installed, those dashboard pages show errors.
-
-Skipping the `mercora` store: leave out its two releases and the
-`woo-mcp-credentials` Secret, and delete `seedServer` from
-`deploy/gateway-values-prod.yaml`, or setup registers a server that does not exist.
 
 ## 7. Stores, gateway, Claude
 
@@ -267,7 +247,7 @@ seed scripts, and registers its woo-mcp as a server. Its storefront is at
 redirect and issuer URLs are built from it, so http instead of https or a
 different host breaks sign-in. The operator installs the edge `gw-SLUG`, gives
 its Ingress that host and a certificate, and
-turns on OAuth. Attach the store servers (`woo-mcp` and any you created) to it.
+turns on OAuth. Attach the store servers you created to it.
 
 `notes` and `fx` run as on local but are not registered. Add them under
 Servers if you want them (in-cluster URLs from the README, tokens in their
@@ -281,19 +261,17 @@ Claude → Settings → Connectors → Add custom connector →
 ```
 curl -sI http://dash.BASE | head -3                    # 301/308 to https
 curl -sI https://dash.BASE | head -1                   # 200
-curl -s https://store.BASE/wp-json/ | head -c 80       # WordPress JSON (mercora store)
 curl -s https://<store>.BASE/wp-json/ | head -c 80     # WordPress JSON (a created store)
 echo | openssl s_client -connect VPS_IP:443 -servername SLUG.gw.BASE 2>/dev/null \
   | openssl x509 -noout -subject -issuer -enddate      # that host, Let's Encrypt, ~90 days out
 kubectl get certificate -A                             # every host READY True
-kubectl -n mercora get networkpolicy                   # db-postgres, team-gateway, team-ui-dashboard, store-operator, woo-mcp-woo-mcp, notes, fx
+kubectl -n mercora get networkpolicy                   # default-deny, acme-solver-ingress, db-postgres, team-gateway, gw-*-gateway, team-ui-dashboard, store-operator, notes, fx
 kubectl get validatingadmissionpolicy                  # mercora-store-operator-own-namespaces
 kubectl get pods -A; kubectl -n mercora get mgw,stores
 free -h                                                # memory headroom
 ```
 
-In the dashboard: Tools → run `woo-mcp`'s `list_products`; once a created
-store is Ready, run its `list_products` too. A catalog store returns its
+In the dashboard: Tools → once a created store is Ready, run its `list_products`. A catalog store returns its
 seeded products.
 
 ## Optional: Claude Code on the VPS for debugging
@@ -375,8 +353,9 @@ drops a share of new connections (pages hang on first load):
 - Edges also keep their `<slug>.gw.localhost` host. The public URL host is
   added beside it, so this does no harm.
 - One Postgres replica, no backups. Snapshot the VPS once the demo works.
-- The `mercora` WordPress pods have no NetworkPolicy of their own, so the
-  gateway's `namespaceDefaultDeny` stays off.
+- `mercora` is default-deny (gateway `namespaceDefaultDeny`, on by default),
+  with Traefik allowed to cert-manager's solver pods. A new pod there needs its
+  own NetworkPolicy or it gets no traffic.
 - `catalog-b` stores create shoppers with the password `test123`
   (`manifests.py`, `credentials_secret`). With public storefronts, anyone can
   log in as them. Fine for fake demo data; otherwise change it first.

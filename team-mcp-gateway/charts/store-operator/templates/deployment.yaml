@@ -21,7 +21,10 @@ spec:
           env:
             - { name: STORES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: GATEWAY_URL, value: {{ .Values.gatewayUrl | quote }} }
+            - { name: EDGE_IMAGE_REPOSITORY, value: {{ .Values.edgeImageRepository | quote }} }
             - { name: EDGE_IMAGE_TAG, value: {{ .Values.edgeImageTag | quote }} }
+            - { name: WOO_MCP_IMAGE_REPOSITORY, value: {{ .Values.wooMcpImage.repository | quote }} }
+            - { name: WOO_MCP_IMAGE_TAG, value: {{ .Values.wooMcpImage.tag | quote }} }
             - { name: BASE_DOMAIN, value: {{ .Values.baseDomain | quote }} }
             - { name: URL_SCHEME, value: {{ .Values.urlScheme | quote }} }
             - { name: CLUSTER_ISSUER, value: {{ .Values.clusterIssuer | quote }} }

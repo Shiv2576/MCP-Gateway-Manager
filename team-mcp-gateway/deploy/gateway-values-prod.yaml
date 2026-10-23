@@ -1,5 +1,9 @@
-# VPS (k3s). Images are imported into k3s (docs/deploy-vps.md), so the chart's image defaults apply.
+# VPS (k3s), deployed by Argo CD (deploy/argocd/).
 #   helm upgrade --install team charts/gateway -n mercora -f deploy/gateway-values-prod.yaml
+# Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
+image:
+  repository: ghcr.io/shiv2576/gateway
+  tag: "pending-ci"
 mode: control
 ingress:
   host: gateway.2001-41d0-303-2774--94.sslip.io
@@ -7,14 +11,11 @@ ingress:
 cookieSecure: true
 stores:
   enabled: true
-  maxPerAdmin: 10
+  maxPerAdmin: 5
 # Stores are <name>.2001-41d0-303-2774--94.sslip.io and edges <slug>.gw.2001-41d0-303-2774--94.sslip.io, over https.
 baseDomain: 2001-41d0-303-2774--94.sslip.io
 urlScheme: https
-# The demo servers and the mercora store's woo-mcp live in this namespace (README).
-upstreamAllowHosts: "woo-mcp-woo-mcp.mercora.svc.cluster.local,notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"
-# The mercora store's woo-mcp (charts/store + charts/woo-mcp), registered at first-run setup.
-seedServer:
-  url: http://woo-mcp-woo-mcp.mercora.svc.cluster.local:8000/mcp
+# The demo servers live in this namespace (README).
+upstreamAllowHosts: "notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"
 # Every new gateway: https://<slug>-gw.tailff0a64.ts.net over Tailscale Funnel (IPv4 too).
 tailnetDomain: tailff0a64.ts.net

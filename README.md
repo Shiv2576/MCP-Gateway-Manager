@@ -208,35 +208,39 @@ grant access. The audit row is written before the call, so a crash still leaves 
 
 ### 2. OAuth server for Claude custom connector
 
-_Description:_
+_Description:_ explain PKCE challenge authorization code and acess + refresh token swap between claude and gateway services in short
 
-**Video:** _link_
+**Video:** https://youtu.be/k6-_-3qR1D0
 
 ### 3. Tool and team provisioning
 
-_Description:_
-
-**Video:** _link_
+_Description:_ explain how we can define teams and add members with specific mcp tool calls , how we can also do individual memebr tool governence
 
 ### 4. Rate limit and write budget
 
-_Description:_
+_Description: explain why we introduced write budget over global rate limit , because while testing it agent autonomously started doing loop batching on write operation , which can be a really big issue for the stores.
 
 ### 5. PII guardrails
 
 _Description:_
 
+**Video:** https://youtu.be/dmNZf4ZWjEo
+
 ### 6. Store provisioning
 
 _Description:_
 
+**Video:** https://youtu.be/5LdM9Yth_N4
+
 ### 7. Cart recovery (targeted cart discounts)
 
 _Description:_
+**Video:** https://youtu.be/UCnPN6Uindg
 
 ### 8. Inventory optimization
 
 _Description:_
+**Video:** https://youtu.be/ytZ5Q8L_Afg
 
 ### 9. Observability metrics
 

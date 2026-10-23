@@ -17,6 +17,10 @@ OWNER_LABEL = f"{GROUP}/owner-id"
 STORE_LABEL = f"{GROUP}/store"
 SETUP_LABEL = {f"{GROUP}/role": "store-setup"}
 MAX_STORES = int(os.environ.get("MAX_STORES", "3"))  # per admin; same value as the gateway's
+# Images of the releases the operator installs (chart values edgeImageRepository, wooMcpImage).
+EDGE_IMAGE_REPOSITORY = os.environ.get("EDGE_IMAGE_REPOSITORY", "gateway")
+WOO_MCP_IMAGE = {"repository": os.environ.get("WOO_MCP_IMAGE_REPOSITORY", "woo-mcp"),
+                 "tag": os.environ.get("WOO_MCP_IMAGE_TAG", "0.5.0")}
 # PriorityClass from the store-operator chart: below everything else, so on a
 # full node the operator and gateway can always evict a store pod to start.
 STORE_PRIORITY = "store-workload"
@@ -180,7 +184,8 @@ def store_values(store: str, template: str) -> dict:
         "setup": {"template": template, "hook": False},
         "wordpress": {
             "wordpressBlogName": store,
-            "existingSecret": "woo-mcp-credentials",
+            "image": WOO_MCP_IMAGE,
+        "existingSecret": "woo-mcp-credentials",
             "priorityClassName": STORE_PRIORITY,
             "ingress": {"hostname": f"{store}.{BASE_DOMAIN}"},
             # Bitnami's policies allow all ingress; allows add up, so they would undo ours.
@@ -218,6 +223,7 @@ def woo_mcp_values(store: str, gateway_namespace: str) -> dict:
             "internalUrl": f"http://store-wordpress.{namespace_name(store)}.svc.cluster.local",
             "publicUrl": store_url(store),
         },
+        "image": WOO_MCP_IMAGE,
         "existingSecret": "woo-mcp-credentials",
         "priorityClassName": STORE_PRIORITY,
         "networkPolicy": {"enabled": True, "allowFromNamespace": gateway_namespace},
@@ -261,6 +267,10 @@ def edge_release(slug: str) -> str:
     return f"gw-{slug}"
 
 
+def image_ref(image: dict) -> str:
+    return f"{image['repository']}:{image['tag']}"
+
+
 def edge_url(slug: str) -> str:
     return f"{SCHEME}://{slug}.gw.{BASE_DOMAIN}"
 
@@ -271,7 +281,7 @@ def edge_values(slug: str, spec: dict, image_tag: str) -> dict:
         "mode": "edge",
         "slug": slug,
         "replicas": 2,
-        "image": {"tag": image_tag},
+        "image": {"repository": EDGE_IMAGE_REPOSITORY, "tag": image_tag},
         "ingress": {"host": f"{slug}.gw.{BASE_DOMAIN}"},
         "stores": {"enabled": False},
     }
@@ -419,6 +429,21 @@ def hosted_service(spec: dict) -> dict:
 
 # Waiting reasons that will not fix themselves: report them instead of a bare timeout.
 STUCK = {"ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CrashLoopBackOff", "CreateContainerConfigError"}
+
+
+# A pod can be Unschedulable for a moment while a deleted store's pods still terminate.
+UNSCHEDULABLE_GRACE_S = 60
+
+
+def unschedulable(pods: list[tuple[str, str, datetime]], now: datetime) -> str:
+    """pods: (name, scheduler message, since) of each pod the scheduler can't place.
+    Why it can't run, once one has been stuck past the grace; "" otherwise."""
+    for name, message, since in pods:
+        if (now - since).total_seconds() > UNSCHEDULABLE_GRACE_S:
+            short = [r for r in ("cpu", "memory") if f"Insufficient {r}" in message]
+            head = f"not enough {' and '.join(short)} left in the cluster" if short else "no node can run it"
+            return f"{head} ({name}: {message})"[:500]
+    return ""
 
 
 def hosted_progress(ready: bool, waiting: list[tuple[str, str]]) -> tuple[str, str]:

@@ -1,0 +1,20 @@
+# App of apps: Argo CD keeps every Application in deploy/argocd/apps/ in sync with git.
+# Applied once by hand (docs/gitops.md); everything after that comes from git.
+# Not here on purpose: db (holds data; never auto-pruned) and the gw-*/store-* releases,
+# which the store operator creates at runtime and upgrades itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Shiv2576/MCP-Gateway-Manager.git
+    targetRevision: main
+    path: team-mcp-gateway/deploy/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

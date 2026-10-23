@@ -1,6 +1,5 @@
-# Defaults. Environment differences live in deploy/store-values-local.yaml and
-# deploy/store-values-prod.yaml. Install with release name "mercora" so the
-# Service is mercora-wordpress, which charts/woo-mcp points at.
+# Defaults. The store operator installs this chart once per store (release "store"
+# in namespace store-<name>) with values from store_operator/manifests.py.
 
 # Secret that already exists in this namespace with WOO_CONSUMER_KEY and
 # WOO_CONSUMER_SECRET. The same Secret woo-mcp reads, so there is one copy of the key.

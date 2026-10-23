@@ -1,4 +1,8 @@
 # helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-prod.yaml
+# Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
+image:
+  repository: ghcr.io/shiv2576/dashboard
+  tag: "pending-ci"
 gatewayUrl: http://team-gateway:8000
 ingress:
   host: dash.2001-41d0-303-2774--94.sslip.io

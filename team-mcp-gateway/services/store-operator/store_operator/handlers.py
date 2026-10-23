@@ -169,6 +169,15 @@ def _public_ready(url: str) -> bool:
     return bool(addrs)
 
 
+def _unschedulable(core: CoreV1Api, ns: str) -> str:
+    pods = core.list_namespaced_pod(ns).items
+    return m.unschedulable([
+        (p.metadata.name, c.message or "", c.last_transition_time)
+        for p in pods for c in (p.status.conditions or [])
+        if c.type == "PodScheduled" and c.status == "False" and c.reason == "Unschedulable" and c.last_transition_time
+    ], datetime.now(timezone.utc))
+
+
 @kopf.timer(m.GROUP, m.VERSION, m.PLURAL, interval=15)
 def reconcile_store(name, meta, status, patch, logger, **_):
     if status.get("phase") != "Provisioning":
@@ -182,6 +191,8 @@ def reconcile_store(name, meta, status, patch, logger, **_):
     )
     if state == "ready" and m.TAILNET_DOMAIN:
         state, message = m.progress(True, "succeeded", True, _public_ready(m.store_url(name)))
+    if state == "waiting" and (stuck := _unschedulable(CoreV1Api(), ns)):
+        state, message = "failed", stuck
     message = message.replace("<namespace>", ns)
     now = datetime.now(timezone.utc)
     if state == "waiting" and message == m.PUBLIC_WAIT and m.timed_out(meta["creationTimestamp"], now):
@@ -202,11 +213,17 @@ def reconcile_store(name, meta, status, patch, logger, **_):
 
 
 @kopf.timer(m.GROUP, m.VERSION, m.PLURAL, interval=60)
-def repair_guardrails(name, meta, labels, status, **_):
+def repair_guardrails(name, meta, labels, status, logger, **_):
     """Put back a quota, LimitRange or NetworkPolicy someone deleted by hand.
     Never recreates the namespace itself, and stays out of the way of a delete."""
     if status.get("phase") == "Ready" and not meta.get("deletionTimestamp"):
         _namespace_objects(name, labels[m.OWNER_LABEL], create_namespace=False)
+        # A deploy gave the operator a new woo-mcp image: move this store's woo-mcp to it.
+        ns, want = m.namespace_name(name), m.image_ref(m.WOO_MCP_IMAGE)
+        image = _image(AppsV1Api(), ns, "woo-mcp-woo-mcp")
+        if image and image != want:
+            _helm("woo-mcp", "woo-mcp", ns, m.woo_mcp_values(name, NAMESPACE))
+            logger.warning(f"store {name}: woo-mcp ran {image}; now {want}")
 
 
 @kopf.on.delete(m.GROUP, m.VERSION, m.PLURAL)
@@ -250,34 +267,47 @@ def on_gateway_created(name, spec, patch, retry, logger, **_):
 
 @kopf.timer(m.GROUP, m.VERSION, m.GATEWAY_PLURAL, interval=15)
 def reconcile_gateway(name, meta, status, patch, logger, **_):
+    try:
+        dep = AppsV1Api().read_namespaced_deployment(f"{m.edge_release(name)}-gateway", NAMESPACE)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        dep = None
+    ready = (dep.status.ready_replicas or 0) if dep else 0
+    pods = f"{ready}/{dep.spec.replicas}" if dep else ""
+    if pods != status.get("pods", ""):
+        patch.status["pods"] = pods  # only on change: this runs every 15 s
     if status.get("phase") != "Provisioning":
         return
-    if _deployment_ready(AppsV1Api(), NAMESPACE, f"{m.edge_release(name)}-gateway"):
+    if ready:
         patch.status.update(phase="Ready", message="")
         logger.info(f"gateway {name}: ready")
     elif m.timed_out(meta["creationTimestamp"], datetime.now(timezone.utc), m.EDGE_TIMEOUT_S):
         patch.status.update(phase="Failed", message=f"no ready edge pod after {m.EDGE_TIMEOUT_S // 60} min")
 
 
-def _deployment_exists(apps: AppsV1Api, ns: str, name: str) -> bool:
+def _image(apps: AppsV1Api, ns: str, name: str) -> str | None:
+    """The deployment's container image, or None if there is no such deployment."""
     try:
-        apps.read_namespaced_deployment(name, ns)
-        return True
+        return apps.read_namespaced_deployment(name, ns).spec.template.spec.containers[0].image
     except ApiException as e:
         if e.status == 404:
-            return False
+            return None
         raise
 
 
 @kopf.timer(m.GROUP, m.VERSION, m.GATEWAY_PLURAL, interval=60)
 def repair_gateway(name, spec, meta, status, logger, **_):
-    """Reinstall a Ready gateway's edge if its release was removed by hand.
+    """Reinstall a Ready gateway's edge if its release was removed by hand, and upgrade
+    it when the operator was given a new edge image (a deploy).
     (Restarts need nothing: kopf runs a create handler that has not finished.)"""
     if status.get("phase") != "Ready" or meta.get("deletionTimestamp"):
         return
-    if not _deployment_exists(AppsV1Api(), NAMESPACE, f"{m.edge_release(name)}-gateway"):
+    image = _image(AppsV1Api(), NAMESPACE, f"{m.edge_release(name)}-gateway")
+    want = m.image_ref({"repository": m.EDGE_IMAGE_REPOSITORY, "tag": EDGE_IMAGE_TAG})
+    if image != want:
         _helm(m.edge_release(name), "gateway", NAMESPACE, m.edge_values(name, spec, EDGE_IMAGE_TAG))
-        logger.warning(f"gateway {name}: edge was missing; reinstalled")
+        logger.warning(f"gateway {name}: edge {'was missing' if image is None else f'ran {image}'}; now {want}")
 
 
 @kopf.on.delete(m.GROUP, m.VERSION, m.GATEWAY_PLURAL)
@@ -348,6 +378,8 @@ def reconcile_hosted(name, spec, meta, status, patch, logger, **_):
         gateway.upsert_server(name, m.hosted_url(name, spec), token, spec.get("authHeader") or "Authorization")
         patch.status.update(phase="Ready", message="")
         logger.info(f"hosted {name}: ready and registered in the gateway")
+    elif stuck := _unschedulable(core, ns):
+        patch.status.update(phase="Failed", message=stuck)
     elif m.timed_out(meta["creationTimestamp"], datetime.now(timezone.utc), m.HOSTED_TIMEOUT_S):
         patch.status.update(phase="Failed", message=f"not ready after {m.HOSTED_TIMEOUT_S // 60} min: {message}")
     else:

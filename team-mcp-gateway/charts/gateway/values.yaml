@@ -2,7 +2,7 @@
 
 image:
   repository: gateway
-  tag: "0.10.4"
+  tag: "0.10.5"
   pullPolicy: IfNotPresent
 
 # control: the /api behind the dashboard (one replica). edge: /mcp for one
@@ -21,7 +21,7 @@ credentialsSecret: gateway-credentials
 # OPENROUTER_API_KEY (dashboard chat agent). The chart never holds them.
 existingSecret: gateway-admin
 
-callTimeoutSeconds: 10
+callTimeoutSeconds: 30  # heavy reports (get_inventory_health) page through every product and order
 listTimeoutSeconds: 5
 refreshIntervalSeconds: 30
 # true when the gateway is served over https, so the session cookie is https-only.
@@ -88,9 +88,9 @@ networkPolicy:
   clusterCidrs: ["10.42.0.0/16", "10.43.0.0/16", "169.254.0.0/16"]
   # app.kubernetes.io/name of MCP servers in this namespace the gateway may call on 8000.
   upstreamApps: ["woo-mcp", "notes-mcp", "fx-mcp"]
-  # Control release only: a default-deny for every pod in the namespace. Leave
-  # off while pods without their own policy run here (the mercora WordPress store).
-  namespaceDefaultDeny: false
+  # Control release only: a default-deny for every pod in the namespace, plus
+  # Traefik → cert-manager solver pods. Every component has its own policy too.
+  namespaceDefaultDeny: true
 
 # Store provisioning: the gateway may create/list/delete Store resources in its
 # own namespace. Needs the store-operator chart (it installs the CRD).

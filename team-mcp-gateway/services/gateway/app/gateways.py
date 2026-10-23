@@ -47,6 +47,7 @@ def _view(request: Request, row: dict, servers: list[dict], cr: dict | None) -> 
         "mcp_url": (row["public_url"] or url) + "/mcp",
         "phase": phase,
         "message": status.get("message", ""),
+        "pods": status.get("pods", ""),  # edge pods ready/desired, e.g. "2/2"
         "servers": servers,
     }
 

@@ -176,13 +176,25 @@ function TeamAlerts() {
     return () => clearInterval(t)
   }, [load])
 
+  // A 409 means a teammate got there first; reloading shows who.
+  async function markDone(id) {
+    setError('')
+    try {
+      await api(`/alerts/${id}/done`, { method: 'POST' })
+    } catch (e) {
+      setError(e.message)
+    }
+    load()
+  }
+
   return (
     <>
       <div className="toolbar">
         <div>
           <h2>Team alerts</h2>
           <div className="muted small">
-            Alerts for your teams. An alert is done when an agent calls gateway__mark_team_alert_done.
+            Alerts for your teams. Mark one done once it is handled, here or by an agent calling
+            gateway__mark_team_alert_done; your teammates see who did it.
           </div>
         </div>
       </div>
@@ -194,6 +206,7 @@ function TeamAlerts() {
             <b>{a.title}</b>
             <span className="pill">{a.team}</span>
             {a.done_at && <span className="pill ok">done</span>}
+            {!a.done_at && <button className="ghost tiny" onClick={() => markDone(a.id)}>Mark done</button>}
           </div>
           <div className="muted small">
             <span className="mono">{a.tool}</span> on <span className="mono">{a.gateway}</span> · {when(a.created_at)}

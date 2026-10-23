@@ -1,9 +1,0 @@
-# k3d on your laptop:
-#   helm upgrade --install mercora charts/store -n mercora --create-namespace -f deploy/store-values-local.yaml --wait --timeout 15m
-wordpress:
-  ingress:
-    hostname: store.localhost
-    # Plain http://localhost reaches WordPress too, which redirects it to store.localhost.
-    extraHosts:
-      - name: localhost
-        path: /

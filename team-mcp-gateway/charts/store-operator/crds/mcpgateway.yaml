@@ -16,6 +16,7 @@ spec:
         - { name: Name, type: string, jsonPath: .spec.displayName }
         - { name: Phase, type: string, jsonPath: .status.phase }
         - { name: URL, type: string, jsonPath: .status.url }
+        - { name: Pods, type: string, jsonPath: .status.pods }
         - { name: Message, type: string, jsonPath: .status.message }
         - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
       schema:

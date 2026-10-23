@@ -73,4 +73,20 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
+---
+# cert-manager's HTTP-01 solver pods (edges with a clusterIssuer): Traefik must
+# reach them or the edge's certificate never issues or renews.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acme-solver-ingress
+spec:
+  podSelector:
+    matchLabels: { acme.cert-manager.io/http01-solver: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports:
+        - { protocol: TCP, port: 8089 }
 {{- end }}
