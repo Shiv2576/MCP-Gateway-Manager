@@ -4,15 +4,16 @@ How code reaches the VPS. Replaces `scripts/deploy-vps.sh` (laptop build, tarbal
 scp, `k3s ctr images import`, `helm upgrade`).
 
 ```
-push to main ─▶ CI: tests ─▶ CI: build the affected ─▶ CI: commit their SHA ─▶ Argo CD syncs
-                              images, push to GHCR    into deploy/*-prod.yaml   (polls git, ~3 min)
+push to main ─▶ CI: tests + ─▶ CI: build the affected ─▶ CI: commit their SHA ─▶ Argo CD syncs
+                chart checks    images, smoke-test,     into deploy/*-prod.yaml   (polls git, ~3 min)
+                                push to GHCR
 ```
 
 ## The pieces
 
 | Piece | Where | Does |
 |---|---|---|
-| CI | `.github/workflows/ci.yaml` | PRs: tests + check the affected images build. `main`: also push them and bump their tags. |
+| CI | `.github/workflows/ci.yaml` | PRs: tests, `helm lint` every chart + render the Argo charts with prod values, build the affected images and smoke-test them (`scripts/smoke.sh`). `main`: also push them and bump their tags. |
 | Registry | `ghcr.io/shiv2576/<service>:<commit SHA>` | One immutable tag per commit, kept for rollback. Public, so k3s pulls without a secret. |
 | Desired state | `deploy/*-prod.yaml` `image:` blocks | CI's bot commit sets the tag; git history is the deploy history. |
 | Argo CD | `deploy/argocd/` | `root.yaml` (app of apps) watches `apps/`: `team`, `team-ui`, `store-operator`. Auto-sync, prune, self-heal. |

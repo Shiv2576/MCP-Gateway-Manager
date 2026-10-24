@@ -31,9 +31,6 @@ spec:
             - { name: TAILNET_DOMAIN, value: {{ .Values.tailnetDomain | quote }} }
             - { name: MAX_STORES, value: {{ .Values.maxStores | quote }} }
             - { name: WORKLOADS_ROLE, value: "{{ .Release.Namespace }}-store-operator-workloads" }
-          envFrom:
-            - secretRef:
-                name: {{ required "existingSecret is required" .Values.existingSecret }}
           # kopf's health endpoint answers once the operator has started watching.
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
@@ -50,5 +47,12 @@ spec:
             capabilities: { drop: ["ALL"] }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: gateway-token, mountPath: /var/run/secrets/mcp-gateway, readOnly: true }
       volumes:
         - { name: tmp, emptyDir: {} }
+        # How it proves itself to the gateway: a token for audience mcp-gateway only, valid
+        # an hour, renewed by the kubelet. The gateway checks it with a TokenReview.
+        - name: gateway-token
+          projected:
+            sources:
+              - serviceAccountToken: { audience: mcp-gateway, expirationSeconds: 3600, path: token }

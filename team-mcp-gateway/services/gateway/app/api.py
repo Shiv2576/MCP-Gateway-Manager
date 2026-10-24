@@ -95,11 +95,27 @@ def user_for_api_key(conn: store.Db, key: str) -> dict | None:
     ).fetchone()
 
 
+# Who the store operator acts as. Not a row in users: it can't log in, own keys or be
+# deleted, and it is admin only on the server registry, the one thing it changes.
+OPERATOR = {"id": None, "username": "store-operator", "role": "admin"}
+
+
+def _operator(request: Request, token: str) -> dict | None:
+    review = request.app.state.token_review
+    path = request.url.path
+    if review is None or not (path == "/api/servers" or path.startswith("/api/servers/")):
+        return None
+    if review(token) == request.app.state.settings.operator_service_account:
+        return OPERATOR
+    return None
+
+
 def current_user(request: Request) -> dict:
     conn = request.app.state.db
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
-        user = user_for_api_key(conn, auth[7:].strip())
+        token = auth[7:].strip()
+        user = user_for_api_key(conn, token) or _operator(request, token)
     else:
         token = request.cookies.get(SESSION_COOKIE, "")
         user = conn.execute(

@@ -32,7 +32,7 @@ from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
 from . import stores as store_api
-from .kube import Kube
+from .kube import Kube, TokenReview
 from .upstream import Upstreams
 
 log = logging.getLogger("gateway")
@@ -72,6 +72,9 @@ class Settings:
     llm_url: str = "https://openrouter.ai/api/v1/chat/completions"
     # Namespace holding Store resources; empty turns store provisioning off.
     stores_namespace: str = ""
+    # The store operator's ServiceAccount (system:serviceaccount:<ns>:<name>). Its
+    # projected token, checked with TokenReview, may use /api/servers. Empty: off.
+    operator_service_account: str = ""
     # The gateway's public https URL. Set, it turns on OAuth for /mcp so
     # clients can connect with a browser login; API keys work either way.
     public_url: str = ""
@@ -119,6 +122,7 @@ class Settings:
             llm_guard_model=env("LLM_GUARD_MODEL", cls.llm_guard_model),
             llm_url=env("LLM_URL", cls.llm_url),
             stores_namespace=env("STORES_NAMESPACE", ""),
+            operator_service_account=env("OPERATOR_SERVICE_ACCOUNT", "").strip(),
             public_url=env("PUBLIC_URL", "").strip().rstrip("/"),
             base_domain=env("BASE_DOMAIN", cls.base_domain).strip(),
             url_scheme=env("URL_SCHEME", cls.url_scheme).strip(),
@@ -247,7 +251,7 @@ def _transport_security(settings: Settings) -> TransportSecuritySettings:
 
 
 def create_app(
-    settings: Settings | None = None, stores=None, gateways=None, hosted=None
+    settings: Settings | None = None, stores=None, gateways=None, hosted=None, token_review=None
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     if settings.mode not in ("control", "edge"):
@@ -354,6 +358,9 @@ def create_app(
             if settings.stores_namespace
             else None
         )
+    )
+    app.state.token_review = token_review or (
+        TokenReview() if settings.operator_service_account and not edge else None
     )
     app.state.hosted = (
         hosted

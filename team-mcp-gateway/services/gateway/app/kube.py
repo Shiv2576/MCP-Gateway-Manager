@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import os
 import ssl
+import time
 
 import httpx2
 
 GROUP = "mcpgateway.example.com"
 OWNER_LABEL = f"{GROUP}/owner-id"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+# Audience of the token the store operator sends (its chart projects one for it), so a
+# token meant for this gateway is useless against the Kubernetes API, and vice versa.
+TOKEN_AUDIENCE = "mcp-gateway"
 
 
 class AlreadyExists(Exception):
@@ -55,11 +59,8 @@ class Kube:
         self.tls = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
 
     async def _request(self, method: str, path: str = "", **kw) -> httpx2.Response:
-        # Read on every call: the kubelet rotates the token file.
-        with open(f"{SA_DIR}/token") as f:
-            token = f.read().strip()
         async with httpx2.AsyncClient(verify=self.tls, timeout=10) as http:
-            return await http.request(method, self.url + path, headers={"Authorization": f"Bearer {token}"}, **kw)
+            return await http.request(method, self.url + path, headers={"Authorization": f"Bearer {_sa_token()}"}, **kw)
 
     async def list(self, owner_id: int | None = None) -> list[dict]:
         params = {"labelSelector": f"{OWNER_LABEL}={owner_id}"} if owner_id is not None else None
@@ -88,3 +89,47 @@ class Kube:
         r = await self._request("DELETE", f"/{name}")
         if r.status_code != 404:
             r.raise_for_status()
+
+
+def _sa_token() -> str:
+    # Read on every call: the kubelet rotates the token file.
+    with open(f"{SA_DIR}/token") as f:
+        return f.read().strip()
+
+
+class TokenReview:
+    """Who a ServiceAccount token belongs to, asked of the API server (TokenReview).
+
+    None unless the token is valid, unexpired, its pod still exists, and it was issued
+    for TOKEN_AUDIENCE. Answers are cached for a minute, so one token costs one call.
+    """
+
+    TTL_S = 60
+
+    def __init__(self):
+        host, port = os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
+        self.url = f"https://{host}:{port}/apis/authentication.k8s.io/v1/tokenreviews"
+        self.tls = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+        self.cache: dict[str, tuple[str | None, float]] = {}
+
+    def __call__(self, token: str) -> str | None:
+        now = time.monotonic()
+        if (hit := self.cache.get(token)) and hit[1] > now:
+            return hit[0]
+        # shortcut: a blocking call on the event loop, at most once a minute per token and only
+        # for /api/servers; make it async if anything but the operator ever uses it.
+        r = httpx2.post(
+            self.url,
+            json={"apiVersion": "authentication.k8s.io/v1", "kind": "TokenReview",
+                  "spec": {"token": token, "audiences": [TOKEN_AUDIENCE]}},
+            headers={"Authorization": f"Bearer {_sa_token()}"},
+            verify=self.tls,
+            timeout=5,
+        )
+        r.raise_for_status()
+        status = r.json().get("status", {})
+        ok = status.get("authenticated") and TOKEN_AUDIENCE in status.get("audiences", [])
+        user = status["user"]["username"] if ok else None
+        self.cache = {t: v for t, v in self.cache.items() if v[1] > now}
+        self.cache[token] = (user, now + self.TTL_S)
+        return user

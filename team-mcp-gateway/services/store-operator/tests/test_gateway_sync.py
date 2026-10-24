@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from store_operator.gateway import Gateway
 
-KEY = "admin-key"
+KEY = "sa-token"
 
 
 def fake_gateway():
@@ -51,9 +51,11 @@ def fake_gateway():
     return httpd, servers, calls
 
 
-def test_upsert_and_delete_are_idempotent():
+def test_upsert_and_delete_are_idempotent(tmp_path):
     httpd, servers, calls = fake_gateway()
-    gw = Gateway(f"http://127.0.0.1:{httpd.server_port}", KEY)
+    token = tmp_path / "token"
+    token.write_text(KEY + "\n")
+    gw = Gateway(f"http://127.0.0.1:{httpd.server_port}", str(token))
     try:
         gw.upsert_server("shop1", "http://a/mcp", "t1", store="shop1")
         gw.upsert_server("shop1", "http://b/mcp", "t2", store="shop1")  # retry: updates, no duplicate
@@ -75,9 +77,10 @@ def test_upsert_and_delete_are_idempotent():
         assert by_name["notes"]["store"] is None
         assert by_name["github"]["auth"] == {"type": "none"}
 
-        bad = Gateway(f"http://127.0.0.1:{httpd.server_port}", "wrong")
+        # The kubelet rotated the token: the next call sends the new one, no restart.
+        token.write_text("expired")
         try:
-            bad.delete_server("x")
+            gw.delete_server("x")
             raise AssertionError("expected an error")
         except RuntimeError as e:
             assert "401" in str(e)

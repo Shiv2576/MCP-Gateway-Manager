@@ -98,3 +98,5 @@ stores:
   enabled: false
   # Stores each admin may have. Keep equal to the store operator's maxStores.
   maxPerAdmin: 3
+  # The store operator's ServiceAccount in this namespace: its token may manage /api/servers.
+  operatorServiceAccount: store-operator

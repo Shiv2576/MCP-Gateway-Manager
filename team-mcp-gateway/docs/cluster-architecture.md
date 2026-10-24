@@ -211,7 +211,7 @@ flowchart TB
     m_pvc["PVC data-db-postgres-0 · 1Gi local-path"]
     m_np["NetworkPolicies<br/>default-deny, acme-solver-ingress<br/>db-postgres: in 5432 from gateway Pods<br/>notes, fx: in 8000 from gateway Pods"]
     m_cm["ConfigMap db-postgres-init"]
-    m_sec["Secrets (user-made)<br/>gateway-db, gateway-admin,<br/>gateway-credentials, store-operator-gateway<br/>(chart-made) notes-mcp-credentials, fx-mcp-credentials"]
+    m_sec["Secrets (user-made)<br/>gateway-db, gateway-admin,<br/>gateway-credentials<br/>(chart-made) notes-mcp-credentials, fx-mcp-credentials"]
     m_rbac["ServiceAccounts<br/>team-gateway, store-operator, default<br/>Role + RoleBinding team-gateway-stores<br/>get/list/create/delete stores, mcpgateways, hostedservers"]
     m_cr["Custom resources<br/>McpGateway prod (Ready, http://prod.gw.localhost)<br/>Store shop1, Store shop2 (Ready, template blank)"]
     m_helm["Helm releases<br/>team, team-ui, gw-prod, store-operator,<br/>db, notes, fx"]
@@ -279,7 +279,7 @@ flowchart TB
 | `kube-public` | Built-in, world-readable | none | none | none | none | none | SA `default`; Role/RoleBinding `system:controller:bootstrap-signer` |
 | `kube-node-lease` | Built-in node heartbeats | none | none | none | none | none | Lease `k3d-store-check-server-0`; SA `default` |
 | `kube-system` | k3s add-ons | Deploy `coredns`, `traefik`, `metrics-server`, `local-path-provisioner`; DS `svclb-traefik-88598cc8`; Jobs `helm-install-traefik`, `helm-install-traefik-crd` | `kube-dns` ClusterIP :53/:9153; `metrics-server` ClusterIP :443; `traefik` LoadBalancer 172.23.0.3 80/443 (NodePorts 30413/30707) | none | none | none | CM `coredns`, `cluster-dns`, `local-path-config`, `chart-content-traefik(-crd)`, `extension-apiserver-authentication`, `kube-apiserver-legacy-service-account-token-tracking`; Secrets `k3s-serving`, node-password, `chart-values-traefik(-crd)`, 2 Helm release; HelmCharts `traefik`, `traefik-crd`; ~55 SAs; 6 Roles, 8 RoleBindings |
-| `mercora` | MCP gateway platform | Deploy `team-gateway` (control, 1), `gw-prod-gateway` (edge, 2), `team-ui-dashboard`, `store-operator`, `notes`, `fx`; STS `db-postgres` | ClusterIP `team-gateway`:8000, `gw-prod-gateway`:8000, `team-ui-dashboard`:80, `db-postgres`:5432, `notes`:8000, `fx`:8000 | `gateway.localhost`, `prod.gw.localhost`, `dash.localhost` | PVC `data-db-postgres-0` 1Gi | NetPol `default-deny`, `acme-solver-ingress`, `db-postgres`, `notes`, `fx` (ingress only from `app.kubernetes.io/name=gateway`), plus one per component. No quota | CM `db-postgres-init`; Secrets `gateway-db`, `gateway-admin`, `gateway-credentials`, `store-operator-gateway`, `notes-mcp-credentials`, `fx-mcp-credentials`, 47 Helm release; SAs `team-gateway`, `store-operator`; Role/RB `team-gateway-stores`; CRs McpGateway `prod`, Store `shop1`, `shop2` |
+| `mercora` | MCP gateway platform | Deploy `team-gateway` (control, 1), `gw-prod-gateway` (edge, 2), `team-ui-dashboard`, `store-operator`, `notes`, `fx`; STS `db-postgres` | ClusterIP `team-gateway`:8000, `gw-prod-gateway`:8000, `team-ui-dashboard`:80, `db-postgres`:5432, `notes`:8000, `fx`:8000 | `gateway.localhost`, `prod.gw.localhost`, `dash.localhost` | PVC `data-db-postgres-0` 1Gi | NetPol `default-deny`, `acme-solver-ingress`, `db-postgres`, `notes`, `fx` (ingress only from `app.kubernetes.io/name=gateway`), plus one per component. No quota | CM `db-postgres-init`; Secrets `gateway-db`, `gateway-admin`, `gateway-credentials`, `notes-mcp-credentials`, `fx-mcp-credentials`, 47 Helm release; SAs `team-gateway`, `store-operator`; Role/RB `team-gateway-stores`; CRs McpGateway `prod`, Store `shop1`, `shop2` |
 | `store-shop1` | Tenant store, made by operator from Store `shop1` | Deploy `store-wordpress`, `woo-mcp-woo-mcp`; STS `store-mariadb`; Job `store-store-setup` | ClusterIP `store-wordpress`:80/443, `store-mariadb`:3306, `woo-mcp-woo-mcp`:8000; Headless `store-mariadb-headless` | `shop1.localhost` | PVC `data-store-mariadb-0`, `store-wordpress` (1Gi each) | NetPol ×7 incl. `default-deny`; ResourceQuota `store-quota`; LimitRange `store-limits`; PDB `store-mariadb`, `store-wordpress`; PriorityClass `store-workload` | CM `store-mariadb`, `store-store-setup`; Secrets `store-mariadb`, `woo-mcp-credentials`, 2 Helm release; SAs `store-mariadb`, `store-wordpress` |
 | `store-shop2` | Tenant store, Store `shop2` | same as shop1 | same as shop1 | `shop2.localhost` | same as shop1 | same as shop1 | same as shop1 |
 | `mcp-<name>` | Made on demand per HostedServer CR | none exist right now | | | | | |
@@ -444,7 +444,7 @@ flowchart TB
   op -->|"helm upgrade --install store, woo-mcp"| nsstore
   op -->|"helm upgrade --install gw-slug"| edgerel
   op -->|"create ns, Deployment, Service"| nsmcp
-  op -->|"POST/PATCH/DELETE /api/servers<br/>GATEWAY_API_KEY"| ctl
+  op -->|"POST/PATCH/DELETE /api/servers<br/>SA token, TokenReview"| ctl
   op -->|"patch status.phase Ready"| crs
 
   classDef cp fill:#1f4e79,stroke:#0d2a44,color:#ffffff

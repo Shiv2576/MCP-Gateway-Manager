@@ -74,8 +74,7 @@ helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-v
 # 5. First admin: open http://dash.localhost and enter this token, org name, admin login
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
 
-# 6. Operator: dashboard → API keys → create "store-operator", paste it here
-kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
+# 6. Operator: proves itself to the gateway with its ServiceAccount token, no key to paste
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml --wait
 
 # 7. Check
@@ -163,8 +162,7 @@ helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-v
 # First admin, right away (setup is public until done): open https://dash.$BASE
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
 
-# Dashboard → API keys → create "store-operator", then:
-kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
+# Operator: proves itself to the gateway with its ServiceAccount token, no key to paste
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-prod.yaml --wait
 
 kubectl get pods -A; kubectl get certificate -A

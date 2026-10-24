@@ -6,6 +6,7 @@ import { Icon, PasswordInput } from './App.jsx'
 const EMPTY = { name: '', url: '', authType: 'none', token: '', header: '', value: '', personal: '' }
 const EMPTY_IMAGE = { image: '', args: '', port: '8000', path: '/mcp', env: '', tokenEnv: '', tokenHeader: 'Authorization' }
 const HOSTED_DOT = { Ready: 'ok', Failed: 'unreachable', Provisioning: 'pending', Deleting: 'pending' }
+const STATUS_LABEL = { ok: 'Connected', unreachable: 'Unreachable', disabled: 'Disabled', pending: 'Checking' }
 
 // "KEY=value" per line -> {KEY: 'value'}; blank lines skipped.
 function parseEnv(text) {
@@ -80,7 +81,7 @@ export default function Servers({ user }) {
     <>
       <div className="stats">
         <Stat label="Servers" value={servers.length} />
-        <Stat label="Healthy" value={up} tone="ok" />
+        <Stat label="Connected" value={up} tone="ok" />
         <Stat label="Unreachable" value={servers.filter((s) => s.status === 'unreachable').length} tone="bad" />
         <Stat label="Tools exposed" value={tools} />
       </div>
@@ -159,7 +160,7 @@ export default function Servers({ user }) {
                       <div className="grow">
                         <div className="title">
                           <LimitsHover hosted={hostedBy[s.name]}>{s.name}</LimitsHover>{' '}
-                          <span className="pill">{s.enabled ? s.status : 'disabled'}</span>
+                          <span className="pill">{STATUS_LABEL[s.enabled ? s.status : 'disabled']}</span>
                           {hostedBy[s.name] && <> <span className="pill">container</span></>}
                         </div>
                         <div className="muted mono small">{hostedBy[s.name]?.image ?? s.url}</div>

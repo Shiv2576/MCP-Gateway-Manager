@@ -30,7 +30,8 @@ CHARTS = os.environ.get("CHARTS_DIR", "/charts")
 MAX_ATTEMPTS = 3
 EDGE_IMAGE_TAG = os.environ.get("EDGE_IMAGE_TAG", "0.6.1")
 WORKLOADS_ROLE = os.environ.get("WORKLOADS_ROLE", f"{NAMESPACE}-store-operator-workloads")
-gateway = Gateway(os.environ.get("GATEWAY_URL", "http://team-gateway:8000"), os.environ.get("GATEWAY_API_KEY", ""))
+gateway = Gateway(os.environ.get("GATEWAY_URL", "http://team-gateway:8000"),
+                  os.environ.get("GATEWAY_TOKEN_FILE", "/var/run/secrets/mcp-gateway/token"))
 
 
 @kopf.on.startup()

@@ -99,6 +99,8 @@ spec:
               value: {{ .Release.Namespace }}
             - name: MAX_STORES
               value: {{ .Values.stores.maxPerAdmin | quote }}
+            - name: OPERATOR_SERVICE_ACCOUNT
+              value: "system:serviceaccount:{{ .Release.Namespace }}:{{ .Values.stores.operatorServiceAccount }}"
             {{- end }}
           {{- if eq .Values.mode "control" }}
           envFrom:

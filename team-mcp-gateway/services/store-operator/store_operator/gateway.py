@@ -1,4 +1,8 @@
-"""Registers store and hosted MCP servers in the gateway through its admin API."""
+"""Registers store and hosted MCP servers in the gateway through its admin API.
+
+Authenticates with this pod's projected ServiceAccount token (audience mcp-gateway); the
+gateway checks it with a TokenReview. No API key to create, paste or rotate.
+"""
 
 from __future__ import annotations
 
@@ -8,15 +12,18 @@ import urllib.request
 
 
 class Gateway:
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url, self.api_key = base_url.rstrip("/"), api_key
+    def __init__(self, base_url: str, token_file: str):
+        self.base_url, self.token_file = base_url.rstrip("/"), token_file
 
     def _call(self, method: str, path: str, body: dict | None = None):
+        # Read on every call: the kubelet replaces the token before it expires (1h).
+        with open(self.token_file) as f:
+            token = f.read().strip()
         req = urllib.request.Request(
             self.base_url + path,
             method=method,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as r:

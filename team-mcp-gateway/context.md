@@ -403,7 +403,7 @@ store-operator (kopf, ClusterRole) ◄──────────────
   gateway server `shop1`, tools `shop1__list_orders`…; 2–20 chars so tool names fit the chat agent.
 - **Gateway RBAC**: only `stores` in its own namespace (get/list/create/delete).
   The operator holds the cluster rights (namespaces, Helm-installed kinds).
-- **Operator → gateway**: admin API key in Secret `store-operator-gateway`.
+- **Operator → gateway**: a projected ServiceAccount token (audience `mcp-gateway`, 1h, rotated by the kubelet); the gateway checks it with a TokenReview and lets it use only `/api/servers`.
 - **Recovery**: every create step tolerates "already exists"; Helm releases stuck
   "pending" are rolled back (or uninstalled) and retried; Helm errors retry 3× then Failed.
 
@@ -508,7 +508,6 @@ reconnect in Claude. With ngrok stopped, Claude's connector fails; API keys stil
 | `gateway-admin` | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, optional `OPENROUTER_API_KEY` | first-admin bootstrap, chat |
 | `notes-mcp-credentials` | `AUTH_TOKEN` | notes; the gateway's `notes` credential (`X-API-Key`) |
 | `fx-mcp-credentials` | `AUTH_TOKEN` | fx; the gateway's `fx` credential (bearer) |
-| `store-operator-gateway` | admin API key | operator registering store servers |
 
 Per store, `store-<name>/woo-mcp-credentials` (`WOO_CONSUMER_KEY`,
 `WOO_CONSUMER_SECRET`, `MCP_AUTH_TOKEN`), generated once by the operator.
@@ -620,8 +619,8 @@ filter both made the tests fail, so the tests really check those paths.
   rest of the stack; a third store's pods may wait for memory. Give Docker more
   memory for 3 stores per admin.
 - Seeded orders are dated the day the store is created; on a later day "today" has none.
-- The operator registers stores with an admin API key (Secret `store-operator-gateway`);
-  deleting that admin or revoking the key stops registration.
+- The operator registers stores with its projected ServiceAccount token (TokenReview);
+  the gateway accepts it only on `/api/servers`.
 - Store pods may be evicted when the node is full (lowest priority by design).
 - The operator's ClusterRole has cluster-wide rights on Secrets, pods and
   Deployments (Helm needs them in each new namespace). Narrow it with

@@ -223,10 +223,10 @@ helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-v
 Right away (the setup page is public until done): open `https://dash.BASE`,
 enter the `SETUP_TOKEN`
 (`kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d`),
-create the organization and first admin. Then API keys → create an admin key, and:
+create the organization and first admin. Then the operator (it signs in to the gateway
+with its ServiceAccount token, so there is no key to create):
 
 ```
-kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY=<key>
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-prod.yaml
 ```
 

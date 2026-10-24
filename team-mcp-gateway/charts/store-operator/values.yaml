@@ -4,8 +4,6 @@ image:
   pullPolicy: IfNotPresent
 # The gateway's Service inside this namespace.
 gatewayUrl: http://team-gateway:8000
-# Secret in this namespace with GATEWAY_API_KEY: an admin API key from the dashboard.
-existingSecret: store-operator-gateway
 # Where stores (<name>.baseDomain) and edges (<slug>.gw.baseDomain) are served,
 # over urlScheme. clusterIssuer set: each store and edge Ingress gets its own
 # cert-manager certificate. Local: localhost, http, none.
