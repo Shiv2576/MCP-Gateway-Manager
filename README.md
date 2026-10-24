@@ -310,5 +310,4 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 **Where:** `team-mcp-gateway/services/gateway/app/kube.py`, `team-mcp-gateway/services/dashboard/src/Metrics.jsx`
 
 - Per-store CPU and memory from metrics-server.
-- PHP-FPM worker saturation from an exporter next to each WordPress pod.
-- Shown live per store in the dashboard.
+- Shown live per store on the dashboard's **Reports** page.

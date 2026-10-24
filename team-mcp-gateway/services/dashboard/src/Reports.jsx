@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api.js'
+import Metrics from './Metrics.jsx'
 
 const STATS = [
   ['mcps', 'MCP servers'],
@@ -71,6 +72,7 @@ export default function Reports() {
         <Chart title="Feature calls per user" data={r.by_user} />
         <Chart title="P99 duration of feature calls" data={r.p99_by_tool} unit=" ms" />
       </div>
+      <Metrics />
     </>
   )
 }

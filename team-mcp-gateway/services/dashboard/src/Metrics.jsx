@@ -8,7 +8,7 @@ const POINTS = 60 // 5 minutes at one sample per 5 s; kept only while this page 
 const time = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
 // One live line, in the same Recharts style as Reports.
-function Graph({ title, now, data, dataKey, unit, color, max }) {
+function Graph({ title, now, data, dataKey, unit, color }) {
   return (
     <div>
       <div className="muted small">{title}</div>
@@ -18,7 +18,7 @@ function Graph({ title, now, data, dataKey, unit, color, max }) {
           <CartesianGrid vertical={false} stroke="var(--border)" />
           <XAxis dataKey="t" tickFormatter={time} minTickGap={40}
             tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis width={44} domain={[0, max ?? 'auto']} allowDecimals={false}
+          <YAxis width={44} domain={[0, 'auto']} allowDecimals={false}
             tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
           <Tooltip labelFormatter={time} formatter={(v) => [`${v}${unit}`, title]}
             contentStyle={{ background: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12 }}
@@ -42,9 +42,6 @@ export default function Metrics() {
         t,
         cpu: s.cpu_millicores,
         mem: s.memory_mib,
-        busy: s.busy_workers,
-        max: s.max_workers,
-        pct: s.busy_workers != null && s.max_workers ? Math.round((100 * s.busy_workers) / s.max_workers) : null,
       }].slice(-POINTS)])))
       setError('')
       setLoaded(true)
@@ -57,10 +54,9 @@ export default function Metrics() {
   const names = Object.keys(history)
   return (
     <>
-      <h1>WordPress metrics</h1>
+      <h2>WordPress metrics</h2>
       <p className="muted small">
         Live, every {POLL_MS / 1000} s, last {(POINTS * POLL_MS) / 60000} minutes. Not stored: leaving this page clears it.
-        Busy workers can hit the limit while CPU looks fine, when requests wait on the database or WooCommerce.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
       {loaded && names.length === 0 && <p className="muted">No Ready stores.</p>}
@@ -75,8 +71,6 @@ export default function Metrics() {
                 data={data} dataKey="cpu" unit=" m" color="var(--chart-2)" />
               <Graph title="Memory" now={last.mem != null ? `${last.mem} MiB` : null}
                 data={data} dataKey="mem" unit=" MiB" color="var(--chart-3)" />
-              <Graph title="Apache busy workers" now={last.pct != null ? `${last.busy} / ${last.max} (${last.pct}%)` : null}
-                data={data} dataKey="pct" unit="%" color="var(--chart-4)" max={100} />
             </div>
           </div>
         )
