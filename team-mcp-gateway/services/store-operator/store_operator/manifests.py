@@ -125,7 +125,11 @@ def _tcp(port: int) -> list[dict]:
     return [{"protocol": "TCP", "port": port}]
 
 
-def network_policies() -> list[dict]:
+# Port of WordPress's apache-exporter sidecar (charts/store values: wordpress.metrics).
+METRICS_PORT = 9117
+
+
+def network_policies(gateway_namespace: str) -> list[dict]:
     """Deny everything, then allow only the paths a store needs. woo-mcp's own
     ingress (gateway only) and egress (WordPress only) come with its chart."""
     kube_system = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}
@@ -144,6 +148,12 @@ def network_policies() -> list[dict]:
                      {"podSelector": {"matchLabels": WOO_MCP}},
                      {"podSelector": {"matchLabels": SETUP_LABEL}}],
             "ports": _tcp(8080),
+        }]),
+        # The control gateway reads Apache's busy workers for the dashboard's Metrics tab.
+        _policy("metrics-ingress", WORDPRESS, ingress=[{
+            "from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": gateway_namespace}},
+                      "podSelector": {"matchLabels": {"app.kubernetes.io/name": "gateway"}}}],
+            "ports": _tcp(METRICS_PORT),
         }]),
         _policy("wordpress-egress", WORDPRESS, egress=[to_db, internet]),
         _policy("setup-egress", SETUP_LABEL, egress=[

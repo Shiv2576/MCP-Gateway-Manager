@@ -71,7 +71,7 @@ def _namespace_objects(store: str, owner_id: str, create_namespace: bool = True)
     _bind_workloads(ns)  # also gives stores made before this binding existed their rights back
     _create(core.create_namespaced_resource_quota, ns, m.resource_quota())
     _create(core.create_namespaced_limit_range, ns, m.limit_range())
-    for policy in m.network_policies():
+    for policy in m.network_policies(NAMESPACE):
         _create(net.create_namespaced_network_policy, ns, policy)
 
 

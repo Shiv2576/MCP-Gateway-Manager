@@ -65,6 +65,19 @@ async def list_stores(request: Request) -> Response:
 
 
 @handler
+async def store_metrics(request: Request) -> Response:
+    """Live CPU, memory and Apache busy workers of every Ready store; the dashboard polls it."""
+    require_admin(request)
+    metrics = request.app.state.store_metrics
+    if metrics is None:
+        raise HTTPError(503, "store provisioning is not configured")
+    ready = [c["metadata"]["name"] for c in await _backend(request).list()
+             if (c.get("status") or {}).get("phase") == "Ready" and not c["metadata"].get("deletionTimestamp")]
+    values = await asyncio.gather(*(metrics.get(name) for name in ready))
+    return JSONResponse([{"name": name, **v} for name, v in sorted(zip(ready, values))])
+
+
+@handler
 async def store_limit(request: Request) -> Response:
     require_admin(request)
     return JSONResponse({"max_per_admin": MAX_STORES})
@@ -124,6 +137,7 @@ async def delete_all_for(request: Request, user_id: int) -> None:
 routes = [
     Route("/api/stores", list_stores, methods=["GET"]),
     Route("/api/stores/limit", store_limit, methods=["GET"]),
+    Route("/api/stores/metrics", store_metrics, methods=["GET"]),
     Route("/api/stores", create_store, methods=["POST"]),
     Route("/api/stores/{name}", delete_store, methods=["DELETE"]),
 ]

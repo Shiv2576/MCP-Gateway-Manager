@@ -358,7 +358,8 @@ input.budget { width: 110px; padding: 2px 6px; font-size: 12px; }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .stat { font-size: 28px; font-weight: 600; margin-top: 4px; }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
-@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } .charts { grid-template-columns: 1fr; } }
+.metric-graphs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } .charts, .metric-graphs { grid-template-columns: 1fr; } }
 
 /* Teams: one section per team, a table per gateway; built for screen readers and keyboard first. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

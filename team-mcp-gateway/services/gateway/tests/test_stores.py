@@ -177,3 +177,49 @@ def test_edge_accepts_its_base_domain_host():
     assert "prod.gw.x.sslip.io" in t.allowed_hosts and "https://prod.gw.x.sslip.io" in t.allowed_origins
     local = _transport_security(Settings(mode="edge", gateway_slug="prod"))
     assert "prod.gw.localhost" in local.allowed_hosts
+
+
+EXPORTER_TEXT = """# HELP apache_workers Apache worker statuses
+# TYPE apache_workers gauge
+apache_workers{state="busy"} 3
+apache_workers{state="idle"} 7
+# TYPE apache_scoreboard gauge
+apache_scoreboard{state="idle"} 7
+apache_scoreboard{state="reply"} 3
+apache_scoreboard{state="open_slot"} 246
+apache_up 1
+"""
+
+
+def test_apache_workers_from_the_exporter():
+    from app.kube import apache_workers
+    assert apache_workers(EXPORTER_TEXT) == (3, 256)
+    assert apache_workers("apache_up 0\n") is None
+
+
+def test_store_metrics_lists_only_ready_stores(db_url):
+    fake = FakeStores()
+
+    class FakeMetrics:
+        async def get(self, name):
+            return {"cpu_millicores": 12.5, "memory_mib": 210.0, "busy_workers": 3, "max_workers": 256}
+
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
+
+    async def run():
+        with serve(create_app(settings, stores=fake, store_metrics=FakeMetrics())) as gw:
+            admin = await setup_admin(gw)
+            await admin.post("/api/users", json={"username": "bob", "password": "bob-password-123"})
+            bob = await login(gw, "bob", "bob-password-123")
+            for name in ("shopb", "shopa", "shopc"):
+                assert (await admin.post("/api/stores", json={"name": name, "template": "blank"})).status_code == 201
+            fake.items["shopa"]["status"] = fake.items["shopb"]["status"] = {"phase": "Ready"}
+            fake.items["shopb"]["metadata"]["deletionTimestamp"] = "2026-10-25T00:00:00Z"  # being deleted
+
+            assert (await bob.get("/api/stores/metrics")).status_code == 403
+            r = await admin.get("/api/stores/metrics")
+            assert r.status_code == 200
+            assert r.json() == [{"name": "shopa", "cpu_millicores": 12.5, "memory_mib": 210.0,
+                                 "busy_workers": 3, "max_workers": 256}]
+
+    asyncio.run(run())

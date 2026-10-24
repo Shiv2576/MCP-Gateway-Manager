@@ -29,6 +29,29 @@ subjects:
     name: {{ include "gateway.name" . }}
     namespace: {{ .Release.Namespace }}
 ---
+# Read-only CPU/memory of pods (metrics-server), for the dashboard's Metrics tab.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ include "gateway.name" . }}-pod-metrics
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ include "gateway.name" . }}-pod-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-{{ include "gateway.name" . }}-pod-metrics
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateway.name" . }}
+    namespace: {{ .Release.Namespace }}
+---
 # Lets the gateway ask the API server whose token the store operator sent (TokenReview).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

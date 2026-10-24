@@ -54,6 +54,14 @@ spec:
           podSelector: { matchLabels: { app.kubernetes.io/name: woo-mcp } }
         - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/hosted, operator: Exists }] }
           podSelector: { matchLabels: { app.kubernetes.io/name: hosted-mcp } }
+    {{- if eq .Values.mode "control" }}
+    # Each store WordPress's apache-exporter (busy workers, for the Metrics tab).
+    - to:
+        - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/store, operator: Exists }] }
+          podSelector: { matchLabels: { app.kubernetes.io/name: wordpress } }
+      ports:
+        - { protocol: TCP, port: 9117 }
+    {{- end }}
     # Internet upstreams and the LLM API, any port; never pod/Service IPs or metadata.
     # The Kubernetes API is reached through this rule too: its Service IP is
     # rewritten to the node's address (port 6443 on k3s) before the policy applies.

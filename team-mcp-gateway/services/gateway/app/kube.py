@@ -7,7 +7,9 @@ does the provisioning. Its Role allows nothing else.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
 import ssl
 import time
 
@@ -133,3 +135,62 @@ class TokenReview:
         self.cache = {t: v for t, v in self.cache.items() if v[1] > now}
         self.cache[token] = (user, now + self.TTL_S)
         return user
+
+
+_CPU = {"n": 1e-6, "u": 1e-3, "m": 1, "": 1000}  # to millicores
+_MEM = {"Ki": 1 / 1024, "Mi": 1, "Gi": 1024, "": 1 / 2**20}  # to MiB
+
+
+def quantity(value: str, units: dict) -> float:
+    """A Kubernetes quantity ("12345678n", "250m", "204800Ki") in the unit `units` maps to 1."""
+    number, unit = re.fullmatch(r"([0-9.]+)([A-Za-z]*)", value).groups()
+    return float(number) * units[unit]
+
+
+def apache_workers(text: str) -> tuple[int, int] | None:
+    """(busy, total slots) from apache-exporter's Prometheus text, or None if Apache is down."""
+    found = dict(re.findall(r'^apache_workers\{state="(busy|idle)"\} ([0-9.e+]+)$', text, re.M))
+    slots = re.findall(r"^apache_scoreboard\{[^}]*\} ([0-9.e+]+)$", text, re.M)
+    if "busy" not in found or not slots:
+        return None
+    return int(float(found["busy"])), int(sum(float(n) for n in slots))
+
+
+class StoreMetrics:
+    """Live numbers for one store's WordPress pod: CPU and memory from metrics-server
+    (what `kubectl top` shows), Apache's busy workers from its exporter sidecar. Nothing is kept."""
+
+    def __init__(self):
+        host, port = os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
+        self.api = f"https://{host}:{port}"
+        self.tls = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+
+    async def _usage(self, ns: str) -> tuple[float, float] | None:
+        async with httpx2.AsyncClient(verify=self.tls, timeout=5) as http:
+            r = await http.get(f"{self.api}/apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods",
+                               params={"labelSelector": "app.kubernetes.io/name=wordpress"},
+                               headers={"Authorization": f"Bearer {_sa_token()}"})
+        r.raise_for_status()
+        containers = [c for pod in r.json()["items"] for c in pod["containers"] if c["name"] == "wordpress"]
+        if not containers:
+            return None
+        return (sum(quantity(c["usage"]["cpu"], _CPU) for c in containers),
+                sum(quantity(c["usage"]["memory"], _MEM) for c in containers))
+
+    async def _workers(self, ns: str) -> tuple[int, int] | None:
+        async with httpx2.AsyncClient(timeout=5) as http:
+            r = await http.get(f"http://store-wordpress-metrics.{ns}.svc.cluster.local:9150/metrics")
+        r.raise_for_status()
+        return apache_workers(r.text)
+
+    async def get(self, store: str) -> dict:
+        ns = f"store-{store}"  # the operator's namespace for a store
+        usage, workers = await asyncio.gather(self._usage(ns), self._workers(ns), return_exceptions=True)
+        usage = None if isinstance(usage, Exception) else usage
+        workers = None if isinstance(workers, Exception) else workers
+        return {
+            "cpu_millicores": round(usage[0], 1) if usage else None,
+            "memory_mib": round(usage[1], 1) if usage else None,
+            "busy_workers": workers[0] if workers else None,
+            "max_workers": workers[1] if workers else None,
+        }

@@ -32,6 +32,14 @@ wordpress:
     registry: registry-1.docker.io
     repository: bitnami/wordpress
     tag: latest
+  # apache-exporter sidecar: reads Apache's local /server-status and serves busy/idle
+  # workers on :9117 (Service store-wordpress-metrics:9150) for the dashboard's Metrics tab.
+  # Only the control gateway may reach it (operator NetworkPolicy metrics-ingress).
+  metrics:
+    enabled: true
+    resources:
+      requests: { cpu: 10m, memory: 16Mi }
+      limits: { memory: 64Mi }
   wordpressUsername: admin
   wordpressEmail: admin@example.com
   wordpressBlogName: Mercora

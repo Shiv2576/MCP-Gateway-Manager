@@ -10,6 +10,7 @@ import Credentials from './Credentials.jsx'
 import Pii from './Pii.jsx'
 import Alerts from './Alerts.jsx'
 import Reports from './Reports.jsx'
+import Metrics from './Metrics.jsx'
 import { Audit, Keys, Users } from './Admin.jsx'
 
 // Lucide icon paths, 24x24 viewBox.
@@ -19,6 +20,7 @@ const ICONS = {
   servers: 'M2 4h20v6H2zM2 14h20v6H2zM6 7h.01M6 17h.01',
   gateways: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 22V12',
   stores: 'M3 9l1.5-5h15L21 9M3 9h18v11H3zM9 20v-6h6v6',
+  metrics: 'M22 12h-4l-3 9L9 3l-3 9H2',
   tools: 'M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8M9.3 17.7l-5 5M3 3l7 7',
   chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   credentials: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
@@ -65,6 +67,7 @@ const PAGES = [
   { id: 'servers', label: 'Servers', el: Servers, group: 'Workspace' },
   { id: 'gateways', label: 'Gateways', el: Gateways, group: 'Workspace' },
   { id: 'stores', label: 'Stores', el: Stores, admin: true, group: 'Workspace' },
+  { id: 'metrics', label: 'WordPress metrics', el: Metrics, admin: true, group: 'Workspace' },
   { id: 'tools', label: 'Tools', el: Tools, group: 'Workspace' },
   { id: 'chat', label: 'Chat', el: Chat, group: 'Workspace' },
   { id: 'alerts', label: 'Alerts', el: Alerts, group: 'Workspace' },

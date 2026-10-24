@@ -32,7 +32,7 @@ from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
 from . import stores as store_api
-from .kube import Kube, TokenReview
+from .kube import Kube, StoreMetrics, TokenReview
 from .upstream import Upstreams
 
 log = logging.getLogger("gateway")
@@ -251,7 +251,8 @@ def _transport_security(settings: Settings) -> TransportSecuritySettings:
 
 
 def create_app(
-    settings: Settings | None = None, stores=None, gateways=None, hosted=None, token_review=None
+    settings: Settings | None = None, stores=None, gateways=None, hosted=None, token_review=None,
+    store_metrics=None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     if settings.mode not in ("control", "edge"):
@@ -359,6 +360,7 @@ def create_app(
             else None
         )
     )
+    app.state.store_metrics = store_metrics or (StoreMetrics() if settings.stores_namespace else None)
     app.state.token_review = token_review or (
         TokenReview() if settings.operator_service_account and not edge else None
     )

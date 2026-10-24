@@ -28,10 +28,15 @@ def test_credentials_secret_is_only_built_once_per_call():
 
 
 def test_network_policies_isolate_the_store():
-    pols = {p["metadata"]["name"]: p for p in m.network_policies()}
+    pols = {p["metadata"]["name"]: p for p in m.network_policies("mercora")}
     assert set(pols) == {"default-deny", "allow-dns", "wordpress-ingress", "wordpress-egress", "setup-egress", "mariadb-ingress",
-                         "acme-solver-ingress"}
+                         "acme-solver-ingress", "metrics-ingress"}
     assert pols["default-deny"]["spec"] == {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
+    # Apache's exporter: only the gateway pods of the gateway's namespace, only its port.
+    metrics = pols["metrics-ingress"]["spec"]["ingress"][0]
+    assert metrics["from"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "mercora"}},
+                                "podSelector": {"matchLabels": {"app.kubernetes.io/name": "gateway"}}}]
+    assert metrics["ports"] == [{"protocol": "TCP", "port": 9117}]
     acme = pols["acme-solver-ingress"]["spec"]
     assert acme["podSelector"] == {"matchLabels": {"acme.cert-manager.io/http01-solver": "true"}}
     assert acme["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8089}]
@@ -93,7 +98,7 @@ def test_only_our_own_namespace_counts_as_ours():
 
 
 def test_store_pods_cannot_reach_cloud_metadata():
-    for p in m.network_policies():
+    for p in m.network_policies("mercora"):
         for rule in p["spec"].get("egress", []):
             for to in rule["to"]:
                 if "ipBlock" in to:
@@ -149,7 +154,7 @@ def test_tailnet_serves_stores_through_tailscale(monkeypatch):
     assert wp["ingress"] == {"enabled": False}
     assert (wp["wordpressHost"], wp["wordpressScheme"]) == ("shop1-shop.tail1234.ts.net", "https")
     assert m.woo_mcp_values("shop1", "mercora")["store"]["publicUrl"] == "https://shop1-shop.tail1234.ts.net"
-    wp_in = next(p for p in m.network_policies() if p["metadata"]["name"] == "wordpress-ingress")
+    wp_in = next(p for p in m.network_policies("mercora") if p["metadata"]["name"] == "wordpress-ingress")
     sources = wp_in["spec"]["ingress"][0]["from"]
     assert {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "tailscale"}}} in sources
     assert not any("kube-system" in str(s) for s in sources)

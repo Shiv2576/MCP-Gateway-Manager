@@ -391,6 +391,7 @@ store-operator (kopf, ClusterRole) ◄──────────────
      helm upgrade --install woo-mcp charts/woo-mcp (ingress from mercora gateway only, egress to own WordPress only)
   3. every 15 s: WordPress ready + setup Job succeeded + woo-mcp ready
      → upsert gateway server <name> (bearer MCP_AUTH_TOKEN) → phase Ready
+       (operator → gateway /api/servers, signed in with its ServiceAccount JWT, see below)
      timeout 15 min from creation → Failed with the step it waited on
   delete (finalizer): delete gateway server → delete namespace → wait until gone
 ```
@@ -401,11 +402,82 @@ store-operator (kopf, ClusterRole) ◄──────────────
   Orders are dated the day the store is created.
 - **Names**: store `shop1` → namespace `store-shop1`, URL `http://shop1.localhost`,
   gateway server `shop1`, tools `shop1__list_orders`…; 2–20 chars so tool names fit the chat agent.
-- **Gateway RBAC**: only `stores` in its own namespace (get/list/create/delete).
+- **Gateway RBAC**: only `stores` in its own namespace (get/list/create/delete), plus
+  `create tokenreviews` (ClusterRoleBinding `<ns>-team-gateway-tokenreview` →
+  `system:auth-delegator`) to check the operator's token.
   The operator holds the cluster rights (namespaces, Helm-installed kinds).
-- **Operator → gateway**: a projected ServiceAccount token (audience `mcp-gateway`, 1h, rotated by the kubelet); the gateway checks it with a TokenReview and lets it use only `/api/servers`.
+- **Operator → gateway**: Kubernetes JWT, no API key (details below).
 - **Recovery**: every create step tolerates "already exists"; Helm releases stuck
   "pending" are rolled back (or uninstalled) and retried; Helm errors retry 3× then Failed.
+
+#### Operator → gateway authentication (Kubernetes JWT + TokenReview)
+
+When a Store or HostedServer CR becomes ready, the operator registers its MCP server
+in the gateway (`POST/PATCH/DELETE /api/servers`), and removes it on delete. It
+signs in with a Kubernetes-issued JWT, not an API key. Until 2026-10-24 it used an
+admin API key pasted into Secret `store-operator-gateway`; that Secret is no longer read.
+
+```
+store-operator pod                               team-gateway pod                     API server
+──────────────────                               ────────────────                     ──────────
+kubelet writes a projected SA token to
+/var/run/secrets/mcp-gateway/token
+(aud mcp-gateway, 1h, renewed at ~80%)
+read the file on every call
+Authorization: Bearer <JWT> ───────────────────► not an API key, path is /api/servers
+                                                 cached < 60 s? else TokenReview ────► signature, expiry,
+                                                   {token, audiences:[mcp-gateway]}     audience, pod alive
+                                                 ◄──────────────────────────────────── authenticated, username
+                                                 username == OPERATOR_SERVICE_ACCOUNT
+                                                 (system:serviceaccount:mercora:store-operator)
+                                                 → acts as built-in "store-operator" (admin)
+◄────────────────────────────────── 200 / 201    otherwise 401
+```
+
+| Piece | Where |
+|---|---|
+| Projected token volume (`audience: mcp-gateway`, `expirationSeconds: 3600`) | `charts/store-operator/templates/deployment.yaml` |
+| Reads the token file per call (picks up rotation, no restart) | `services/store-operator/store_operator/gateway.py` |
+| `TokenReview` client, audience check, 60 s cache | `services/gateway/app/kube.py` |
+| Operator identity, only on `/api/servers` | `services/gateway/app/api.py` (`_operator`, `current_user`) |
+| `OPERATOR_SERVICE_ACCOUNT` env + ClusterRoleBinding (control release only) | `charts/gateway/templates/{deployment,rbac}.yaml`, `stores.operatorServiceAccount` |
+| Tests | gateway `tests/test_operator_auth.py`, operator `tests/test_gateway_sync.py` |
+
+- **Least privilege**: the operator identity is admin only on `/api/servers`; every
+  other route returns 401. It is not a `users` row, so it cannot log in, own keys or
+  be deleted. Another pod's SA token, a token for another audience, or a forged one: 401.
+- **Leak / rotation**: nothing to create, paste or rotate. A leaked token expires
+  within the hour, works only at the gateway (the Kubernetes API rejects its audience),
+  and dies as soon as the operator pod is deleted.
+- **Failure**: API server unreachable → cached answers work up to 60 s, then operator
+  calls fail and kopf retries them; running stores are unaffected.
+- **Shortcut**: the TokenReview call is synchronous on the event loop (once per token
+  per minute, only on `/api/servers`); make it async if anything else ever uses it.
+- **Verified live on the VPS (2026-10-24)**: TokenReview of a `store-operator` token
+  with audience `mcp-gateway` → authenticated as `system:serviceaccount:mercora:store-operator`;
+  the same token for the API server's audience → rejected. After deploy, the operator's
+  `GET /api/servers` calls return 200.
+- API keys stay for people, agents and anything outside the cluster.
+
+#### WordPress metrics tab (live, nothing stored)
+
+Dashboard → **WordPress metrics** (admins): one card per Ready store with live line
+graphs of WordPress CPU (millicores), memory (MiB) and Apache busy workers (% of the
+256 prefork slots). The page polls `GET /api/stores/metrics` every 5 s and keeps the
+last 5 minutes in the browser only; there is no database table and no history.
+
+- CPU/memory: metrics-server (`metrics.k8s.io`, what `kubectl top` uses); the gateway
+  has a read-only ClusterRole for pod metrics (`<ns>-team-gateway-pod-metrics`).
+- Busy workers: Bitnami's apache-exporter sidecar (`wordpress.metrics.enabled` in
+  `charts/store`) reads Apache's local `/server-status`; the gateway reads
+  `store-wordpress-metrics.store-<name>:9150/metrics`. NetworkPolicies: store
+  `metrics-ingress` (only gateway pods of the gateway namespace, port 9117) and the
+  control gateway's egress rule for port 9117 in store namespaces.
+- Why workers and not only CPU: prefork + mod_php runs one process per request, so
+  workers can all be busy waiting on MariaDB/WooCommerce while CPU looks low.
+- Not covered: queue depth and p99 latency (need Prometheus and history).
+- Stores created before this change get the NetworkPolicy from `repair_guardrails`,
+  but the exporter sidecar only with a new install (their graphs show CPU/memory only).
 
 **Verified live on k3d (2026-10-10):** `shop1` (catalog-a) and `shop2` (catalog-b)
 created together, both Ready in ~3 min (300 products + 12 orders / 300 + 7).

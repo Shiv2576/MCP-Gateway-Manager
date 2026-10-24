@@ -197,131 +197,118 @@ grant access. The audit row is written before the call, so a crash still leaves 
 > **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
 > **Username:** `admin` · **Password:** `admin@1234`
 
-### 0 :
+### 1. Domains and TLS
 
-My Domain and TLS approach on VPS.
+**Where:** `team-mcp-gateway/deploy/tls-prod.yaml`, `team-mcp-gateway/deploy/*-prod.yaml`
 
-Domains: sslip.io wildcard hostnames on the VPS (*.localhost locally). They’re free, need no DNS setup, and every new store gets a working hostname instantly.
+- **Domains:** sslip.io wildcard hostnames on the VPS (`*.localhost` locally); free, no DNS setup, and every new store gets a hostname instantly.
+- **TLS:** cert-manager + Let's Encrypt (HTTP-01 via Traefik); free, auto-renewing, and each store gets a certificate from its Ingress annotation.
 
-TLS: cert-manager with Let’s Encrypt, using the HTTP-01 challenge through Traefik. It gives free certificates that renew automatically, and each new store gets one from its Ingress annotation.
+### 2. How woo-mcp talks to the store
 
-Document how it talks to the store (REST API, WP-CLI or another way) and why you chose that.
+**Where:** `team-mcp-gateway/services/woo-mcp/app/woo.py`
 
-Store access: woo-mcp uses the WooCommerce REST API with a scoped, revocable API key. WP-CLI would need a shell or database access inside the store pod, which is far more privilege than reading orders needs.
+- **WooCommerce REST API** with a scoped, revocable API key; WP-CLI would need shell or database access inside the store pod, far more privilege than needed.
+- **OAuth 1.0a signing:** in-cluster traffic is plain HTTP, so requests are signed; the secret never crosses the network and requests can't be replayed.
 
-OAuth 1.0a signing: in-cluster traffic is plain HTTP, and WooCommerce requires signed requests over HTTP. The secret never crosses the network, and requests can’t be replayed.
-Document how it talks to the store (REST API, WP-CLI or another way) and why you chose that.
+### 3. Security measures
 
-### 0 . Security Measures :
+**Where:** `team-mcp-gateway/services/gateway/app/credentials.py`, `team-mcp-gateway/charts/*/templates/networkpolicy.yaml`, `team-mcp-gateway/charts/*/templates/rbac.yaml`
 
-Upstream credentials encrypted with Fernet, decrypted only in memory at call time, never returned by any API
-Members start with zero tools; access only through team policies, per gateway and per tool
-New upstream tools stay hidden until an admin allows them
-Per-user rate limit across all pods
-Write budgets per team, with admin approval when exceeded
-SSRF check on registered URLs, plus an egress NetworkPolicy as backup
-Default-deny NetworkPolicies per store; woo-mcp reachable only from the gateway, MariaDB only from WordPress
-Least-privilege RBAC: only the control plane and operator have Kubernetes identities
-Non-root, read-only root filesystem, all capabilities dropped, seccomp on every pod
-Members start with zero tools; access only through team policies, per gateway and per tool
-OAuth1 signing to WooCommerce, so the secret never travels
+- Upstream credentials encrypted with Fernet, decrypted only in memory at call time, never returned by any API.
+- Members start with zero tools; access only through team policies, per gateway and per tool.
+- New upstream tools stay hidden until an admin allows them.
+- Per-user rate limit across all pods.
+- Write budgets per team, with admin approval when exceeded.
+- SSRF check on registered URLs, plus an egress NetworkPolicy as backup.
+- Default-deny NetworkPolicies per store; woo-mcp reachable only from the gateway, MariaDB only from WordPress.
+- Least-privilege RBAC: only the control plane and operator have Kubernetes identities.
+- Non-root, read-only root filesystem, all capabilities dropped, seccomp on every pod.
 
-### 1. Production-like VPS deployment
+### 4. Production pipeline (GHCR + Argo CD)
 
-// explain in short about GHCR and ArgoCD.(1. Push code to GitHub
+**Where:** `.github/workflows/ci.yaml`, `team-mcp-gateway/deploy/argocd/`
 
-A commit or merge to main triggers GitHub Actions. Path filters determine which services need to be built.
+1. A merge to `main` triggers GitHub Actions; path filters pick the services to build.
+2. CI runs tests, validations and lint (including actionlint).
+3. Each affected image is built from the current source.
+4. Smoke test: each image starts in a container and must pass its health check within 30 s (gateway: `/readyz`, which checks Postgres and schema); a failure stops the push.
+5. Passing images are pushed to GHCR, tagged with the commit SHA.
+6. CI writes the new tag into `deploy/*-prod.yaml` and commits it.
+7. Argo CD sees the Git change, renders the Helm chart with the prod values and syncs the k3s cluster.
 
-2. Run CI checks
+Git is the single source of truth: GHCR holds immutable images, Argo CD keeps the cluster matching Git.
 
-Run the configured tests, validations and lint checks, including actionlint where configured.
+### 5. OAuth server for Claude custom connector
 
-3. Build each affected Docker image
+**Where:** `team-mcp-gateway/services/gateway/app/oauth.py`
 
-Build the service images locally on the GitHub Actions runner, using the current source code.
-
-4. Run smoke tests
-
-Start each freshly built image in a container, retry its health endpoint for up to 30 seconds, and print logs if it fails.
-
-Gateway: /readyz verifies readiness, including its Postgres connection and schema setup.
-
-The other three images use their configured health checks.
-
-Any smoke-test failure → CI fails; that image is not pushed.
-
-5. Push passing images to GHCR
-
-Publish the validated images under their service-specific commit-SHA tags, such as ghcr.io/shiv2576/service:<commit-sha>.
-
-6. Update production values in Git
-
-The automation updates the relevant deploy/*-prod.yaml image tag and commits the desired-state change back to the repository.
-
-7. Argo CD detects the Git change
-
-Argo CD watches the configured repository and detects the new desired production state. With automated sync enabled, it proceeds to reconcile the cluster.
-
-8. Helm renders; Argo CD applies
-
-Argo CD uses the Helm chart and production values to render Kubernetes manifests, then applies the desired resources through the Kubernetes API.
-
-9. Kubernetes updates the VPS)
-
-### 2. OAuth server for Claude custom connector
-
-_Description:_ explain PKCE challenge authorization code and acess + refresh token swap between claude and gateway services in short
+- The gateway is its own OAuth server, so Claude connects with a browser login instead of an API key.
+- Claude sends a PKCE challenge, the user logs in, and the gateway returns a one-time authorization code.
+- Claude swaps the code (plus the PKCE verifier) for an access token and a refresh token; the refresh token is single-use and rotated on every refresh.
+- Tokens belong to a gateway user, so that user's tool access applies; only hashes are stored.
 
 **Video:** https://youtu.be/k6-_-3qR1D0
 
-### 3. Tool and team provisioning
+### 6. Tool and team provisioning
 
-_Description:_ explain how we can define teams and add members with specific mcp tool calls , how we can also do individual memebr tool governence
+**Where:** `team-mcp-gateway/services/gateway/app/teams.py`
 
-### 4. Rate limit and write budget
+- Admins create teams and add members.
+- Each team gets a tool policy: which upstream tools it may use, per gateway.
+- A member's access is the union of their teams' tools, minus any per-member denies set by an admin.
+- Changes apply on the next call on every pod.
 
-_Description: explain why we introduced write budget over global rate limit , because while testing it agent autonomously started doing loop batching on write operation , which can be a really big issue for the stores.
+### 7. Rate limit and write budget
 
-### 5. PII guardrails
+**Where:** `team-mcp-gateway/services/gateway/app/approvals.py`
 
-_Description:_
+- **Rate limit:** per user per minute, shared across all pods; covers read-only tools.
+- **Write budget:** per member and tool, per rolling hour (strictest of their teams); going over turns the call into an admin approval request.
+- **Why:** in testing, an agent looped batched write calls on its own; a global rate limit can't stop that, but a write budget can.
+
+### 8. PII guardrails
+
+**Where:** `team-mcp-gateway/services/gateway/app/pii.py`
+
+- One filter over every tool result, per gateway (on/off, applied at once).
+- Three rule types: regex patterns, JSON keys masked at any depth, and single fields ticked per tool in the dashboard.
+- Defaults are seeded on first start; admins can add or delete any rule.
 
 **Video:** https://youtu.be/dmNZf4ZWjEo
 
-### 6. Store provisioning
+### 9. Store provisioning
 
-_Description:_
+**Where:** `team-mcp-gateway/services/store-operator/`
+
+- Creating a store makes a `Store` custom resource; the operator does the rest.
+- The operator creates a namespace with default-deny NetworkPolicies and generated credentials, then Helm-installs WordPress/WooCommerce and woo-mcp.
+- It waits for WordPress to be ready and registers the store's MCP server; each owner has a store cap.
 
 **Video:** https://youtu.be/5LdM9Yth_N4
 
-### 7. Cart recovery (targeted cart discounts)
+### 10. Cart recovery (targeted cart discounts)
 
-_Description:_
+**Where:** `team-mcp-gateway/services/woo-mcp/app/server.py`
+
+- `get_abandoned_carts` lists products in abandoned carts with price, cost, margin, cart count and the max safe discount; no customer data.
+- `create_cart_offers` puts them on a time-limited sale; every offer needs admin approval and is rechecked against the store's cost floor.
+
 **Video:** https://youtu.be/UCnPN6Uindg
 
-### 8. Inventory optimization
+### 11. Inventory optimization
 
-_Description:_
+**Where:** `team-mcp-gateway/services/woo-mcp/app/server.py`
+
+- `get_inventory_health` shows per-product stock, sales per day, days left, reorder quantity and cash tied up, with a status: out of stock, at risk, healthy or overstock.
+- `create_restock_plan` creates a purchase order; `create_clearance_offers` discounts overstock; both need admin approval.
+
 **Video:** https://youtu.be/ytZ5Q8L_Afg
 
-### 9. Observability metrics
+### 12. Observability metrics
 
-Per-pod CPU usage and PHP-FPM worker saturation.
+**Where:** `team-mcp-gateway/services/gateway/app/kube.py`, `team-mcp-gateway/services/dashboard/src/Metrics.jsx`
 
-_Description:_
-
-### 10 . Production Pipeline with GHCR and AgroCD.
-
-GitHub → source code and desired deployment state
-
-GitHub Actions → test, build, and publish images
-
-GHCR → stores immutable container artifacts
-
-Git → source of truth for production state
-
-Helm → packages/renders Kubernetes applications
-
-Argo CD → continuously reconciles Git state with Kubernetes
-
-Kubernetes/k3s → actually runs the workloads
+- Per-store CPU and memory from metrics-server.
+- PHP-FPM worker saturation from an exporter next to each WordPress pod.
+- Shown live per store in the dashboard.
