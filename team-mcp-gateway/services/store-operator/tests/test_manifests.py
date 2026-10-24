@@ -46,6 +46,7 @@ def test_helm_values():
     assert v["wordpress"]["ingress"]["hostname"] == "shop1.localhost"
     assert v["wordpress"]["networkPolicy"]["enabled"] is False
     assert v["wordpress"]["mariadb"]["networkPolicy"]["enabled"] is False
+    assert "image" not in v["wordpress"]  # WordPress keeps the chart's Bitnami image
     w = m.woo_mcp_values("shop1", "mercora")
     assert w["store"]["internalUrl"] == "http://store-wordpress.store-shop1.svc.cluster.local"
     assert w["store"]["publicUrl"] == "http://shop1.localhost"

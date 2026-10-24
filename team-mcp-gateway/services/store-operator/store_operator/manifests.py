@@ -184,8 +184,7 @@ def store_values(store: str, template: str) -> dict:
         "setup": {"template": template, "hook": False},
         "wordpress": {
             "wordpressBlogName": store,
-            "image": WOO_MCP_IMAGE,
-        "existingSecret": "woo-mcp-credentials",
+            "existingSecret": "woo-mcp-credentials",
             "priorityClassName": STORE_PRIORITY,
             "ingress": {"hostname": f"{store}.{BASE_DOMAIN}"},
             # Bitnami's policies allow all ingress; allows add up, so they would undo ours.

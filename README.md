@@ -197,14 +197,76 @@ grant access. The audit row is written before the call, so a crash still leaves 
 > **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
 > **Username:** `admin` · **Password:** `admin@1234`
 
+### 0 :
+
+My Domain and TLS approach on VPS.
+
+Domains: sslip.io wildcard hostnames on the VPS (*.localhost locally). They’re free, need no DNS setup, and every new store gets a working hostname instantly.
+
+TLS: cert-manager with Let’s Encrypt, using the HTTP-01 challenge through Traefik. It gives free certificates that renew automatically, and each new store gets one from its Ingress annotation.
+
+Document how it talks to the store (REST API, WP-CLI or another way) and why you chose that.
+
+Store access: woo-mcp uses the WooCommerce REST API with a scoped, revocable API key. WP-CLI would need a shell or database access inside the store pod, which is far more privilege than reading orders needs.
+
+OAuth 1.0a signing: in-cluster traffic is plain HTTP, and WooCommerce requires signed requests over HTTP. The secret never crosses the network, and requests can’t be replayed.
+Document how it talks to the store (REST API, WP-CLI or another way) and why you chose that.
+
+### 0 . Security Measures :
+
+Upstream credentials encrypted with Fernet, decrypted only in memory at call time, never returned by any API
+Members start with zero tools; access only through team policies, per gateway and per tool
+New upstream tools stay hidden until an admin allows them
+Per-user rate limit across all pods
+Write budgets per team, with admin approval when exceeded
+SSRF check on registered URLs, plus an egress NetworkPolicy as backup
+Default-deny NetworkPolicies per store; woo-mcp reachable only from the gateway, MariaDB only from WordPress
+Least-privilege RBAC: only the control plane and operator have Kubernetes identities
+Non-root, read-only root filesystem, all capabilities dropped, seccomp on every pod
+Members start with zero tools; access only through team policies, per gateway and per tool
+OAuth1 signing to WooCommerce, so the secret never travels
+
 ### 1. Production-like VPS deployment
 
-- **Images + deploy:** the same Helm charts run on a k3s VPS. Images are built for amd64 into tarballs, copied with
-  `scp`, loaded with `k3s ctr images import` (no registry), then installed with `helm upgrade --install`.
-- **Helm values:** only `*-local.yaml` → `*-prod.yaml` changes: domain `*.localhost` → sslip.io hosts, Traefik ingress
-  with HTTPS, `local-path` storage. Secrets are created by hand in the cluster with `kubectl create secret`, never in git.
-- **TLS:** cert-manager gets a Let's Encrypt certificate through a `ClusterIssuer` (HTTP-01 via Traefik). A Traefik
-  `TLSStore` makes it the default certificate for every host, and Traefik redirects HTTP to HTTPS.
+// explain in short about GHCR and ArgoCD.(1. Push code to GitHub
+
+A commit or merge to main triggers GitHub Actions. Path filters determine which services need to be built.
+
+2. Run CI checks
+
+Run the configured tests, validations and lint checks, including actionlint where configured.
+
+3. Build each affected Docker image
+
+Build the service images locally on the GitHub Actions runner, using the current source code.
+
+4. Run smoke tests
+
+Start each freshly built image in a container, retry its health endpoint for up to 30 seconds, and print logs if it fails.
+
+Gateway: /readyz verifies readiness, including its Postgres connection and schema setup.
+
+The other three images use their configured health checks.
+
+Any smoke-test failure → CI fails; that image is not pushed.
+
+5. Push passing images to GHCR
+
+Publish the validated images under their service-specific commit-SHA tags, such as ghcr.io/shiv2576/service:<commit-sha>.
+
+6. Update production values in Git
+
+The automation updates the relevant deploy/*-prod.yaml image tag and commits the desired-state change back to the repository.
+
+7. Argo CD detects the Git change
+
+Argo CD watches the configured repository and detects the new desired production state. With automated sync enabled, it proceeds to reconcile the cluster.
+
+8. Helm renders; Argo CD applies
+
+Argo CD uses the Helm chart and production values to render Kubernetes manifests, then applies the desired resources through the Kubernetes API.
+
+9. Kubernetes updates the VPS)
 
 ### 2. OAuth server for Claude custom connector
 
@@ -247,3 +309,19 @@ _Description:_
 Per-pod CPU usage and PHP-FPM worker saturation.
 
 _Description:_
+
+### 10 . Production Pipeline with GHCR and AgroCD.
+
+GitHub → source code and desired deployment state
+
+GitHub Actions → test, build, and publish images
+
+GHCR → stores immutable container artifacts
+
+Git → source of truth for production state
+
+Helm → packages/renders Kubernetes applications
+
+Argo CD → continuously reconciles Git state with Kubernetes
+
+Kubernetes/k3s → actually runs the workloads
