@@ -3,7 +3,7 @@
 # Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
 image:
   repository: ghcr.io/shiv2576/store-operator
-  tag: "a14b7f90158f8e1fd51e3e4c0fcf053d57cd818a"
+  tag: "f0bf0436092fde6e28a0dc24c7efd7254e6b724c"
 gatewayUrl: http://team-gateway:8000
 maxStores: 5
 edgeImageRepository: ghcr.io/shiv2576/gateway
