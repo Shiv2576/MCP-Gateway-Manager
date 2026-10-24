@@ -2,7 +2,7 @@
 # Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
 image:
   repository: ghcr.io/shiv2576/dashboard
-  tag: "a14b7f90158f8e1fd51e3e4c0fcf053d57cd818a"
+  tag: "20f717c50e13fff10e0ce400dd48b8457a8f8f36"
 gatewayUrl: http://team-gateway:8000
 ingress:
   host: dash.2001-41d0-303-2774--94.sslip.io
