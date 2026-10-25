@@ -6,5 +6,3 @@ ingress:
 cookieSecure: false
 stores:
   enabled: true
-# The demo servers live in this namespace (README).
-upstreamAllowHosts: "notes.mercora.svc.cluster.local,fx.mercora.svc.cluster.local"

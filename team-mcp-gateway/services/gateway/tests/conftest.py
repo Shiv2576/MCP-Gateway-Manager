@@ -32,6 +32,9 @@ def db_url():
 @pytest.fixture(autouse=True)
 def _loopback_upstreams(monkeypatch):
     """Fake upstreams listen on 127.0.0.1, which the SSRF guard refuses outside tests."""
+    from urllib.parse import urlsplit
+
     from app import api
     check = api.check_upstream_url
-    monkeypatch.setattr(api, "check_upstream_url", lambda url, allow=(): check(url, (*allow, "127.0.0.1")))
+    monkeypatch.setattr(api, "check_upstream_url", lambda url, operator=False:
+                        url if urlsplit(url).hostname == "127.0.0.1" else check(url, operator))

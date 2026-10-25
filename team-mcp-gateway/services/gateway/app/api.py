@@ -30,8 +30,8 @@ HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
 # Set by the HTTP or MCP transport; a member's credential must not replace them.
 RESERVED_HEADERS = {"host", "content-length", "content-type", "accept", "connection", "transfer-encoding"}
-# The only cluster-internal upstreams allowed without UPSTREAM_ALLOW_HOSTS: MCP servers
-# the store operator runs in their own locked-down namespaces (store-<name>, mcp-<name>).
+# The only cluster-internal upstreams, and only the store operator may register them:
+# MCP servers it runs in its own locked-down namespaces (store-<name>, mcp-<name>).
 OPERATOR_HOST = re.compile(r"^[a-z0-9-]+\.(?:store|mcp)-[a-z0-9-]+\.svc\.cluster\.local$")
 
 
@@ -454,10 +454,11 @@ def personal_header(value) -> str | None:
     return value
 
 
-def check_upstream_url(value: str, allow: tuple[str, ...] = ()) -> str:
+def check_upstream_url(value: str, operator: bool = False) -> str:
     """SSRF guard: an admin-added URL must resolve only to public addresses, so the
     gateway cannot be aimed at cloud metadata, Postgres, the Kubernetes API or other
-    pods. The gateway's egress NetworkPolicy catches a DNS record changed later."""
+    pods. Only the operator may register its own store/hosted servers. The gateway's
+    egress NetworkPolicy catches a DNS record changed later."""
     try:
         parts = urlsplit(value)
         scheme, host, port = parts.scheme, (parts.hostname or "").rstrip("."), parts.port
@@ -465,8 +466,10 @@ def check_upstream_url(value: str, allow: tuple[str, ...] = ()) -> str:
         scheme = host = ""
     if scheme not in ("http", "https") or not host:
         raise HTTPError(400, "url must be an http(s) URL")
-    if host in allow or OPERATOR_HOST.match(host):
-        return value
+    if OPERATOR_HOST.match(host):
+        if operator:
+            return value
+        raise HTTPError(400, "url: store and hosted servers are registered by the store operator")
     try:
         infos = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
     except (OSError, UnicodeError):
@@ -476,8 +479,7 @@ def check_upstream_url(value: str, allow: tuple[str, ...] = ()) -> str:
         if getattr(ip, "ipv4_mapped", None):
             ip = ip.ipv4_mapped
         if not ip.is_global:
-            raise HTTPError(400, f"url: {host} is a private or internal address"
-                                 " (add it to UPSTREAM_ALLOW_HOSTS if it is a trusted in-cluster server)")
+            raise HTTPError(400, f"url: {host} is a private or internal address")
     return value
 
 
@@ -488,9 +490,8 @@ def _url(value: str) -> str:
     return value
 
 
-async def _upstream_url(request: Request, value: str) -> str:
-    allow = request.app.state.settings.upstream_allow_hosts
-    return await asyncio.to_thread(check_upstream_url, value, allow)
+async def _upstream_url(request: Request, user: dict, value: str) -> str:
+    return await asyncio.to_thread(check_upstream_url, value, user is OPERATOR)
 
 
 @handler
@@ -519,14 +520,14 @@ async def list_servers(request: Request) -> Response:
 
 @handler
 async def create_server(request: Request) -> Response:
-    require_admin(request)
+    user = require_admin(request)
     data = await body(request)
     name = _str(data, "name")
     if not SERVER_NAME.match(name):
         raise HTTPError(400, "name: 1-32 of a-z 0-9 and -, used as the tool prefix")
     if name == "gateway":  # the prefix of the gateway's own tools (approvals.BUILTIN)
         raise HTTPError(400, "name: 'gateway' is reserved for the gateway's own tools")
-    url = await _upstream_url(request, _str(data, "url"))
+    url = await _upstream_url(request, user, _str(data, "url"))
     header, value = _auth_fields(data)
     value = value and request.app.state.vault.seal(value)
     store_name = _str(data, "store", required=False)
@@ -548,7 +549,7 @@ async def update_server(request: Request) -> Response:
 
     The name is fixed: it is the prefix of every tool name clients already know.
     """
-    require_admin(request)
+    user = require_admin(request)
     data = await body(request)
     conn = request.app.state.db
     sid = request.path_params["id"]
@@ -557,7 +558,10 @@ async def update_server(request: Request) -> Response:
         raise HTTPError(404, "no such server")
     if "name" in data and data["name"] != row["name"]:
         raise HTTPError(400, "name cannot be changed; remove and re-add the server")
-    url = await _upstream_url(request, _str(data, "url")) if "url" in data else row["url"]
+    # The dashboard sends the url on every edit; check it only when it changes.
+    url = _str(data, "url") if "url" in data else row["url"]
+    if url != row["url"]:
+        url = await _upstream_url(request, user, url)
     enabled = (1 if data["enabled"] else 0) if "enabled" in data else row["enabled"]
     if "auth" in data:
         header, value = _auth_fields(data)
@@ -580,11 +584,16 @@ async def update_server(request: Request) -> Response:
 
 @handler
 async def delete_server(request: Request) -> Response:
-    require_admin(request)
+    user = require_admin(request)
     sid = request.path_params["id"]
-    cur = request.app.state.db.execute("DELETE FROM servers WHERE id = ?", (sid,))
-    if not cur.rowcount:
+    conn = request.app.state.db
+    row = conn.execute("SELECT url FROM servers WHERE id = ?", (sid,)).fetchone()
+    if row is None:
         raise HTTPError(404, "no such server")
+    # Only the operator could register it again, and it does so only while provisioning.
+    if user is not OPERATOR and OPERATOR_HOST.match((urlsplit(row["url"]).hostname or "").rstrip(".")):
+        raise HTTPError(400, "this server belongs to a store or hosted server; delete that instead")
+    conn.execute("DELETE FROM servers WHERE id = ?", (sid,))
     request.app.state.upstreams.status.pop(sid, None)
     return JSONResponse({"ok": True})
 

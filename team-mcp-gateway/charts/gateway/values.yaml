@@ -68,10 +68,8 @@ resources:
     cpu: 500m
     memory: 256Mi
 
-# Hosts an admin may add as upstream servers although they resolve to private or
-# cluster addresses (comma-separated, exact). Everything else must be public:
-# the SSRF guard. Store and hosted servers the operator creates need no entry.
-upstreamAllowHosts: ""
+# Admin-added upstream URLs must resolve to public addresses (SSRF guard). Only the
+# store operator registers in-cluster servers: its own store-<name> / mcp-<name> ones.
 
 # Control only: the store's WooCommerce MCP server, registered as server
 # "woo-mcp" by first-run setup, so the admin's first login already lists it.

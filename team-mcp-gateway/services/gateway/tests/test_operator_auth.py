@@ -38,6 +38,31 @@ def test_operator_token_reaches_only_the_server_registry(db_url):
     asyncio.run(run())
 
 
+def test_only_the_operator_registers_and_removes_store_servers(db_url):
+    settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP,
+                        operator_service_account=OPERATOR_SA)
+    store_url = "http://woo-mcp-woo-mcp.store-shop1.svc.cluster.local:8000/mcp"
+
+    async def run():
+        with serve(create_app(settings, token_review=TOKENS.get)) as gw:
+            admin = await setup_admin(gw)
+            op = httpx2.AsyncClient(base_url=gw, timeout=10, headers={"Authorization": "Bearer op-token"})
+            r = await admin.post("/api/servers", json={"name": "shop1", "url": store_url})
+            assert r.status_code == 400 and "store operator" in r.json()["error"]
+            r = await op.post("/api/servers", json={"name": "shop1", "url": store_url, "store": "shop1"})
+            assert r.status_code == 201, r.text
+            sid = r.json()["id"]
+            # The dashboard re-sends the unchanged url on every edit: allowed.
+            r = await admin.patch(f"/api/servers/{sid}", json={"url": store_url, "personal_header": "X-Woo-Credentials"})
+            assert r.status_code == 200, r.text
+            other = "http://woo-mcp-woo-mcp.store-shop2.svc.cluster.local:8000/mcp"
+            assert (await admin.patch(f"/api/servers/{sid}", json={"url": other})).status_code == 400
+            assert (await admin.delete(f"/api/servers/{sid}")).status_code == 400
+            assert (await op.delete(f"/api/servers/{sid}")).status_code == 200
+
+    asyncio.run(run())
+
+
 def test_operator_auth_is_off_without_its_service_account(db_url):
     settings = Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP)
 

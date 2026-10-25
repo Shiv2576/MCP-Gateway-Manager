@@ -60,9 +60,6 @@ edges run the control plane's code.
 
 Only Helm values differ from local: see `docs/production-values.md`.
 
-Same on both: the gateway's `upstreamAllowHosts` (the in-cluster `notes` and `fx`
-Services).
-
 - **Storage:** both use the built-in `local-path` StorageClass. Volumes live on
   the VPS disk under `/var/lib/rancher/k3s/storage`.
 - **Secrets:** same names and keys as local, with new random values made on
@@ -78,9 +75,9 @@ Services).
   (`169.254.0.0/16`). The CIDRs in the charts (`clusterCidrs`) are k3s's
   defaults; change them only if you install k3s with other `--cluster-cidr` /
   `--service-cidr` values.
-- **SSRF guard:** a server an admin adds must resolve to a public address,
-  unless its host is in `upstreamAllowHosts`. Store and hosted servers the
-  operator creates need no entry.
+- **SSRF guard:** a server an admin adds must resolve to a public address.
+  Only the operator registers in-cluster servers (its own `store-*` / `mcp-*`
+  ones), and only it can delete them; admins delete the store or hosted server.
 - **Operator rights:** it can create and delete only the `store-<name>` and
   `mcp-<name>` namespaces it labels, and gets workload rights only inside them
   (a RoleBinding per namespace). A ValidatingAdmissionPolicy enforces the
@@ -249,9 +246,8 @@ different host breaks sign-in. The operator installs the edge `gw-SLUG`, gives
 its Ingress that host and a certificate, and
 turns on OAuth. Attach the store servers you created to it.
 
-`notes` and `fx` run as on local but are not registered. Add them under
-Servers if you want them (in-cluster URLs from the README, tokens in their
-Secrets); their hosts are already in `upstreamAllowHosts`.
+`notes` and `fx` run as on local but are not registered, and can't be: only
+the operator registers in-cluster servers.
 
 Claude → Settings → Connectors → Add custom connector →
 `https://SLUG.gw.BASE/mcp`, sign in with a gateway login.

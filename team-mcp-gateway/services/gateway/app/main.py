@@ -84,9 +84,6 @@ class Settings:
     # Tailscale tailnet DNS name (e.g. tail1234.ts.net). Set, a gateway created
     # without a public URL gets https://<slug>-gw.<tailnet>, published by Funnel.
     tailnet_domain: str = ""
-    # Hosts an admin may add as upstreams although they resolve to private or
-    # cluster addresses (e.g. demo servers in this namespace). Exact names only.
-    upstream_allow_hosts: tuple[str, ...] = ()
     # Control only: the store's WooCommerce MCP server, registered by first-run
     # setup so it is the first server the admin sees. Empty: no seed.
     seed_server_url: str = ""
@@ -127,9 +124,6 @@ class Settings:
             base_domain=env("BASE_DOMAIN", cls.base_domain).strip(),
             url_scheme=env("URL_SCHEME", cls.url_scheme).strip(),
             tailnet_domain=env("TAILNET_DOMAIN", "").strip().strip("."),
-            upstream_allow_hosts=tuple(
-                h.strip().lower() for h in env("UPSTREAM_ALLOW_HOSTS", "").split(",") if h.strip()
-            ),
             seed_server_url=env("SEED_SERVER_URL", "").strip(),
             seed_server_token=env("SEED_SERVER_TOKEN", "").strip(),
             oauth_redirect_uris=tuple(

@@ -50,9 +50,9 @@ A tool's description goes to the model, so a hostile server can write
 Mitigations:
 
 - **Only admins add servers**, and the URL is checked: it must resolve to a
-  public IP (no cluster-internal or metadata addresses) except the operator's
-  own `store-*` / `mcp-*` services and an explicit allow-list (SSRF guard,
-  `check_upstream_url`).
+  public IP (no cluster-internal or metadata addresses). Only the store
+  operator may register its own `store-*` / `mcp-*` services (SSRF guard,
+  `check_upstream_url`); a human admin is refused even for a real store's URL.
 - **No shadowing.** Every tool is named `<server>__<tool>`, and its description
   is prefixed with the server or store, so a server cannot pose as another's tool.
 - **No silent new tools.** Team allow-lists name each tool; a tool an upstream

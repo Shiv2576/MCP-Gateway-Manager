@@ -19,6 +19,8 @@ from app.api import HTTPError, check_upstream_url
     "http://0.0.0.0:5432/",
     "http://team-postgres.mercora.svc.cluster.local:5432/",
     "http://woo-mcp-woo-mcp.mercora.svc.cluster.local:8000/mcp",  # not an operator namespace
+    "http://woo-mcp-woo-mcp.store-shop1.svc.cluster.local:8000/mcp",  # a real store, but not the operator
+    "http://mcp.mcp-github.svc.cluster.local:8080/mcp",
     "ftp://example.com/",
     "http://:80/",
     "http://example.com:99999/",
@@ -29,11 +31,20 @@ def test_refused(url):
     assert e.value.status == 400
 
 
-@pytest.mark.parametrize("url,allow", [
-    ("http://8.8.8.8/mcp", ()),
-    ("http://woo-mcp-woo-mcp.store-shop1.svc.cluster.local:8000/mcp", ()),
-    ("http://mcp.mcp-github.svc.cluster.local:8080/mcp", ()),
-    ("http://notes.mercora.svc.cluster.local:8000/mcp", ("notes.mercora.svc.cluster.local",)),
+@pytest.mark.parametrize("url,operator", [
+    ("http://8.8.8.8/mcp", False),
+    ("http://8.8.8.8/mcp", True),
+    ("http://woo-mcp-woo-mcp.store-shop1.svc.cluster.local:8000/mcp", True),
+    ("http://mcp.mcp-github.svc.cluster.local:8080/mcp", True),
 ])
-def test_allowed(url, allow):
-    assert check_upstream_url(url, allow) == url
+def test_allowed(url, operator):
+    assert check_upstream_url(url, operator) == url
+
+
+@pytest.mark.parametrize("url", [
+    "http://notes.mercora.svc.cluster.local:8000/mcp",   # not an operator namespace
+    "http://169.254.169.254/latest/meta-data/",
+])
+def test_operator_gets_no_other_internal_url(url):
+    with pytest.raises(HTTPError):
+        check_upstream_url(url, operator=True)

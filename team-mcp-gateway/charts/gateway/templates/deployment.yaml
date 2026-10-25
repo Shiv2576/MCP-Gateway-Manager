@@ -80,10 +80,6 @@ spec:
             - name: OAUTH_REDIRECT_URIS
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.upstreamAllowHosts }}
-            - name: UPSTREAM_ALLOW_HOSTS
-              value: {{ . | quote }}
-            {{- end }}
             {{- if and (eq .Values.mode "control") .Values.seedServer.url }}
             - name: SEED_SERVER_URL
               value: {{ .Values.seedServer.url | quote }}
