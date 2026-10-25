@@ -194,8 +194,12 @@ grant access. The audit row is written before the call, so a crash still leaves 
 <h2 align="center">Stand Out Features (Optional)</h2>
 
 > [!IMPORTANT]
+
 > **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
+
 > **Username:** `admin` · **Password:** `admin@1234`
+
+> MCP-Gatewat Manager Intro Video : https://youtu.be/6eaWvSC3Jjw
 
 ### 1. Domains and TLS
 
@@ -224,6 +228,7 @@ grant access. The audit row is written before the call, so a crash still leaves 
 - Default-deny NetworkPolicies per store; woo-mcp reachable only from the gateway, MariaDB only from WordPress.
 - Least-privilege RBAC: only the control plane and operator have Kubernetes identities.
 - Non-root, read-only root filesystem, all capabilities dropped, seccomp on every pod.
+- All namespaces secrets are encrypted at rest.
 
 ### 4. Production pipeline (GHCR + Argo CD)
 

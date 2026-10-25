@@ -249,3 +249,37 @@ tailscale funnel status
   `PUT /api/gateways/prod/servers {"server_ids":[1,3]}`.
   Check over IPv4: `/mcp` → 401 with `resource_metadata=.../.well-known/oauth-protected-resource/mcp` (200),
   `/.well-known/oauth-authorization-server` → 200.
+
+## Secrets encrypted at rest (2026-10-25)
+
+k3s's built-in encryption, one AES-CBC key for every namespace (the API
+server picks keys per resource type, not per namespace).
+
+```sh
+# backup taken with k3s stopped (db/ + config.yaml), deleted after the check: it held plaintext Secrets
+echo 'secrets-encryption: true' >> /etc/rancher/k3s/config.yaml
+systemctl restart k3s
+k3s secrets-encrypt reencrypt -f      # rewrites the existing Secrets
+k3s secrets-encrypt status            # Enabled, reencrypt_finished
+```
+
+- Key: `/var/lib/rancher/k3s/server/cred/encryption-config.json`. Keep a copy
+  off the box; without it the Secrets in `state.db` can't be read.
+- Checked in `state.db` (kine table): 94/94 live Secrets start with `k8s:enc:aescbc:v1:`.
+- Rotate: `k3s secrets-encrypt rotate-keys` (adds the new key, switches writes, re-encrypts, drops the old one).
+- Not in GitOps: it is node config, so Argo CD doesn't manage it.
+
+### Switched aescbc → secretbox (2026-10-25)
+
+secretbox (XSalsa20-Poly1305) also detects tampering: a changed row fails to
+decrypt instead of decrypting to garbage. AES-CBC has no such check.
+
+```sh
+echo 'secrets-encryption-provider: secretbox' >> /etc/rancher/k3s/config.yaml
+systemctl restart k3s                 # still aescbc: the provider only applies to new keys
+k3s secrets-encrypt rotate-keys       # new secretbox key first, re-encrypt all, old aescbc key dropped
+```
+
+- Status: one key, `XSalsa20-POLY1305 secretboxkey-2026-10-25T09:11:42Z`.
+- Checked in `state.db`: 94/94 Secrets start with `k8s:enc:secretbox:v1:`; pods Running, gateway `/readyz` 200.
+- k3s marks `--secrets-encryption-provider` experimental (v1.36.5).
