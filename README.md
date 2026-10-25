@@ -199,7 +199,7 @@ grant access. The audit row is written before the call, so a crash still leaves 
 
 > **Username:** `admin` · **Password:** `admin@1234`
 
-> MCP-Gatewat Manager Intro Video : https://youtu.be/6eaWvSC3Jjw
+> MCP-Gateway Manager Intro Video : https://youtu.be/6eaWvSC3Jjw
 
 ### 1. Domains and TLS
 
