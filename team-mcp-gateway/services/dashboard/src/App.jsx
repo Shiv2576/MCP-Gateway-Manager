@@ -1,4 +1,5 @@
 import { Component, Fragment, useEffect, useState } from 'react'
+import { ClayzoPlayer } from '@clayzo/webgl-player/react'
 import { api } from './api.js'
 import Servers from './Servers.jsx'
 import Gateways from './Gateways.jsx'
@@ -135,7 +136,7 @@ export default function App() {
             <button className="primary" onClick={() => location.reload()}>Retry</button>
           </div>
         </div>
-        <Lava />
+        <Gate />
       </div>
     )
   if (setup.needed)
@@ -283,24 +284,19 @@ function Login({ onLogin }) {
         </form>
         <p className="muted small">Accounts are created by an admin.</p>
       </div>
-      <Lava />
+      <Gate />
     </div>
   )
 }
 
-function Lava() {
+function Gate() {
+  const [doc, setDoc] = useState(null)
+  useEffect(() => {
+    fetch('/login.json').then((r) => r.json()).then(setDoc).catch(() => {})
+  }, [])
   return (
-    <div className="lava" aria-hidden="true">
-      {/* Goo filter: blur the blobs together, then sharpen alpha so they merge like wax. */}
-      <svg width="0" height="0">
-        <filter id="goo">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="18" />
-          <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 40 -18" />
-        </filter>
-      </svg>
-      <div className="blobs">
-        {[...Array(7)].map((_, i) => <span key={i} />)}
-      </div>
+    <div className="gate">
+      <ClayzoPlayer document={doc} decorative className="gate-player" />
     </div>
   )
 }
@@ -364,7 +360,7 @@ function Setup({ onDone }) {
           The setup token is in the <code>gateway-admin</code> Secret, key <code>SETUP_TOKEN</code>.
         </p>
       </div>
-      <Lava />
+      <Gate />
     </div>
   )
 }

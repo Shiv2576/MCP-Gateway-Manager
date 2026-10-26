@@ -1,0 +1,132 @@
+# Motion recipes
+
+Entrance and settle shapes measured from shipped references, written as
+tracks at 240 ticks per second. `motion-fundamentals.md` says what to aim
+for; this says what the numbers were when it worked. Reach for a named
+primitive before inventing a curve, and use at least three different ones in
+any piece longer than a second.
+
+## The card
+
+If you read nothing else: still 2 frames; backdrop beat 0.1–0.5 s; hero at
+0.4–0.7 s with the only overshoot (1.18 plateau, or 1.06 when it spans the
+frame); title fade-and-settle 0.34 s at the baseline; punctuation in an
+irregular order 50–70 ms apart; hold ≥ 0.25 s or exit in reverse 30 % faster.
+Ease-out for ins `{0.2, 0.45, 0.45, 1}`, drain for outs `{0.5, 0, 0.7, 0.7}`,
+pop `{0.1, 0.9, 0.3, 1}`, settle `{0.25, 0.5, 0.45, 1}`, snap `{0.45, 0, 0.55, 1}`.
+Visible means ≥ 8 px and ≥ 0.12 luminance difference at 360 px. Never scale
+a clip to 0; never ramp between two hues; never fade a large light shape on
+dark.
+
+## Primitives
+
+| Name | Track | Ease | Duration | Where it came from |
+|---|---|---|---|---|
+| Pop | scale 0 → 1 | `{0.1, 0.9, 0.3, 1}` | 0.10 s | discs, ring dots |
+| Pop with landing | scale 0 → 1.06 → 1 | out, then in-out | 0.07 s + 0.05 s | small dots |
+| Flood | clip Ø 0 → full | `{0.2, 0.45, 0.45, 1}` | 0.17–0.23 s | corner reveals |
+| Drain | clip Ø full → 0 | `{0.5, 0, 0.7, 0.7}` | 0.12–0.15 s | reverse reveals |
+| Hero pop, plateau, snap | scale 0 → 1.18 (0.28 s) → 1.19 (0.12 s) → 1.0 (0.10 s); opacity 0 → 1 in the first 0.15 s only when the hero is darker than its ground | out / linear / in-out | 0.50 s | starburst |
+| One-bounce rise | scale 0.4 → 1.0 (0.23 s) → 1.15 (0.40 s) → 1.0 (0.15 s), opacity 0 → 1 in the first 0.17 s | out / soft out / in-out | 0.78 s | large numerals behind a title |
+| Fade and settle | opacity 0 → 1 (0.34 s) with scale 1.12 → 1.0 (0.27 s), anchored at the baseline | `{0.25, 0.5, 0.45, 1}` | 0.34 s | title text |
+| Zoom from the axis | group scale 0 → 1 about the point where it crosses the frame's axis; opacity 0 → 1 over the same span | measured, played as linear segments | 0.27 s centre, 0.43 s neighbours, 0.50 s outer | pixel chains |
+| Cascade | per-bar opacity ramps top to bottom, each 10–30 frames, onsets 2–4 frames apart | out | 0.5–1.7 s | striped wordmark |
+| Exponential grow-fade | `v = v0 + (1 − v0)(1 − e^(−t/τ))`, τ ≈ 0.3 × duration, scale and opacity together | bezier fit to that curve | 16–40 frames | pattern cells in a card |
+| Spin-in | rotation 155° clockwise while scaling from 0, settling with a point on an axis | out | 1.5 s | badge starburst |
+| Slide-in | position −14 px → 0 with opacity | out | 0.2 s | placeholder text bars |
+
+All durations were measured at 60 fps (4 ticks per frame). At 30 fps (8
+ticks per frame): pop 3 frames, pop-with-landing 2 + 2, flood 5–7, drain
+4–5, hero pop-plateau-snap 8 + 4 + 3, fade-and-settle 10 with the scale
+landing at 8, one-bounce rise 7 + 12 + 5. Keep durations in seconds and snap
+every keyframe to the rate the piece will play at.
+
+**Large light shapes on dark do not fade.** A cream or white *filled shape*
+at partial opacity over a dark field is grey mud for the six frames the ramp
+lasts; scale it from zero and let the silhouette do the entrance. Type and
+thin strokes are different — their partial-alpha frames are too small to
+read as mud — so a title on a dark field still fades and settles, or wipes on
+from its left edge (a clip rect anchored on the leading edge, `scale.x`
+0.001 → 1) with the same settle.
+
+**A backdrop beat must be visible.** If the sample sheet at 360 px does not
+show it, it is a stall, not a beat: units at least 8 px at that size and at
+least 12 % luminance contrast against the field.
+
+## Overshoot is scale-aware
+
+The 1.18 plateau was measured on a hero a third of the frame wide. Multiply
+the settled width by the plateau: if the result exceeds 90 % of the frame,
+reduce the plateau (a wordmark at 82 % of the width gets 1.06, not 1.18) or
+the settled size.
+
+## Colour changes
+
+A hue change between two saturated colours is a cut, never a ramp — the
+midpoint of coral and cobalt is olive mud. Flip the colour on a hold at the
+bottom of a press or pop, or behind a front (a pour, a wipe). Ramps are for
+grey → colour and colour → grey only. "Visible" for a backdrop means a
+relative-luminance difference of at least 0.12 (on 0–1) between unit and
+field.
+
+## Scale
+
+A teaser is not a widget. The hero and its container together span at least
+half the frame's width in landscape and 70 % of it in portrait; a tagline is
+at least 3 % of the frame height and a wordmark spans 70–85 % of the width
+(see `art-direction.md`). Check the
+settled frame at phone size (360 px wide) before timing anything: if the
+piece reads as a small object in a void, scale the composition, not the
+motion.
+
+## Content states
+
+A stat, line or card that replaces another inside one piece is a cut, not a
+crossfade. Drain the outgoing element over 0.08–0.12 s (opacity → 0, scale →
+0.94, drain ease) so it ends exactly on the incoming element's start tick,
+then bring the new one in with fade-and-settle. Two numerals crossing is mud.
+Hold each state 1.3–2.0 s for reading; with three or more states the one-bounce
+rise happens once, on the first, and the rest settle plainly.
+
+## The still first frame
+
+It has to read as a title card on its own: frame furniture that persists for
+the whole piece (a header line, a footer line), or the grey or ghosted resting
+state of the mark, or simply the field. Two frames minimum; a slow drift that
+starts on tick 0 counts as motion, so start drifts after the still.
+
+## Orders that read as designed
+
+- **Sequential hand-off** — each element starts as the previous lands. For a
+  handful of large elements.
+- **Wave with two rates** — 50 ms per column, 100 ms per row, starting at the
+  corner nearest the previous beat (bottom-right → top-left). For grids.
+- **Centre out, lagging by distance** — the central unit first and fastest,
+  neighbours ~50 ms later at the same pace, the outer units starting almost as
+  early but growing at half the speed. For stripes and anything radiating.
+- **Measured irregular order** for rings and clusters — bottom row left to
+  right, then the right column upward, then the top row right to left, then
+  the left column, 50–70 ms apart. Never a clean clockwise sweep.
+- **Reverse order to exit**, with a shorter stagger (36 ticks out against
+  48–56 in) and a faster collapse. Outs are about 30 % quicker than ins.
+
+## Beats of a three-to-six-second piece
+
+1. 0.0–0.1 s — a still frame. The resting state must read on its own.
+2. 0.1–0.5 s — the backdrop system arrives (zoom, cascade, tiles).
+3. 0.4–0.7 s — the hero pops, with the piece's one overshoot. A hero that
+   is *built* by a front (a sweep, a pour, a draw-on) lands when the front
+   finishes, later by construction; its overshoot is the lock at the end.
+4. 0.6–1.1 s — containers and the title: fade and settle, not slide.
+5. 1.0–1.8 s — secondary content (numerals, subtitles), one bounce.
+6. 1.3–2.0 s — punctuation (dots, badges), irregular order.
+7. Hold to the end, or drain in reverse so the piece can cut to itself.
+
+## Anti-patterns
+
+- The same ease on every track. The reference pieces use five distinct shapes
+  inside two seconds.
+- Overshoot everywhere. One hero overshoots; everything else pops or fades.
+- Symmetric in and out timing.
+- Motion before the first frame has been still for at least two frames.
+- Starting a hero before its backdrop has settled to 90 %.

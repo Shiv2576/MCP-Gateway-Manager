@@ -1,0 +1,112 @@
+# Text and fonts
+
+A wordmark of up to six letters in a geometric sans is a fifteen-minute job
+from rings and pills — two rings for the o's, the same stroke bent into an L
+or a p — and needs no font at all. When no brand face is supplied, prefer
+that: it makes the name part of the system, and it packages.
+
+Type as geometry: where a `text` node actually draws, why it sometimes draws
+nothing, and how to make a stand-in face match a proprietary one.
+
+## What you cannot guess
+
+- A `text` node's position is the top-left of its `box`. With
+  `verticalAlign: "top"` the baseline sits `lineHeight` below that; with
+  `"middle"` it sits half a line below the box's vertical centre.
+  `align: "center"` centres the run inside `box.width`, so give the box the
+  canvas width and put x at 0 to centre on the canvas.
+- No font, no text. A run whose `fontAssetId` cannot be loaded, or whose
+  family no loader supplies, draws nothing — no substitution, no error.
+  `text.exact_shaping_unavailable` means the run's face was not found.
+- `fontWeight` sets a variable font's weight: a face with a `wght` axis is
+  drawn at that weight, clamped to the axis. A static face draws as it is,
+  and at 600 and above one lighter than semibold is emboldened (faked), as
+  browsers do. Kerning comes from the font. There are no ligatures, and no
+  shaping for right-to-left or complex scripts: one glyph per character,
+  left to right.
+- A font asset's `uri` resolves relative to the document on disk. Keep the
+  file beside the document (`fonts/…`) so packaging, the terminal export and
+  the preview all find it.
+- `clayzo` supplies the family `Manrope` for interface and body text. To make
+  a document self-contained for the web player, ship it, or another OFL face
+  such as Inter, as a `font` asset in `fonts/` beside the document. A system
+  face such as SF Pro can't be redistributed. Brand names and wordmarks:
+  `art-direction.md`, step 5 ("Words").
+- A text node's `animators` move letters, words or lines of it on their own:
+  `selector: { start, end, units }` picks units `start` to `end - 1`, counted
+  from 0 across all runs (characters include spaces). Each animator can set
+  `position` (an offset), `rotation`, `scale`, `opacity`, `fillColor` and
+  `tracking` (space after the glyph); a glyph turns and scales about the
+  centre of its advance, on the baseline. One animator per letter, staggered,
+  makes a letter-by-letter rise. Lines with right-to-left letters or
+  combining accents draw without them, and SVG export can't draw animators
+  that change over time.
+- `fontAssetId` selects the file; a `.ttc` collection loads its first face
+  and there is no face index.
+  Leave `letterSpacing` at 0: it widens a line for wrapping and alignment but
+  does not space the glyphs. Leave `verticalAlign` at `"top"`.
+- Measure before trusting a size. Render one probe frame and read the run's
+  pixel extents. Manrope sets flat capitals (H, E, M) at 0.72 × size and
+  round ones (C, O) at 0.75 ×, x-height at 0.55 ×, descenders at 0.24 ×;
+  "Wrapped" at 101 px is 437 px wide.
+
+## Scaling and anchoring a run
+
+Scale about the glyphs, not the box. The anchor is in the node's local space:
+`x = box.width / 2`, `y = pivot − (baseline − lineHeight)`, where `pivot` is
+the canvas y you want to scale about. Anchor at the baseline for titles that
+settle, so they grow upward from where they sit; anchor at the glyph centre
+for numerals that pop symmetrically.
+
+A face shorter than the one you are matching can be stretched 5–8 %
+vertically (`scale.y = 1.07 × scale.x`) before it reads as distorted; wider
+faces are better condensed by choosing a smaller size than by scaling x.
+
+## Layering
+
+A numeral behind a title but above its band: order `band → numeral → title`
+and let the numeral's strokes show between the letters. It reads as depth.
+
+## Ranges
+
+- Poster title: set by width — 70–85 % of the frame for a wordmark, which
+  puts a five-letter word's cap height near 0.15 × the width in portrait;
+  numerals behind it 1.5–2 × the title's cap height.
+- Letter-spacing 0 for a display sans at these sizes; tracking edits under
+  0.08 em.
+- Placeholder copy in product mockups: bars at 0.3–0.5 × the line height,
+  one darker for the name, lighter for the rest.
+
+## Measuring a face
+
+One probe document: the run at the size you intend on a plain field, a `rect`
+hairline at the intended baseline, rendered with `render-frame --tick 0`. Read
+the pixel extents of the glyphs against the hairline; that gives cap height,
+x-height, descender and width for the real face in three minutes, and the
+numbers go in a comment at the top of the script.
+
+## Platform safe zones
+
+- Instagram Story and Reels, 1080 × 1920: the app covers roughly the top
+  250 px and the bottom 220 px. Keep everything that matters between y 260
+  and y 1700, and titles at least 6 % of the width from the sides.
+- TikTok, 1080 × 1920: the same vertical band plus a right rail of about
+  120 px for the action column.
+- Square feed posts have no chrome; keep 5 % margins.
+
+## A wordmark with no font
+
+`monolineWordmark(text, { capHeight })` draws a geometric monoline name:
+stroke `0.2 × H`, round caps and joins, circular bowls. `cellWordmark(text,
+{ cell })` sets one in pixel cells (5 × 7 or `face: "3x5"`; `round: true` and
+a `gap` draw dots). Use them as they are for a caption, a lockup beside a
+hero, or a grid system. When the name is the idea, they are a starting point:
+change the stroke, the terminals or a letter's contours (`letters[]`), or
+build letters from the piece's own shapes.
+
+- Both are centred on (0, 0) and report `width`; cell letters are
+  proportional (an `I` is 3 columns).
+- Stroke the monoline path with the `stroke` it returns. For a draw-on, pass
+  `polyline: true` and give each of `letters` its own node.
+- Keep cell edges on whole pixels: place the word where `x − width / 2` and
+  `y − height / 2` are whole numbers, and shift the word, not the background.

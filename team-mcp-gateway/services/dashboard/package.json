@@ -9,12 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clayzo/animation": "^0.3.19",
+    "@clayzo/webgl-player": "^0.3.19",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "recharts": "^2.15.4"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
+    "clayzo": "^0.3.19",
     "vite": "^7.1.0"
   }
 }
