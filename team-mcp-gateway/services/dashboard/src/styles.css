@@ -107,7 +107,18 @@ button:disabled { opacity: 0.6; cursor: default; }
   padding: 12px; background: var(--sidebar); color: var(--sidebar-foreground); border-right: 1px solid var(--sidebar-border);
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; white-space: nowrap; padding: 6px 8px 14px; }
-.logo { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--sidebar-primary); color: var(--sidebar-primary-foreground); font-size: 12px; }
+.logo { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--sidebar-primary); color: var(--sidebar-primary-foreground); font-size: 12px;
+  animation: logo-turn 5s cubic-bezier(0.25, 0.5, 0.45, 1) infinite; transition: scale 0.2s cubic-bezier(0.2, 0.45, 0.45, 1); }
+.brand:hover .logo { scale: 1.12; }
+/* Every 5 s the badge turns a quarter like a key, overshooting once and flashing the keyhole's cobalt.
+   A square at 90° looks the same as at 0°, so the loop closes without a jump. */
+@keyframes logo-turn {
+  0%, 74% { rotate: 0deg; background: var(--sidebar-primary); color: var(--sidebar-primary-foreground); }
+  84% { rotate: 102deg; background: #3a3aff; color: #fff; }
+  90% { rotate: 90deg; background: #3a3aff; color: #fff; }
+  100% { rotate: 90deg; background: var(--sidebar-primary); color: var(--sidebar-primary-foreground); }
+}
+@media (prefers-reduced-motion: reduce) { .logo { animation: none; } }
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
 .nav-group { font-size: 11px; font-weight: 500; color: var(--muted-foreground); padding: 12px 8px 4px; }
 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: none; color: var(--sidebar-foreground); padding: 7px 8px; opacity: 0.8; }
@@ -186,10 +197,42 @@ tr:last-child td { border-bottom: none; }
 .login-head h1 { font-size: 26px; margin-bottom: 6px; letter-spacing: -0.02em; }
 .login-head p { margin: 0; text-wrap: balance; }
 .login label { font-size: 13px; color: var(--foreground); font-weight: 500; margin-bottom: 14px; }
-.login input { padding: 10px 12px; transition: border-color 0.15s; }
-.login input:focus-visible { border-color: var(--ring); }
-.login .primary { width: 100%; margin-top: 8px; padding: 10px 12px; font-weight: 500; }
+.login input { padding: 10px 12px; transition: border-color 0.16s, box-shadow 0.16s; }
 .login .error { margin: 0 0 8px; font-size: 13px; }
+
+/* Login controls, in the keyhole's cobalt and acid (animation/login.ts). */
+.login { --cobalt: #3a3aff; --acid: #f0fe48; --settle: cubic-bezier(0.25, 0.5, 0.45, 1); }
+.login label { transition: color 0.16s; }
+.login label:focus-within { color: var(--cobalt); }
+.login input:focus-visible { outline: none; border-color: var(--cobalt); box-shadow: 0 0 0 4px color-mix(in oklch, var(--cobalt) 18%, transparent); }
+.login .primary { position: relative; overflow: hidden; width: 100%; margin-top: 8px; padding: 10px 12px; font-weight: 500;
+  background: var(--cobalt); color: #fff; transition: transform 0.12s var(--settle), background-color 0.2s, color 0.2s, box-shadow 0.2s; }
+.login .primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px -8px var(--cobalt); }
+.login .primary:active:not(:disabled) { transform: scale(0.97); transition-duration: 0.08s; }
+/* A sheen crosses the button on hover. */
+.login .primary::before { content: ''; position: absolute; inset: 0; translate: -120% 0; background: linear-gradient(100deg, transparent 30%, #ffffff40 50%, transparent 70%); transition: translate 0.6s var(--settle); }
+.login .primary:hover:not(:disabled)::before { translate: 120% 0; }
+/* Signing in: an acid bar runs along the bottom edge. */
+.login .primary.busy, .login .primary.done { opacity: 1; }
+.login .primary.busy::after { content: ''; position: absolute; left: 0; bottom: 0; width: 35%; height: 3px; background: var(--acid); animation: login-busy 0.9s ease-in-out infinite; }
+/* Signed in: the button turns acid while the keyhole dives. */
+.login .primary.done { background: var(--acid); color: #101010; }
+.login .primary.done::after { display: none; }
+@keyframes login-busy { from { translate: -100% 0; } to { translate: 290% 0; } }
+
+/* The form arrives in order: heading, fields, button. */
+.login-form > * { animation: login-in 0.34s var(--settle) both; }
+.login-form > :nth-child(2) { animation-delay: 60ms; }
+.login-form > :nth-child(3) { animation-delay: 120ms; }
+.login-form > :nth-child(4) { animation-delay: 180ms; }
+.login-form > :nth-child(5) { animation-delay: 240ms; }
+.login-form > :nth-child(6) { animation-delay: 300ms; }
+.login-form > :nth-child(n + 7) { animation-delay: 360ms; }
+@keyframes login-in { from { opacity: 0; translate: 0 8px; } }
+@media (prefers-reduced-motion: reduce) {
+  .login-form > *, .login .primary.busy::after { animation: none; }
+  .login .primary, .login .primary::before { transition: none; }
+}
 
 /* Login art (animation/login.ts): the 4:5 player covers the panel, centred, like object-fit: cover. */
 .gate { position: relative; overflow: hidden; margin: 12px; border-radius: 18px; background: #101010; }

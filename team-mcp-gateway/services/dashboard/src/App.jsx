@@ -1,4 +1,4 @@
-import { Component, Fragment, useEffect, useState } from 'react'
+import { Component, Fragment, useEffect, useRef, useState } from 'react'
 import { ClayzoPlayer } from '@clayzo/webgl-player/react'
 import { api } from './api.js'
 import Servers from './Servers.jsx'
@@ -232,20 +232,29 @@ class PageBoundary extends Component {
   }
 }
 
+// A short no-shake on a wrong password; skipped for readers who ask for less motion.
+function shake(el) {
+  if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  el.animate([0, -8, 7, -5, 3, 0].map((x) => ({ translate: `${x}px 0` })), { duration: 360, easing: 'ease-out' })
+}
+
 function Login({ onLogin }) {
   const [form, setForm] = useState({ username: '', password: '' })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [unlocked, setUnlocked] = useState(null)
+  const formRef = useRef(null)
 
   async function submit(e) {
     e.preventDefault()
     setError('')
     setBusy(true)
     try {
-      onLogin(await api('/login', { method: 'POST', body: form }))
+      setUnlocked(await api('/login', { method: 'POST', body: form }))
     } catch (err) {
       setError(err.message)
       setBusy(false)
+      shake(formRef.current)
     }
   }
 
@@ -255,7 +264,7 @@ function Login({ onLogin }) {
         <div className="brand">
           <span className="logo">◆</span> MCP Gateway
         </div>
-        <form className="login-form" onSubmit={submit}>
+        <form className="login-form" onSubmit={submit} ref={formRef}>
           <div className="login-head">
             <h1>Welcome back</h1>
             <p className="muted">Sign in to manage your MCP servers, tools and keys.</p>
@@ -280,23 +289,43 @@ function Login({ onLogin }) {
             />
           </label>
           {error && <p className="error" role="alert">{error}</p>}
-          <button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          <button className={`primary${unlocked ? ' done' : busy ? ' busy' : ''}`} disabled={busy}>
+            {unlocked ? 'Unlocked' : busy ? 'Signing in…' : 'Sign in'}
+          </button>
         </form>
         <p className="muted small">Accounts are created by an admin.</p>
       </div>
-      <Gate />
+      <Gate unlocked={unlocked} onOpened={() => onLogin(unlocked)} />
     </div>
   )
 }
 
-function Gate() {
+// The keyhole art (animation/login.ts). When `unlocked` is set it plays the dive, then calls onOpened.
+function Gate({ unlocked, onOpened }) {
   const [doc, setDoc] = useState(null)
+  const player = useRef(null)
+  const opened = useRef(onOpened)
+  opened.current = onOpened
   useEffect(() => {
     fetch('/login.json').then((r) => r.json()).then(setDoc).catch(() => {})
   }, [])
+  useEffect(() => {
+    if (!unlocked) return
+    if (!player.current) return opened.current()
+    player.current.fire('unlock')
+    // Never strand a signed-in user if the player is hidden (mobile) or stalls.
+    const t = setTimeout(() => opened.current(), 1200)
+    return () => clearTimeout(t)
+  }, [unlocked])
   return (
     <div className="gate">
-      <ClayzoPlayer document={doc} decorative className="gate-player" />
+      <ClayzoPlayer
+        document={doc}
+        decorative
+        className="gate-player"
+        onReady={(p) => (player.current = p)}
+        options={{ onComplete: ({ state }) => state.name === 'open' && opened.current?.() }}
+      />
     </div>
   )
 }
