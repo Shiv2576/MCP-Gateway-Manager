@@ -73,7 +73,7 @@ const PAGES = [
   { id: 'users', label: 'Members', el: Users, admin: true, group: 'Settings' },
   { id: 'teams', label: 'Teams', el: Teams, group: 'Settings' },
   { id: 'pii', label: 'PII Protection', el: Pii, admin: true, group: 'Settings' },
-  { id: 'audit', label: 'Audit log', el: Audit, admin: true, group: 'Settings' },
+  { id: 'audit', label: 'Audit log', el: Audit, group: 'Settings' },
 ]
 
 function useTheme() {

@@ -351,13 +351,17 @@ class Upstreams:
         else:  # the caller gets the unmasked result; the log still keeps only a masked copy
             logged, masked_for_log = filtered, True
 
+        # The arguments go through the same filter, wrapped as a result; always masked in the log.
+        masked_args, _ = await self._redact(
+            CallToolResult(content=[TextContent(type="text", text=json.dumps(arguments or {}))]),
+            row and row["id"], tool, name)
         error = None
         if result.is_error:
             error = (" ".join(c.text for c in logged.content if isinstance(c, TextContent))[:500]
                      if logged else "error text not kept: the PII filter failed")
         self.db.execute(
             "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, identity = ?,"
-            " pii = ?, payload = ?, payload_masked_for_log = ? WHERE id = ?",
+            " pii = ?, payload = ?, payload_masked_for_log = ?, args = ? WHERE id = ?",
             (
                 0 if result.is_error else 1,
                 int((time.monotonic() - started) * 1000),
@@ -366,6 +370,7 @@ class Upstreams:
                 json.dumps(pii) if pii else None,
                 _payload(logged),
                 masked_for_log,
+                masked_args.content[0].text[:PAYLOAD_CAP] if masked_args else None,
                 audit_id,
             ),
         )

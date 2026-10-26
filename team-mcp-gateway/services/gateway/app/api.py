@@ -631,25 +631,26 @@ AUDIT_LIST = ("id, at, user_id, username, tool, server, gateway, ok, duration_ms
 
 @handler
 async def audit(request: Request) -> Response:
-    require_admin(request)
+    user = current_user(request)  # members see only their own calls
     try:
         limit = min(int(request.query_params.get("limit", 100)), 1000)
     except ValueError:
         raise HTTPError(400, "limit must be a number") from None
     # Without payload: up to 64 KB each, fetched one row at a time by audit_entry.
+    where, params = ("", ()) if user["role"] == "admin" else ("WHERE user_id = ? ", (user["id"],))
     rows = request.app.state.db.execute(
-        f"SELECT {AUDIT_LIST} FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT {AUDIT_LIST} FROM audit_log {where}ORDER BY id DESC LIMIT ?", (*params, limit)
     ).fetchall()
     return JSONResponse([dict(r) for r in rows])
 
 
 @handler
 async def audit_entry(request: Request) -> Response:
-    require_admin(request)
+    user = current_user(request)
     row = request.app.state.db.execute(
         "SELECT * FROM audit_log WHERE id = ?", (request.path_params["id"],)
     ).fetchone()
-    if row is None:
+    if row is None or (user["role"] != "admin" and row["user_id"] != user["id"]):
         raise HTTPError(404, "no such audit entry")
     return JSONResponse({**row, "refund_total": row["refund_total"] and str(row["refund_total"])})
 

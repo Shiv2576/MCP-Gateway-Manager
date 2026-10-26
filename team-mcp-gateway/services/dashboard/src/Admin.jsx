@@ -394,6 +394,9 @@ export function Audit() {
                         <p className="error">{entry.error_loading}</p>
                       ) : (
                         <>
+                          <p className="muted small">Arguments</p>
+                          <pre className="mono small">{entry.args ? pretty(entry.args) : 'Not kept.'}</pre>
+                          <p className="muted small">Result</p>
                           {entry.payload_masked_for_log && <p className="muted small">Member saw unmasked data; log copy masked.</p>}
                           <pre className="mono small">{entry.payload ? pretty(entry.payload) : entry.error || 'Not kept (the PII filter failed, or no result).'}</pre>
                         </>

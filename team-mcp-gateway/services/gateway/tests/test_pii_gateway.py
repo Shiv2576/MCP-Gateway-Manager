@@ -50,7 +50,7 @@ def build_shop() -> MCPServer:
         return ORDER
 
     @server.tool()
-    async def fail() -> str:
+    async def fail(note: str = "") -> str:
         """An upstream error that echoes PII."""
         raise ToolError(f"no order for {EMAIL}")
 
@@ -95,7 +95,7 @@ def test_protection_masks_per_gateway_and_audits_the_payload(db_url):
                         "id": 2042, "total": "149.00", "customer": "[PERSON]", "customer_note": "[FREE_TEXT]",
                         "ship_to": "[ADDRESS]", "payment_method": "UPI", "items": [{"product_id": 7, "name": "Mug"}]}
                     assert "Alice" not in text(r) and EMAIL not in text(r)
-                    e = await mcp.call_tool("shop__fail", {})
+                    e = await mcp.call_tool("shop__fail", {"note": EMAIL})
                     assert e.is_error and "no order for [EMAIL]" in text(e)
 
                 async with gateway_client(ops, key) as mcp:
@@ -114,6 +114,8 @@ def test_protection_masks_per_gateway_and_audits_the_payload(db_url):
                 full = (await admin.get(f"/api/audit/{on['id']}")).json()
                 assert full["payload_masked_for_log"] is False
                 assert json.loads(full["payload"])["structuredContent"]["customer"] == "[PERSON]"
+                failed = (await admin.get(f"/api/audit/{by[('support', 'shop__fail')]['id']}")).json()
+                assert json.loads(failed["args"]) == {"note": "[EMAIL]"}  # arguments are masked too
                 off = (await admin.get(f"/api/audit/{by[('ops', 'shop__get_order')]['id']}")).json()
                 assert off["payload_masked_for_log"] is True and "Alice" not in off["payload"]
                 for row in log:  # no raw PII anywhere, error column included

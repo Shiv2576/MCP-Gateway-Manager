@@ -243,6 +243,7 @@ ALTER TABLE approvals ADD COLUMN IF NOT EXISTS summary TEXT;  -- the requesting 
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS items INTEGER;
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS refund_total NUMERIC(12, 2);
 ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS approval_id BIGINT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS args TEXT;  -- the call's arguments, always PII-masked
 CREATE INDEX IF NOT EXISTS audit_budget ON audit_log (user_id, gateway, tool, at) WHERE items IS NOT NULL;
 -- Team alerts: which successful tool calls alert which team. Like team_tools, a rule
 -- belongs to an attachment, and any attached tool may alert any team (the team that

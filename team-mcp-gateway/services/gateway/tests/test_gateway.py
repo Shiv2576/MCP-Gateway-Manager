@@ -315,7 +315,8 @@ def test_the_whole_gateway(db_url):
             log = (await admin.get("/api/audit")).json()
             assert {e["username"] for e in log} == {"bob"}
             assert any(e["tool"] == "slow__list" and not e["ok"] for e in log)
-            assert (await member.get("/api/audit")).status_code == 403
+            mine = (await member.get("/api/audit")).json()  # a member sees their own calls
+            assert mine and {e["username"] for e in mine} == {"bob"}
 
             # Revoke the key: the next MCP request is refused.
             key_id = (await member.get("/api/keys")).json()[0]["id"]
@@ -337,7 +338,13 @@ def test_the_whole_gateway(db_url):
             r = await admin.post("/api/tools/call", json={"gateway": "main", "name": "fx__convert",
                                                           "arguments": {"amount_inr": 100, "to": "EUR"}})
             assert r.status_code == 200 and r.json()["structuredContent"]["amount"] == 1.1
-            assert (await admin.get("/api/audit")).json()[0]["username"] == "admin"
+            row = (await admin.get("/api/audit")).json()[0]
+            assert row["username"] == "admin"
+            assert json.loads((await admin.get(f"/api/audit/{row['id']}")).json()["args"]) == {
+                "amount_inr": 100, "to": "EUR"}
+            # ...but never anyone else's.
+            assert row["id"] not in {e["id"] for e in (await member.get("/api/audit")).json()}
+            assert (await member.get(f"/api/audit/{row['id']}")).status_code == 404
 
             await admin.aclose()
             await member.aclose()
