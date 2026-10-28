@@ -205,30 +205,30 @@ grant access. The audit row is written before the call, so a crash still leaves 
 
 **Where:** `team-mcp-gateway/deploy/tls-prod.yaml`, `team-mcp-gateway/deploy/*-prod.yaml`
 
-- **Domains:** sslip.io wildcard hostnames on the VPS (`*.localhost` locally). Free, no DNS setup, and every new store gets a hostname the moment it is created.
-- **TLS:** cert-manager + Let's Encrypt (HTTP-01 through Traefik). Free and auto-renewing; each store gets its own certificate from an annotation on its Ingress.
+- **Domains:** sslip.io wildcard hostnames on the VPS (`*.localhost` locally); free, no DNS setup, and every new store gets a hostname instantly.
+- **TLS:** cert-manager + Let's Encrypt (HTTP-01 via Traefik); free, auto-renewing, and each store gets a certificate from its Ingress annotation.
 
 ### 2. How woo-mcp talks to the store
 
 **Where:** `team-mcp-gateway/services/woo-mcp/app/woo.py`
 
-- **WooCommerce REST API** with a scoped, revocable API key. WP-CLI was rejected: it needs shell or database access inside the store pod, far more privilege than the job needs.
-- **OAuth 1.0a signing:** traffic inside the cluster is plain HTTP, so every request is signed. The secret never crosses the network, and a captured request can't be replayed.
+- **WooCommerce REST API** with a scoped, revocable API key; WP-CLI would need shell or database access inside the store pod, far more privilege than needed.
+- **OAuth 1.0a signing:** in-cluster traffic is plain HTTP, so requests are signed; the secret never crosses the network and requests can't be replayed.
 
 ### 3. Security measures
 
 **Where:** `team-mcp-gateway/services/gateway/app/credentials.py`, `team-mcp-gateway/charts/*/templates/networkpolicy.yaml`, `team-mcp-gateway/charts/*/templates/rbac.yaml`
 
-- Upstream credentials are encrypted with Fernet, decrypted only in memory at call time, and never returned by any API.
-- Members start with zero tools; they get access only through team policies, per gateway and per tool.
-- New tools from an upstream stay hidden until an admin allows them.
-- A per-user rate limit, shared across all pods.
-- Write budgets per team; going over needs admin approval.
-- An SSRF check on every registered server URL, with an egress NetworkPolicy as a second line.
-- Default-deny NetworkPolicies per store: woo-mcp is reachable only from the gateway, MariaDB only from WordPress.
-- Least-privilege RBAC: only the control plane and the operator have Kubernetes identities.
-- Every pod runs non-root, with a read-only root filesystem, all capabilities dropped and seccomp on.
-- Secrets in every namespace are encrypted at rest.
+- Upstream credentials encrypted with Fernet, decrypted only in memory at call time, never returned by any API.
+- Members start with zero tools; access only through team policies, per gateway and per tool.
+- New upstream tools stay hidden until an admin allows them.
+- Per-user rate limit across all pods.
+- Write budgets per team, with admin approval when exceeded.
+- SSRF check on registered URLs, plus an egress NetworkPolicy as backup.
+- Default-deny NetworkPolicies per store; woo-mcp reachable only from the gateway, MariaDB only from WordPress.
+- Least-privilege RBAC: only the control plane and operator have Kubernetes identities.
+- Non-root, read-only root filesystem, all capabilities dropped, seccomp on every pod.
+- All namespaces secrets are encrypted at rest.
 
 ### 4. Production pipeline (GHCR + Argo CD)
 
@@ -259,26 +259,31 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/gateway/app/teams.py`
 
+**Problem:** one gateway serves several stores and several teams (finance and accounting, marketing and support, store operators), and each team should reach only the tools it needs.
+
 - Admins create teams and add members.
-- Each team has a tool policy: which upstream tools it may use, on which gateway.
-- A member can use every tool any of their teams allows, minus tools an admin has denied to that member.
-- Changes take effect on the next call, on every pod.
+- Each team gets a tool policy: which upstream tools it may use, per gateway.
+- A member's access is the union of their teams' tools, minus any per-member denies set by an admin.
+- Changes apply on the next call on every pod.
 
 ### 7. Rate limit and write budget
 
 **Where:** `team-mcp-gateway/services/gateway/app/approvals.py`
 
-- **Rate limit:** calls per user per minute, counted across all pods; applies to read-only tools too.
-- **Write budget:** how many items a member may change with one tool in a rolling hour (the strictest of their teams wins). Going over doesn't just fail: the call becomes an approval request for an admin.
-- **Why:** in testing, an agent kept repeating batched write calls on its own. A rate limit can't catch that (each call is legal), but a write budget can.
+**Problem:** an external AI agent can get stuck in a loop of batched write calls while still staying under the global rate limit. So each team gets a write budget over a rolling window, and going over it needs an admin's approval.
+
+- **Rate limit:** per user per minute, shared across all pods; covers read-only tools.
+- **Write budget:** per member and tool, per rolling hour (strictest of their teams); going over turns the call into an admin approval request.
 
 ### 8. PII guardrails
 
 **Where:** `team-mcp-gateway/services/gateway/app/pii.py`
 
-- One filter runs over every tool result; it is switched on or off per gateway and changes apply at once.
+**Problem:** customers' personal data in tool results ends up in the external AI's context, which is a serious data leak.
+
+- One filter over every tool result, per gateway (on/off, applied at once).
 - Three rule types: regex patterns, JSON keys masked at any depth, and single fields ticked per tool in the dashboard.
-- Default rules are seeded on first start; admins can add or delete any rule.
+- Defaults are seeded on first start; admins can add or delete any rule.
 
 **Video:** https://youtu.be/dmNZf4ZWjEo
 
@@ -286,9 +291,9 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/store-operator/`
 
-- Creating a store in the dashboard only writes a `Store` custom resource; the operator does the rest.
+- Creating a store makes a `Store` custom resource; the operator does the rest.
 - The operator creates a namespace with default-deny NetworkPolicies and generated credentials, then Helm-installs WordPress/WooCommerce and woo-mcp.
-- Once WordPress is ready, it registers the store's MCP server with the gateway. Each owner can create only a capped number of stores.
+- It waits for WordPress to be ready and registers the store's MCP server; each owner has a store cap.
 
 **Video:** https://youtu.be/5LdM9Yth_N4
 
@@ -296,8 +301,10 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/woo-mcp/app/server.py`
 
-- `get_abandoned_carts` lists the products sitting in abandoned carts: price, cost, margin, how many carts hold them and the largest safe discount. No customer data is returned.
-- `create_cart_offers` puts those products on a time-limited sale. Every offer needs admin approval and is checked again against the store's cost floor before it runs.
+**Problem:** abandoned carts are lost sales and keep bloating `wp_woocommerce_sessions`. Recover them with targeted, time-limited discounts on the products in those carts, and track the conversion rate.
+
+- `get_abandoned_carts` lists products in abandoned carts with price, cost, margin, cart count and the max safe discount; no customer data.
+- `create_cart_offers` puts them on a time-limited sale; every offer needs admin approval and is rechecked against the store's cost floor.
 
 **Video:** https://youtu.be/UCnPN6Uindg
 
@@ -305,8 +312,10 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/woo-mcp/app/server.py`
 
-- `get_inventory_health` shows, per product: stock, sales per day, days of stock left, reorder quantity and cash tied up, plus a status (out of stock, at risk, healthy or overstock).
-- `create_restock_plan` raises a purchase order and `create_clearance_offers` discounts overstock; both need admin approval.
+**Problem:** high-demand products run out of stock while low-demand products pile up. With your external agent and a target budget, you get a plan to restock the first and put clearance offers on the second.
+
+- `get_inventory_health` shows per-product stock, sales per day, days left, reorder quantity and cash tied up, with a status: out of stock, at risk, healthy or overstock.
+- `create_restock_plan` creates a purchase order; `create_clearance_offers` discounts overstock; both need admin approval.
 
 **Video:** https://youtu.be/ytZ5Q8L_Afg
 
@@ -314,30 +323,24 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/gateway/app/kube.py`, `team-mcp-gateway/services/dashboard/src/Metrics.jsx`
 
-- CPU and memory per store, read from metrics-server.
-- Shown live for each store on the dashboard's **Reports** page.
+- Per-store CPU and memory from metrics-server.
+- Shown live per store on the dashboard's **Reports** page.
 
-### 13. Gateway-provided tools
+### 13. Tools provided by the gateway itself
 
-**Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`, `team-mcp-gateway/services/gateway/app/upstream.py`
+**Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`
 
-Besides the upstream tools, the gateway serves four tools of its own, named `gateway__<tool>`. No real server may use the name `gateway`.
+- `gateway__request_approval`: asks an admin to approve a call that is over the write budget, with the exact arguments and a summary.
+- `gateway__wait_for_approval`: waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected.
+- `gateway__list_team_alerts`: lists alerts for the caller's teams (open, done or all).
+- `gateway__mark_team_alert_done`: marks an alert handled; teammates see who did it.
 
-| Tool                            | What it does                                                                                                                             |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway__request_approval`     | Files an approval request for a call over the write budget, with the exact arguments and a summary for the admin.                        |
-| `gateway__wait_for_approval`    | Waits (up to ~25 s per call) for the admin's decision; returns the tool's result once approved and run, or the admin's note if rejected. |
-| `gateway__list_team_alerts`     | Lists alerts for the caller's teams: open, done or all.                                                                                  |
-| `gateway__mark_team_alert_done` | Marks an alert handled; teammates see who did it.                                                                                        |
+**Why I built them:**
 
-**Why they exist:**
-
-- **Approvals:** a write budget that only refused calls would leave the agent stuck. With these tools, the agent asks for approval, explains why, and gets the real result once an admin approves; the gateway itself runs the frozen call as the requester, so the agent can't change the arguments afterwards.
-- **Alerts:** one team's action often needs another team to act (a purchase order from `create_restock_plan` means the warehouse team must receive goods). An admin sets a rule on the Teams page ("alert this team when `<tool>` succeeds on `<gateway>`"), and every successful matching call opens an alert, PII-masked, for that team's members and their agents.
-- They run inside the gateway, so they get the same audit and rate limit as any other call, with no extra server to deploy.
+- **Approvals:** a write budget that only refused calls would leave the agent stuck. With these tools the agent asks for approval, explains why, and gets the real result once an admin approves. The gateway runs the saved call itself, so the arguments can't change after approval.
+- **Alerts:** one team's action often needs another team to act (a purchase order from `create_restock_plan` means the store operators must receive the goods). An admin sets a rule on the **Teams** page ("alert this team when `<tool>` succeeds on `<gateway>`"), and every matching successful call opens a PII-masked alert for that team.
 
 **Where they are shown:**
 
-- In `tools/list` for every MCP client (Claude, Claude Code, the chat agent), next to the store tools. Members get all four; admins get only the two alert tools, since admins approve rather than request.
-- They are listed only when the caller has at least one upstream tool, and always, regardless of budgets: MCP clients keep the tool list from connect time, so a budget added later still works.
-- On the dashboard's **Alerts** page: admins approve or reject pending requests there, and every member sees and marks done their team alerts. Each call also shows in the audit log.
+- In `tools/list` for every MCP client (Claude, Claude Code, the dashboard chat), next to the store tools. Members get all four; admins get only the two alert tools.
+- On the dashboard's **Alerts** page: admins approve or reject requests, and members see their team alerts and mark them done. Every call also appears in the audit log.
