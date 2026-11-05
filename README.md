@@ -197,8 +197,6 @@ grant access. The audit row is written before the call, so a crash still leaves 
 
 > **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
 
-> **Username:** `admin` · **Password:** `admin@1234`
-
 > MCP-Gateway Manager Intro Video : https://youtu.be/6eaWvSC3Jjw
 
 ### 1. Domains and TLS
