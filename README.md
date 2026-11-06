@@ -4,14 +4,29 @@
   <img src="MCP-Gateway.png" alt="MCP-Gateway-Manager architecture" width="800">
 </p>
 
+> [!IMPORTANT]
+> **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
+>
+> **MCP-Gateway Manager Intro Video:** https://youtu.be/6eaWvSC3Jjw
+
+---
+
 ## Local setup (k3d)
 
-Needs Docker, k3d, kubectl, Helm, Python 3. Run in `team-mcp-gateway/`.
+**Needs:** Docker, k3d, kubectl, Helm, Python 3.
+**Run in:** `team-mcp-gateway/`.
+
+### Step 1 — Create the cluster
 
 ```sh
 k3d cluster create store-check -p "80:80@loadbalancer" && kubectl create namespace mercora
+```
 
-# Secrets (random, none in git); omit OPENROUTER_API_KEY to run without chat
+### Step 2 — Create Secrets
+
+Random, none in git. Omit `OPENROUTER_API_KEY` to run without chat.
+
+```sh
 APP_PW=$(openssl rand -hex 16)
 kubectl -n mercora create secret generic gateway-db --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
   --from-literal=APP_PASSWORD=$APP_PW --from-literal=DATABASE_URL=postgresql://gateway:$APP_PW@db-postgres:5432/gateway
@@ -19,32 +34,55 @@ kubectl -n mercora create secret generic gateway-admin --from-literal=SETUP_TOKE
   --from-literal=OPENROUTER_API_KEY=sk-or-...
 kubectl -n mercora create secret generic gateway-credentials \
   --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+```
 
-# Images (tags = chart defaults)
+### Step 3 — Build and import images
+
+Tags = chart defaults.
+
+```sh
 helm dependency build charts/store
 docker build -t gateway:0.10.4 services/gateway
 docker build -t dashboard:0.9.8 services/dashboard
 docker build -t woo-mcp:0.5.0 services/woo-mcp
 docker build -t store-operator:0.7.5 -f services/store-operator/Dockerfile .
 k3d image import -c store-check gateway:0.10.4 dashboard:0.9.8 woo-mcp:0.5.0 store-operator:0.7.5
+```
 
+### Step 4 — Install Postgres, gateway and dashboard
+
+```sh
 helm upgrade --install db      charts/postgres  -n mercora -f deploy/postgres-values-local.yaml --wait
 helm upgrade --install team    charts/gateway   -n mercora -f deploy/gateway-values-local.yaml --set seedServer.url= --wait
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-local.yaml --wait
+```
 
-# First admin: open http://dash.localhost, enter this token, org name, admin login
+### Step 5 — Create the first admin
+
+Open http://dash.localhost, enter this token, org name, admin login:
+
+```sh
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
+```
 
-# Operator: dashboard → API keys → create "store-operator", paste it below
+### Step 6 — Install the operator
+
+Dashboard → **API keys** → create `store-operator`, paste it below:
+
+```sh
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-local.yaml --wait
 kubectl -n mercora get pods
 ```
 
-Then: **Stores** → create `shop1` (`catalog-a`, Ready in ~5–10 min at http://shop1.localhost) →
-**Gateways** → create `prod` → **Servers** → tick `shop1` → **Save** (MCP at http://prod.gw.localhost/mcp) → **Teams** → give members tools.
+### Step 7 — Then, in the dashboard
 
-Tests:
+1. **Stores** → create `shop1` (`catalog-a`, Ready in ~5–10 min at http://shop1.localhost).
+2. **Gateways** → create `prod`.
+3. **Servers** → tick `shop1` → **Save** (MCP at http://prod.gw.localhost/mcp).
+4. **Teams** → give members tools.
+
+### Tests
 
 ```sh
 (cd services/woo-mcp && uv run pytest -q tests/tests_woo_mcp.py)
@@ -53,12 +91,15 @@ docker run -d --name gw-test-pg -e POSTGRES_PASSWORD=t -p 5433:5432 postgres:17-
 (cd services/gateway && TEST_DATABASE_URL=postgresql://postgres:t@127.0.0.1:5433/postgres uv run pytest -q)
 ```
 
+---
+
 ## VPS setup (k3s)
 
-One Ubuntu VPS (2 vCPU, 8 GB, x86_64), ports 22/80/443 open. Hostnames from sslip.io, certificates from
-Let's Encrypt. IPv6-only/LXC hosts and troubleshooting: `docs/deploy-vps.md`.
+- **Server:** one Ubuntu VPS (2 vCPU, 8 GB, x86_64), ports 22/80/443 open.
+- **Hostnames** from sslip.io, **certificates** from Let's Encrypt.
+- IPv6-only/LXC hosts and troubleshooting: `docs/deploy-vps.md`.
 
-**VPS** — k3s, Helm, cert-manager:
+### Step 1 — On the VPS: k3s, Helm, cert-manager
 
 ```sh
 curl -sfL https://get.k3s.io | sh -
@@ -68,56 +109,88 @@ helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true --wait
 ```
 
-**Laptop** (in `team-mcp-gateway/`; needs Docker with buildx, Helm, rsync) — set domain, build amd64 images, copy:
+### Step 2 — On the laptop: set domain, build amd64 images, copy
+
+**Run in:** `team-mcp-gateway/`. **Needs:** Docker with buildx, Helm, rsync.
+
+**a. Set the domain**
 
 ```sh
 VPS_IP=203.0.113.7; BASE=203-0-113-7.sslip.io     # IP with dashes + .sslip.io; on Linux use sed -i without ''
 sed -i '' "s/2001-41d0-303-2774--94\.sslip\.io/$BASE/g" deploy/*-prod.yaml
 sed -i '' "s/email: .*#/email: you@yourmail.com  #/" deploy/tls-prod.yaml      # Let's Encrypt notices; not example.*
 sed -i '' '/^tailnetDomain:/d' deploy/gateway-values-prod.yaml                # Tailscale off (on: docs/deploy-vps.md)
+```
 
+**b. Build amd64 images**
+
+```sh
 helm dependency build charts/store && mkdir -p /tmp/img
 b() { docker buildx build --platform linux/amd64 -o type=docker,dest=/tmp/img/$1.tar -t $1:$2 "${@:3}"; }
 b gateway 0.10.4 services/gateway; b dashboard 0.9.8 services/dashboard; b woo-mcp 0.5.0 services/woo-mcp
 b store-operator 0.7.5 -f services/store-operator/Dockerfile .
+```
 
+**c. Copy to the VPS**
+
+```sh
 rsync -a --exclude .git --exclude node_modules --exclude .venv ./ root@$VPS_IP:/opt/team-mcp-gateway/
 scp /tmp/img/*.tar root@$VPS_IP:/tmp/
 ssh root@$VPS_IP 'for f in /tmp/*.tar; do k3s ctr images import $f; done'
 ```
 
-**VPS** — TLS, Secrets, install:
+### Step 3 — On the VPS: TLS, Secrets, install
+
+**a. TLS** — wait for READY True (~2 min), then Ctrl-C:
 
 ```sh
 cd /opt/team-mcp-gateway
-kubectl apply -f deploy/tls-prod.yaml && kubectl -n kube-system get certificate -w   # wait for READY True (~2 min), Ctrl-C
+kubectl apply -f deploy/tls-prod.yaml && kubectl -n kube-system get certificate -w
+```
 
+**b. Secrets** — same three Secrets as local: `gateway-db`, `gateway-admin`, `gateway-credentials` (copy those commands from local Step 2):
+
+```sh
 kubectl create namespace mercora
-# Same three Secrets as local: gateway-db, gateway-admin, gateway-credentials (copy those commands)
+```
 
+**c. Install Postgres, gateway and dashboard**
+
+```sh
 helm upgrade --install db      charts/postgres  -n mercora -f deploy/postgres-values-prod.yaml --wait
 helm upgrade --install team    charts/gateway   -n mercora -f deploy/gateway-values-prod.yaml --set seedServer.url= --wait
 helm upgrade --install team-ui charts/dashboard -n mercora -f deploy/dashboard-values-prod.yaml --wait
+```
 
-# First admin right away (setup is public until done): https://dash.$BASE
+**d. First admin right away** (setup is public until done) at `https://dash.$BASE`:
+
+```sh
 kubectl -n mercora get secret gateway-admin -o jsonpath='{.data.SETUP_TOKEN}' | base64 -d; echo
+```
 
-# Dashboard → API keys → create "store-operator", paste it below
+**e. Operator** — Dashboard → **API keys** → create `store-operator`, paste it below:
+
+```sh
 kubectl -n mercora create secret generic store-operator-gateway --from-literal=GATEWAY_API_KEY='mcpg_...'
 helm upgrade --install store-operator charts/store-operator -n mercora -f deploy/store-operator-values-prod.yaml --wait
 kubectl get pods -A; kubectl get certificate -A
 ```
 
-Then: **Stores** → create a store (`https://<name>.$BASE`) → **Gateways** → create `prod` with public URL
-`https://prod.gw.$BASE` (turns on OAuth for Claude), attach the store.
+### Step 4 — Then, in the dashboard
 
-Updates from the laptop: `scripts/deploy-vps.sh` (shows changes, asks, then builds, copies, imports, runs every
-`helm upgrade`; set `VPS`, `PORT`, `KEY`). Rollback: `docs/upgrades.md`.
+1. **Stores** → create a store (`https://<name>.$BASE`).
+2. **Gateways** → create `prod` with public URL `https://prod.gw.$BASE` (turns on OAuth for Claude), attach the store.
+
+### Updates and rollback
+
+- **Updates from the laptop:** `scripts/deploy-vps.sh` (shows changes, asks, then builds, copies, imports, runs every `helm upgrade`; set `VPS`, `PORT`, `KEY`).
+- **Rollback:** `docs/upgrades.md`.
+
+---
 
 ## Using the online store
 
-Dashboard: `https://dash.2001-41d0-303-2774--94.sslip.io` (local: `http://dash.localhost`). Log in with your gateway
-username and password.
+**Dashboard:** `https://dash.2001-41d0-303-2774--94.sslip.io` (local: `http://dash.localhost`). Log in with your gateway username and password.
 
 ### Create and open a store
 
@@ -134,70 +207,75 @@ username and password.
 
 ### Connect an external MCP client
 
-1. **Gateways** → **Copy** the gateway's MCP URL. No gateway yet? Enter slug + name → **Create gateway** →
-   **Servers** → tick the store → **Save**.
+1. **Gateways** → **Copy** the gateway's MCP URL.
+   No gateway yet? Enter slug + name → **Create gateway** → **Servers** → tick the store → **Save**.
 2. **API keys** → create a key and copy it (shown once, `mcpg_...`).
-3. Claude Code:
-   ```sh
-   claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."
-   ```
-   claude.ai / Claude Desktop: **Settings** → **Connectors** → **Add custom connector** → paste the MCP URL →
-   **Connect** → sign in with your gateway username and password.
+3. Connect your client:
+   - **Claude Code:**
+     ```sh
+     claude mcp add --transport http shop <MCP URL> --header "Authorization: Bearer mcpg_..."
+     ```
+   - **claude.ai / Claude Desktop:** **Settings** → **Connectors** → **Add custom connector** → paste the MCP URL → **Connect** → sign in with your gateway username and password.
 4. **API keys** → **Connected apps** lists connected clients; **Disconnect** revokes one.
 
-The client sees only the tools its teams allow on that gateway, named `<store>__<tool>`.
+> The client sees only the tools its teams allow on that gateway, named `<store>__<tool>`.
 
 ### Use the chat agent
 
 1. **Chat** → pick the gateway.
-2. Ask in plain language: "Today's orders in shop1?", "Which products are low on stock?", "Best sellers over the
-   last 30 days".
-3. For any change (new product, order update, refund) it shows the exact call; nothing is written until you click
-   **Confirm**.
+2. Ask in plain language: "Today's orders in shop1?", "Which products are low on stock?", "Best sellers over the last 30 days".
+3. For any change (new product, order update, refund) it shows the exact call; nothing is written until you click **Confirm**.
+
+---
 
 ## Design and trade-offs
 
-| Choice                                       | Why                                                                                                                                                                                                                                                                                                              | Trade-off                                                                  |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token.                                               | More moving parts; each edge has its own 30 s tool cache.                  |
-| Stateless edges and chat                     | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | No server push (e.g. tools-changed notifications).                         |
-| One central Postgres                         | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request.                                                                                                                                                             | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
-| Write budgets + admin approval               | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure.                                                                                                                                                                                            | A big job waits for an admin.                                              |
+| Choice | Why | Trade-off |
+| --- | --- | --- |
+| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache. |
+| Stateless edges and chat | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | No server push (e.g. tools-changed notifications). |
+| One central Postgres | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request. | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
+| Write budgets + admin approval | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure. | A big job waits for an admin. |
 
-**Routing:** every 30 s each edge fetches `tools/list` from its enabled servers in parallel (5 s timeout each) and
-caches it. Tools are named `<server>__<tool>`; `tools/list` is served from cache, filtered by the caller's policy.
-`tools/call` finds the server from the name, re-checks permission, rate limit and budget, adds the upstream credential
-server-side, and audits.
+### Routing
 
-**Failures:** a dead upstream costs 5 s in the background loop, never on a request, and shows as Unreachable with the
-reason. Each call has a 10 s timeout and fails alone. Permission is checked live on every call, so a stale cache can't
-grant access. The audit row is written before the call, so a crash still leaves a trace.
+Every 30 s each edge fetches `tools/list` from its enabled servers in parallel (5 s timeout each) and caches it. Tools are named `<server>__<tool>`; `tools/list` is served from cache, filtered by the caller's policy. `tools/call` finds the server from the name, re-checks permission, rate limit and budget, adds the upstream credential server-side, and audits.
 
-**Threat model:**
+### Failures
 
-- Shared credentials: a member never sees the key, but can do anything its allowed tools do with it, and upstream sees
-  one identity; only the gateway audit says who. Echoed keys are scrubbed from results; personal identity fixes this.
-- Client tokens are never forwarded upstream: a gateway token sent on would let any upstream replay it against the
-  gateway or other servers, and the upstream would trust a token not meant for it.
-- Untrusted upstreams: tool descriptions reach the model as written (only a `[server]` prefix), so a malicious one can
-  steer it. Only admins add servers, tools are allow-listed one by one, and writes in chat need a click to Confirm.
-- Member vs member: no access to another's keys or credentials, audit is admin-only, limits and budgets are per member.
-  On a shared credential, though, one member's writes (prices, refunds) change the same store everyone uses.
+A dead upstream costs 5 s in the background loop, never on a request, and shows as Unreachable with the reason. Each call has a 10 s timeout and fails alone. Permission is checked live on every call, so a stale cache can't grant access. The audit row is written before the call, so a crash still leaves a trace.
 
-**Production:** same charts, only `*-local.yaml` → `*-prod.yaml` values change.
+### Threat model
 
-- DNS: `*.localhost` → sslip.io (VPS) → a real domain.
-- Ingress: Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect.
-- Storage: `local-path` (one node's disk) → replicated or cloud block storage, with backups.
-- Secrets: created by hand, never in charts → k3s secrets encryption or Vault/KMS; rotate `CREDENTIALS_KEY` with MultiFernet.
+- **Shared credentials:** a member never sees the key, but can do anything its allowed tools do with it, and upstream sees one identity; only the gateway audit says who. Echoed keys are scrubbed from results; personal identity fixes this.
+- **Client tokens are never forwarded upstream:** a gateway token sent on would let any upstream replay it against the gateway or other servers, and the upstream would trust a token not meant for it.
+- **Untrusted upstreams:** tool descriptions reach the model as written (only a `[server]` prefix), so a malicious one can steer it. Only admins add servers, tools are allow-listed one by one, and writes in chat need a click to Confirm.
+- **Member vs member:** no access to another's keys or credentials, audit is admin-only, limits and budgets are per member. On a shared credential, though, one member's writes (prices, refunds) change the same store everyone uses.
+
+### Production
+
+Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
+
+| Area | Local → VPS → Next |
+| --- | --- |
+| DNS | `*.localhost` → sslip.io (VPS) → a real domain. |
+| Ingress | Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect. |
+| Storage | `local-path` (one node's disk) → replicated or cloud block storage, with backups. |
+| Secrets | Created by hand, never in charts → k3s secrets encryption or Vault/KMS; rotate `CREDENTIALS_KEY` with MultiFernet. |
+
+---
 
 <h2 align="center">Stand Out Features (Optional)</h2>
 
-> [!IMPORTANT]
-
-> **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
-
-> MCP-Gateway Manager Intro Video : https://youtu.be/6eaWvSC3Jjw
+| # | Feature | # | Feature |
+| --- | --- | --- | --- |
+| 1 | Domains and TLS | 8 | PII guardrails |
+| 2 | How woo-mcp talks to the store | 9 | Store provisioning |
+| 3 | Security measures | 10 | Cart recovery (targeted cart discounts) |
+| 4 | Production pipeline (GHCR + Argo CD) | 11 | Inventory optimization |
+| 5 | OAuth server for Claude custom connector | 12 | Observability metrics |
+| 6 | Tool and team provisioning | 13 | Tools provided by the gateway itself |
+| 7 | Rate limit and write budget | | |
 
 ### 1. Domains and TLS
 
@@ -240,7 +318,7 @@ grant access. The audit row is written before the call, so a crash still leaves 
 6. CI writes the new tag into `deploy/*-prod.yaml` and commits it.
 7. Argo CD sees the Git change, renders the Helm chart with the prod values and syncs the k3s cluster.
 
-Git is the single source of truth: GHCR holds immutable images, Argo CD keeps the cluster matching Git.
+> Git is the single source of truth: GHCR holds immutable images, Argo CD keeps the cluster matching Git.
 
 ### 5. OAuth server for Claude custom connector
 
@@ -328,10 +406,12 @@ Git is the single source of truth: GHCR holds immutable images, Argo CD keeps th
 
 **Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`
 
-- `gateway__request_approval`: asks an admin to approve a call that is over the write budget, with the exact arguments and a summary.
-- `gateway__wait_for_approval`: waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected.
-- `gateway__list_team_alerts`: lists alerts for the caller's teams (open, done or all).
-- `gateway__mark_team_alert_done`: marks an alert handled; teammates see who did it.
+| Tool | What it does |
+| --- | --- |
+| `gateway__request_approval` | Asks an admin to approve a call that is over the write budget, with the exact arguments and a summary. |
+| `gateway__wait_for_approval` | Waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected. |
+| `gateway__list_team_alerts` | Lists alerts for the caller's teams (open, done or all). |
+| `gateway__mark_team_alert_done` | Marks an alert handled; teammates see who did it. |
 
 **Why I built them:**
 
