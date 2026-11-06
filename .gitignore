@@ -36,3 +36,4 @@ dist/
 # Helm dependency archives
 team-mcp-gateway/charts/*/charts/
 *.local.yaml
+MODIFICATIONS.md
