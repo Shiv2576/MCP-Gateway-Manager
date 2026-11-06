@@ -252,13 +252,14 @@ def housekeep(conn, run_timeout: float) -> None:
 async def builtin(ups, user: dict, gateway_slug: str, tool: str, arguments: dict,
                   client: str | None) -> tuple[CallToolResult, int | None, str | None]:
     """A gateway__* call: the result, the approval it concerns, and what to audit as its error."""
+    # Database work in a worker thread, so a slow query never stalls the event loop.
     if tool == "request_approval":
-        return request(ups, user, gateway_slug, arguments, client)
+        return await anyio.to_thread.run_sync(request, ups, user, gateway_slug, arguments, client)
     if tool == "wait_for_approval":
         return await wait(ups, user, arguments)
     from . import alerts
 
-    if (result := alerts.builtin(ups.db, user, tool, arguments)) is not None:
+    if (result := await anyio.to_thread.run_sync(alerts.builtin, ups.db, user, tool, arguments)) is not None:
         return result, None, "bad input" if result.is_error else None
     return upstream.error_result(f"Unknown tool '{BUILTIN}__{tool}'. Tools are named <server>__<tool>."), None, "unknown tool"
 
@@ -317,34 +318,42 @@ def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | N
     ), aid, None
 
 
+def _poll(ups, user: dict, aid: int):
+    """One look at the approval: (its status, the final answer or None while it is still open)."""
+    housekeep(ups.db, ups.approval_timeout)
+    row = ups.db.execute("SELECT * FROM approvals WHERE id = ? AND user_id = ?", (aid, user["id"])).fetchone()
+    if row is None:  # someone else's id answers like a missing one
+        return None, (_text(f"Unknown approval #{aid}.", error=True), None, "unknown approval")
+    status = row["status"]
+    if status in ("executed", "failed"):
+        # Handed out once: the UPDATE that clears it is the one that delivers it.
+        got = ups.db.execute(
+            "UPDATE approvals a SET result = NULL FROM (SELECT id, result FROM approvals"
+            " WHERE id = ? AND result IS NOT NULL FOR UPDATE) old WHERE a.id = old.id RETURNING old.result",
+            (aid,)).fetchone()
+        if got is None:
+            return status, (_text(f"Approval #{aid} {status}; its result was already delivered or has expired."), aid, None)
+        result = CallToolResult.model_validate_json(got["result"])
+        return status, (result, aid, status if result.is_error else None)
+    if status == "rejected":
+        note = f" Note from the admin: {row['note']}" if row["note"] else ""
+        return status, (_text(f"Approval #{aid} was rejected.{note} New requests for {row['tool']} are locked until "
+                              f"{_clock(row['decided_at'] + LOCK_SECONDS)}; your hourly budget still works.",
+                              error=True), aid, "rejected")
+    if status == "expired":
+        return status, (_text(f"Approval #{aid} expired: no admin decided within 24 hours.", error=True), aid, "expired")
+    return status, None
+
+
 async def wait(ups, user: dict, arguments: dict):
     aid = arguments.get("id")
     if type(aid) is not int:
         return _text("Pass {\"id\": <approval id>}.", error=True), None, "bad input"
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
-        housekeep(ups.db, ups.approval_timeout)
-        row = ups.db.execute("SELECT * FROM approvals WHERE id = ? AND user_id = ?", (aid, user["id"])).fetchone()
-        if row is None:  # someone else's id answers like a missing one
-            return _text(f"Unknown approval #{aid}.", error=True), None, "unknown approval"
-        status = row["status"]
-        if status in ("executed", "failed"):
-            # Handed out once: the UPDATE that clears it is the one that delivers it.
-            got = ups.db.execute(
-                "UPDATE approvals a SET result = NULL FROM (SELECT id, result FROM approvals"
-                " WHERE id = ? AND result IS NOT NULL FOR UPDATE) old WHERE a.id = old.id RETURNING old.result",
-                (aid,)).fetchone()
-            if got is None:
-                return _text(f"Approval #{aid} {status}; its result was already delivered or has expired."), aid, None
-            result = CallToolResult.model_validate_json(got["result"])
-            return result, aid, status if result.is_error else None
-        if status == "rejected":
-            note = f" Note from the admin: {row['note']}" if row["note"] else ""
-            return _text(f"Approval #{aid} was rejected.{note} New requests for {row['tool']} are locked until "
-                         f"{_clock(row['decided_at'] + LOCK_SECONDS)}; your hourly budget still works.",
-                         error=True), aid, "rejected"
-        if status == "expired":
-            return _text(f"Approval #{aid} expired: no admin decided within 24 hours.", error=True), aid, "expired"
+        status, done = await anyio.to_thread.run_sync(_poll, ups, user, aid)
+        if done is not None:
+            return done
         if time.monotonic() >= deadline:
             return _text(f"Approval #{aid} still {status}; call gateway__wait_for_approval again."), aid, None
         await anyio.sleep(POLL_SECONDS)

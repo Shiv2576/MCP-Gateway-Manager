@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -42,6 +43,8 @@ class Status:
     tools: list[Tool] = field(default_factory=list)
     error: str | None = None
     checked_at: float | None = None
+    ok_at: float | None = None  # last successful check
+    failures: int = 0  # failed checks in a row
 
 
 def error_result(text: str) -> CallToolResult:
@@ -54,6 +57,7 @@ WITHHELD = {
 }
 NO_RESULT = "no result recorded: still running, or the gateway stopped mid-call"
 PAYLOAD_CAP = 65_536  # characters of a result kept in the audit log
+STALE_TOOLS_S = 300  # a down server keeps listing its last good tools this long, then drops them
 
 
 def _scrub(result: CallToolResult, headers: dict) -> CallToolResult:
@@ -145,6 +149,7 @@ class Upstreams:
         self.approval_timeout = approval_timeout
         self.status: dict[int, Status] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._retrying: set[int] = set()  # servers with a recheck already scheduled
 
     def _attached(self) -> set[int] | None:
         """Server ids attached to this edge's gateway, for its health loop;
@@ -160,35 +165,70 @@ class Upstreams:
     # ------------------------------------------------------------ health loop
 
     async def refresh_one(self, row: dict) -> None:
+        prev = self.status.get(row["id"])
         status = Status(checked_at=time.time())
         headers = shared_headers(row, self.vault)
         if headers is None:
             status.state, status.error = "unreachable", f"Server '{row['name']}': {UNREADABLE_SHARED}."
-            self.status[row["id"]] = status
-            return
-        try:
-            with anyio.fail_after(self.list_timeout):
-                async with connect(row, self.list_timeout, headers) as client:
-                    tools, cursor = [], None
-                    while True:
-                        page = await client.list_tools(cursor=cursor)
-                        tools += page.tools
-                        cursor = page.next_cursor
-                        if not cursor:
-                            break
-            status.state = "ok"
-            status.tools = [t for t in tools if TOOL_NAME.match(row["name"] + SEP + t.name)]
-            if len(status.tools) < len(tools):
-                status.error = f"{len(tools) - len(status.tools)} tool(s) hidden: name too long or invalid"
-        except Exception as exc:  # any failure only marks this one server down
-            status.state = "unreachable"
-            status.error = describe_failure(row["name"], exc, self.list_timeout)
+        else:
+            try:
+                with anyio.fail_after(self.list_timeout):
+                    async with connect(row, self.list_timeout, headers) as client:
+                        tools, cursor = [], None
+                        while True:
+                            page = await client.list_tools(cursor=cursor)
+                            tools += page.tools
+                            cursor = page.next_cursor
+                            if not cursor:
+                                break
+                status.state, status.ok_at = "ok", status.checked_at
+                status.tools = [t for t in tools if TOOL_NAME.match(row["name"] + SEP + t.name)]
+                if len(status.tools) < len(tools):
+                    status.error = f"{len(tools) - len(status.tools)} tool(s) hidden: name too long or invalid"
+            except Exception as exc:  # any failure only marks this one server down
+                status.state = "unreachable"
+                status.error = describe_failure(row["name"], exc, self.list_timeout)
+        if status.state != "ok":
+            self._failed(row["id"], status, prev)
         self.status[row["id"]] = status
 
-    async def refresh_all(self) -> None:
+    def _failed(self, server_id: int, status: Status, prev: Status | None) -> None:
+        status.failures = (prev.failures if prev else 0) + 1
+        status.ok_at = prev.ok_at if prev else None
+        # Keep the last good list through a blip: clients keep the list they got at
+        # connect, so a tool hidden now stays hidden for their whole session.
+        if prev and status.ok_at and status.checked_at - status.ok_at < STALE_TOOLS_S:
+            status.tools = prev.tools
+        # Recheck sooner than the next tick: 0.5-1s, 1-2s, 4-8s ... with jitter so
+        # every pod and worker does not retry at once. The tick takes over past it.
+        delay = 2 ** (status.failures - 1) * random.uniform(0.5, 1.0)
+        if delay < self.refresh_interval and server_id not in self._retrying:
+            self._retrying.add(server_id)
+            task = asyncio.create_task(self._retry(server_id, delay))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _retry(self, server_id: int, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            self._retrying.discard(server_id)
+        if server_id not in self.status:  # deleted, detached or edited meanwhile
+            return
+        row = await anyio.to_thread.run_sync(self._enabled_row, server_id)
+        if row:
+            await self.refresh_one(row)
+
+    def _enabled_row(self, server_id: int) -> dict | None:
+        return self.db.execute("SELECT * FROM servers WHERE id = ? AND enabled = 1", (server_id,)).fetchone()
+
+    def _servers_to_check(self) -> list[dict]:
         rows = self.db.execute("SELECT * FROM servers WHERE enabled = 1").fetchall()
         attached = self._attached()
-        rows = [r for r in rows if attached is None or r["id"] in attached]
+        return [r for r in rows if attached is None or r["id"] in attached]
+
+    async def refresh_all(self) -> None:
+        rows = await anyio.to_thread.run_sync(self._servers_to_check)
         ids = {r["id"] for r in rows}
         for gone in self.status.keys() - ids:
             del self.status[gone]
@@ -197,12 +237,16 @@ class Upstreams:
         await asyncio.gather(*(self.refresh_one(r) for r in rows))
 
     async def run_forever(self) -> None:
-        while True:
-            try:
-                await self.refresh_all()
-            except Exception:
-                log.exception("refresh failed")
-            await asyncio.sleep(self.refresh_interval)
+        try:
+            while True:
+                try:
+                    await self.refresh_all()
+                except Exception:
+                    log.exception("refresh failed")
+                await asyncio.sleep(self.refresh_interval)
+        finally:  # shutdown: no retry may outlive the database connection
+            for task in list(self._tasks):
+                task.cancel()
 
     def read_only(self, server_id: int, tool: str) -> bool:
         """The upstream marks this tool read-only (MCP readOnlyHint). Unknown or not yet
@@ -231,7 +275,8 @@ class Upstreams:
 
     async def _redact(self, result: CallToolResult, server_id: int | None, tool: str, name: str):
         """The filtered result and its counts, or None and why. Only this call fails."""
-        rules = load_rules(self.db)
+        # Outside the filter's deadline: a slow database is not a slow filter.
+        rules = await anyio.to_thread.run_sync(load_rules, self.db)
         try:
             with anyio.fail_after(FILTER_TIMEOUT):
                 # A worker thread, so the event loop keeps serving other calls. The
@@ -249,9 +294,7 @@ class Upstreams:
     def refresh_soon(self, server_id: int) -> None:
         """After an admin adds or edits a server, check it now instead of at the next tick."""
         self.status.pop(server_id, None)
-        row = self.db.execute(
-            "SELECT * FROM servers WHERE id = ? AND enabled = 1", (server_id,)
-        ).fetchone()
+        row = self._enabled_row(server_id)
         if row:
             task = asyncio.create_task(self.refresh_one(row))
             self._tasks.add(task)
@@ -305,47 +348,55 @@ class Upstreams:
         if server_name == approvals.BUILTIN:
             return await self._builtin(user, gateway_slug, name, tool, arguments or {}, client)
         timeout = timeout or self.call_timeout
-        row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
         started = time.monotonic()
-        identity, headers = None, {}
-        # Written before the upstream is called, so a pod that dies mid-call still
-        # leaves a row; the UPDATE below replaces this with the outcome.
-        audit_id = self.db.execute(
-            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error, approval_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?) RETURNING id",
-            (time.time(), user["id"], user["username"], name, row["name"] if row else None, gateway_slug, NO_RESULT,
-             approval_id),
-        ).fetchone()["id"]
-        allowed = allowed_tools(self.db, user, gateway_slug)
-        names = allowed.get(row["id"], set()) if row else set()
-        if approval_id is None and self._over_limit(user["id"]):
-            result = error_result(f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly.")
-        elif not sep or not tool or row is None or row["id"] not in allowed or (names is not None and tool not in names):
-            # The same answer as for a tool that does not exist: hidden stays hidden.
-            result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
-        elif not row["enabled"]:
-            result = error_result(f"Server '{server_name}' is disabled.")
-        elif approval_id is None and (over := approvals.charge(
-                self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
-            # Over budget: ask an admin right away. request() keeps one open request per member
-            # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
-            filed, _, code = approvals.request(self, user, gateway_slug, {"tool": name, "arguments": arguments or {}}, client)
-            result = error_result(over if code == "bad input" else f"{over} {filed.content[0].text}")
-        else:
-            headers, identity, refusal = self._credential(user, gateway_slug, row)
-            if refusal:
-                result = error_result(refusal)
+
+        # The database work before and after the upstream call runs in a worker thread
+        # (psycopg here is synchronous), so a slow query never stalls the event loop
+        # and with it every other request on this pod.
+        def prepare():
+            row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
+            identity, headers, result = None, {}, None
+            # Written before the upstream is called, so a pod that dies mid-call still
+            # leaves a row; the UPDATE below replaces this with the outcome.
+            audit_id = self.db.execute(
+                "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error, approval_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?) RETURNING id",
+                (time.time(), user["id"], user["username"], name, row["name"] if row else None, gateway_slug, NO_RESULT,
+                 approval_id),
+            ).fetchone()["id"]
+            allowed = allowed_tools(self.db, user, gateway_slug)
+            names = allowed.get(row["id"], set()) if row else set()
+            if approval_id is None and self._over_limit(user["id"]):
+                result = error_result(f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly.")
+            elif not sep or not tool or row is None or row["id"] not in allowed or (names is not None and tool not in names):
+                # The same answer as for a tool that does not exist: hidden stays hidden.
+                result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
+            elif not row["enabled"]:
+                result = error_result(f"Server '{server_name}' is disabled.")
+            elif approval_id is None and (over := approvals.charge(
+                    self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
+                # Over budget: ask an admin right away. request() keeps one open request per member
+                # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
+                filed, _, code = approvals.request(self, user, gateway_slug, {"tool": name, "arguments": arguments or {}}, client)
+                result = error_result(over if code == "bad input" else f"{over} {filed.content[0].text}")
             else:
-                try:
-                    with anyio.fail_after(timeout):
-                        async with connect(row, timeout, headers) as upstream:
-                            result = await upstream.call_tool(tool, arguments or {})
-                except Exception as exc:
-                    result = error_result(describe_failure(server_name, exc, timeout))
+                headers, identity, refusal = self._credential(user, gateway_slug, row)
+                if refusal:
+                    result = error_result(refusal)
+            return row, audit_id, headers, identity, result
+
+        row, audit_id, headers, identity, result = await anyio.to_thread.run_sync(prepare)
+        if result is None:
+            try:
+                with anyio.fail_after(timeout):
+                    async with connect(row, timeout, headers) as upstream:
+                        result = await upstream.call_tool(tool, arguments or {})
+            except Exception as exc:
+                result = error_result(describe_failure(server_name, exc, timeout))
 
         result = _scrub(result, headers)  # for the caller too, whatever the PII setting
         filtered, pii = await self._redact(result, row and row["id"], tool, name)
-        if self._protected(gateway_slug):
+        if await anyio.to_thread.run_sync(self._protected, gateway_slug):
             result = filtered or error_result(WITHHELD[next(iter(pii))])
             logged, masked_for_log = result, False
         else:  # the caller gets the unmasked result; the log still keeps only a masked copy
@@ -359,31 +410,36 @@ class Upstreams:
         if result.is_error:
             error = (" ".join(c.text for c in logged.content if isinstance(c, TextContent))[:500]
                      if logged else "error text not kept: the PII filter failed")
-        self.db.execute(
-            "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, identity = ?,"
-            " pii = ?, payload = ?, payload_masked_for_log = ?, args = ? WHERE id = ?",
-            (
-                0 if result.is_error else 1,
-                int((time.monotonic() - started) * 1000),
-                error,
-                identity,
-                json.dumps(pii) if pii else None,
-                _payload(logged),
-                masked_for_log,
-                masked_args.content[0].text[:PAYLOAD_CAP] if masked_args else None,
-                audit_id,
-            ),
-        )
-        if not result.is_error and logged is not None and row is not None:
-            from . import alerts  # here, like approvals: avoids an import cycle through api
+        duration_ms = int((time.monotonic() - started) * 1000)
 
-            listed = next((t for t in self.status.get(row["id"], Status()).tools if t.name == tool), None)
-            try:
-                alerts.fire(self.db, user=user, gateway_slug=gateway_slug, server_id=row["id"], tool=tool,
-                            title=(listed and (listed.title or (listed.annotations and listed.annotations.title))) or tool,
-                            arguments=arguments or {}, result=logged, approval_id=approval_id, audit_id=audit_id)
-            except Exception:
-                log.exception("team alert for %s failed", name)  # the caller gets their result either way
+        def finish():
+            self.db.execute(
+                "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, identity = ?,"
+                " pii = ?, payload = ?, payload_masked_for_log = ?, args = ? WHERE id = ?",
+                (
+                    0 if result.is_error else 1,
+                    duration_ms,
+                    error,
+                    identity,
+                    json.dumps(pii) if pii else None,
+                    _payload(logged),
+                    masked_for_log,
+                    masked_args.content[0].text[:PAYLOAD_CAP] if masked_args else None,
+                    audit_id,
+                ),
+            )
+            if not result.is_error and logged is not None and row is not None:
+                from . import alerts  # here, like approvals: avoids an import cycle through api
+
+                listed = next((t for t in self.status.get(row["id"], Status()).tools if t.name == tool), None)
+                try:
+                    alerts.fire(self.db, user=user, gateway_slug=gateway_slug, server_id=row["id"], tool=tool,
+                                title=(listed and (listed.title or (listed.annotations and listed.annotations.title))) or tool,
+                                arguments=arguments or {}, result=logged, approval_id=approval_id, audit_id=audit_id)
+                except Exception:
+                    log.exception("team alert for %s failed", name)  # the caller gets their result either way
+
+        await anyio.to_thread.run_sync(finish)
         return result
 
     async def _builtin(self, user, gateway_slug: str, name: str, tool: str, arguments: dict, client):
@@ -392,21 +448,27 @@ class Upstreams:
         from . import approvals
 
         started = time.monotonic()
-        audit_id = self.db.execute(
-            "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error)"
-            " VALUES (?, ?, ?, ?, NULL, ?, 0, 0, ?) RETURNING id",
-            (time.time(), user["id"], user["username"], name, gateway_slug, NO_RESULT),
-        ).fetchone()["id"]
-        if tool != "wait_for_approval" and self._over_limit(user["id"]):
+
+        def start():  # in a worker thread, like call_tool's database work
+            audit_id = self.db.execute(
+                "INSERT INTO audit_log (at, user_id, username, tool, server, gateway, ok, duration_ms, error)"
+                " VALUES (?, ?, ?, ?, NULL, ?, 0, 0, ?) RETURNING id",
+                (time.time(), user["id"], user["username"], name, gateway_slug, NO_RESULT),
+            ).fetchone()["id"]
+            return audit_id, tool != "wait_for_approval" and self._over_limit(user["id"])
+
+        audit_id, limited = await anyio.to_thread.run_sync(start)
+        if limited:
             result, aid, error = error_result(
                 f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly."), None, "rate limited"
         else:
             result, aid, error = await approvals.builtin(self, user, gateway_slug, tool, arguments, client)
-        self.db.execute(
+        duration_ms = int((time.monotonic() - started) * 1000)
+        await anyio.to_thread.run_sync(lambda: self.db.execute(
             "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, approval_id = ? WHERE id = ?",
-            (0 if result.is_error else 1, int((time.monotonic() - started) * 1000),
+            (0 if result.is_error else 1, duration_ms,
              error or ("result not logged" if result.is_error else None), aid, audit_id),
-        )
+        ))
         return result
 
     def _credential(self, user, gateway_slug: str, row: dict) -> tuple[dict, str | None, str | None]:

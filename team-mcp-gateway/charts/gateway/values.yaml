@@ -11,6 +11,10 @@ mode: control
 # Edge only: which gateway this release serves.
 slug: ""
 replicas: 1
+# Edge only: uvicorn worker processes per pod (WEB_CONCURRENCY). Each is a full copy
+# of the app with its own tool cache and health loop. The control plane always runs
+# one: its login throttle and server status live in process memory.
+edgeWorkers: 2
 
 # Secret with DATABASE_URL (key) for the shared Postgres. Both modes.
 dbSecret: gateway-db

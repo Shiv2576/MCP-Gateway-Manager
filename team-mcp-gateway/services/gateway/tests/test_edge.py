@@ -161,3 +161,30 @@ def test_oauth_token_works_only_at_the_gateway_it_was_issued_for(db_url):
                 assert (await mcp.list_tools()).tools == []  # accepted; nothing attached
 
     asyncio.run(run())
+
+
+def test_slow_database_does_not_freeze_the_edge(db_url, monkeypatch):
+    """Database work runs in worker threads: while one request waits on a slow query,
+    the same edge still answers /healthz at once (and so passes its liveness probe)."""
+    from app import api
+
+    create_app(Settings(database_url=db_url, credentials_key=KEY, setup_token=SETUP))  # creates the schema
+    lookup = api.user_for_api_key
+
+    def slow_lookup(conn, key):
+        time.sleep(1.0)  # a query stuck behind a lock or a busy disk
+        return lookup(conn, key)
+
+    monkeypatch.setattr(api, "user_for_api_key", slow_lookup)
+
+    async def run():
+        with serve(create_app(edge_settings(db_url, "prod"))) as edge:
+            async with httpx2.AsyncClient(base_url=edge, timeout=10) as http:
+                stuck = asyncio.create_task(http.post("/mcp", headers={"Authorization": "Bearer gw_nope"}, json={}))
+                await asyncio.sleep(0.2)  # the /mcp request is now inside the slow lookup
+                started = time.monotonic()
+                assert (await http.get("/healthz")).status_code == 200
+                assert time.monotonic() - started < 0.3
+                assert (await stuck).status_code == 401
+
+    asyncio.run(run())

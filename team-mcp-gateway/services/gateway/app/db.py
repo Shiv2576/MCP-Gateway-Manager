@@ -316,8 +316,10 @@ class _Conn:
 
 
 class Db:
-    # shortcut: synchronous queries inside async handlers; fine at in-cluster
-    # latency for a demo, move to psycopg.AsyncConnection if p99 matters.
+    # shortcut: synchronous psycopg. The hot paths (/mcp auth, tools/list, tools/call,
+    # approvals, readyz, logins, the health loop) call it from worker threads; the
+    # dashboard's /api handlers still call it on the event loop. Move to
+    # psycopg.AsyncConnection if those ever carry real load.
     def __init__(self, url: str, timeout: float):
         self.pool = ConnectionPool(
             url, min_size=1, max_size=10, timeout=timeout, open=True,

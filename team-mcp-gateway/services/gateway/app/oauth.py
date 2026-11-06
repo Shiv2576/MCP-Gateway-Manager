@@ -17,6 +17,7 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
+import anyio
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
@@ -228,7 +229,8 @@ async def login(request: Request) -> Response:
     error, status = "", 200
     if request.method == "POST":
         try:
-            user = api.check_password(request, str(form.get("username", "")).strip(), str(form.get("password", "")))
+            user = await anyio.to_thread.run_sync(  # scrypt: off the event loop
+                api.check_password, request, str(form.get("username", "")).strip(), str(form.get("password", "")))
         except api.HTTPError as e:
             error, status = f'<p class="error" role="alert">{html.escape(e.message.capitalize())}.</p>', e.status
         else:

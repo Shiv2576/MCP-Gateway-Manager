@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import anyio
 from mcp.server.auth.routes import build_resource_metadata_url
 from mcp.server.auth.settings import (
     AuthSettings,
@@ -153,10 +154,9 @@ class ApiKeyGuard:
             auth = dict(scope["headers"]).get(b"authorization", b"").decode("latin-1")
             user = None
             if auth.lower().startswith("bearer "):
-                token = auth[7:].strip()
-                user = api.user_for_api_key(self._conn, token)
-                if user is None and self._resource:
-                    user = oauth.user_for_oauth_token(self._conn, token, self._resource)
+                # A worker thread: the lookup is a synchronous query, and the event loop
+                # must keep serving other requests (and /healthz) while it runs.
+                user = await anyio.to_thread.run_sync(self._user_for, auth[7:].strip())
             if user is None:
                 response = JSONResponse(
                     {"error": "a valid API key or OAuth token is required"},
@@ -168,13 +168,21 @@ class ApiKeyGuard:
             scope.setdefault("state", {})["user"] = user
         await self._app(scope, receive, send)
 
+    def _user_for(self, token: str) -> dict | None:
+        user = api.user_for_api_key(self._conn, token)
+        if user is None and self._resource:
+            user = oauth.user_for_oauth_token(self._conn, token, self._resource)
+        return user
+
 
 def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route]):
     """/mcp for one gateway's attached servers, plus OAuth when PUBLIC_URL is set."""
 
     async def on_list_tools(ctx, params) -> ListToolsResult:
         return ListToolsResult(
-            tools=upstreams.list_tools(ctx.request.state.user, settings.gateway_slug)
+            tools=await anyio.to_thread.run_sync(
+                upstreams.list_tools, ctx.request.state.user, settings.gateway_slug
+            )
         )
 
     async def on_call_tool(ctx, params) -> CallToolResult:
@@ -293,21 +301,24 @@ def create_app(
     async def healthz(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
-    async def readyz(_: Request) -> Response:
+    def ready() -> bool:
         # An edge is ready only while its gateway exists; both need the database.
         try:
             if edge:
-                ok = (
+                return (
                     conn.execute(
                         "SELECT 1 FROM gateways WHERE slug = ?",
                         (settings.gateway_slug,),
                     ).fetchone()
                     is not None
                 )
-            else:
-                ok = conn.execute("SELECT 1").fetchone() is not None
+            return conn.execute("SELECT 1").fetchone() is not None
         except Exception:
-            ok = False
+            return False
+
+    async def readyz(_: Request) -> Response:
+        # In a worker thread: a dead database must not freeze /healthz on the same loop.
+        ok = await anyio.to_thread.run_sync(ready)
         return JSONResponse(
             {"status": "ok" if ok else "not ready"}, status_code=200 if ok else 503
         )

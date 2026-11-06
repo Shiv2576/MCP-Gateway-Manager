@@ -16,6 +16,7 @@ import socket
 import time
 from urllib.parse import urlsplit
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -46,8 +47,10 @@ class LoginThrottle:
     Counted per username, not per address: behind the ingress (or a tunnel)
     every client has the same address. The cost is that someone can lock a
     user out for the window by guessing wrong on purpose.
-    shortcut: in memory, so a restart clears it and replicas would not share it
-    (the gateway runs one replica); move to the database if that changes.
+    shortcut: in memory, so a restart clears it and processes do not share it. The
+    control plane runs one process; each edge runs replicas x WEB_CONCURRENCY
+    workers, so its OAuth sign-in allows that many times the limit. Move to the
+    database if that matters.
     """
 
     def __init__(self, limit: int = 5, window_s: float = 900):
@@ -205,7 +208,8 @@ def session_response(request: Request, user: dict, status: int = 200) -> JSONRes
 @handler
 async def login(request: Request) -> Response:
     data = await body(request)
-    user = check_password(request, _str(data, "username"), _str(data, "password"))
+    # scrypt costs ~50 ms of CPU: a worker thread keeps the event loop serving others.
+    user = await anyio.to_thread.run_sync(check_password, request, _str(data, "username"), _str(data, "password"))
     return session_response(request, user)
 
 
