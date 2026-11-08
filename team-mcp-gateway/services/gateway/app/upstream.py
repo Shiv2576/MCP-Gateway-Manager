@@ -62,6 +62,9 @@ WITHHELD = {
 }
 CANCELLED = "cancelled by the client"
 NO_RESULT = "no result recorded: still running, or the gateway stopped mid-call"
+# audit_log.outcome. "asked": the gateway put a question to the user instead of calling.
+OUTCOMES = ("ok", "tool_error", "timeout", "unreachable", "rate_limited", "denied", "over_budget",
+            "asked", "cancelled")
 PAYLOAD_CAP = 65_536  # characters of a result kept in the audit log
 STALE_TOOLS_S = 300  # a down server keeps listing its last good tools this long, then drops them
 
@@ -377,7 +380,7 @@ class Upstreams:
         # and with it every other request on this pod.
         def prepare():
             row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
-            identity, headers, result, note = None, {}, None, None
+            identity, headers, result, note, outcome = None, {}, None, None, None
             # Written before the upstream is called, so a pod that dies mid-call still
             # leaves a row; the UPDATE below replaces this with the outcome.
             audit_id = self.db.execute(
@@ -390,19 +393,25 @@ class Upstreams:
             names = allowed.get(row["id"], set()) if row else set()
             if approval_id is None and self._over_limit(user["id"]):
                 result = error_result(f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly.")
+                outcome = "rate_limited"
             elif not sep or not tool or row is None or row["id"] not in allowed or (names is not None and tool not in names):
                 # The same answer as for a tool that does not exist: hidden stays hidden.
-                result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
+                result, outcome = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>."), "denied"
             elif not row["enabled"]:
-                result = error_result(f"Server '{server_name}' is disabled.")
+                result, outcome = error_result(f"Server '{server_name}' is disabled."), "denied"
             # After the policy checks, before charging: asking charges nothing.
             elif approval_id is None and ask and (asked := self._confirm(ask, user, gateway_slug, row, tool, name,
                                                                           arguments or {}, client)):
                 result, note = asked
+                # A question; a refusal (declined, or an answer for another call); or a filed approval.
+                outcome = "asked" if isinstance(result, InputRequiredResult) else "denied" if note else "over_budget"
             elif approval_id is None and (over := approvals.charge(
                     self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
+                outcome = "over_budget"
                 if ask and (asked := self._reason(ask, user, gateway_slug, row, tool, name, arguments or {}, over)):
                     result, note = asked  # budget used up since the confirmation: ask for a reason
+                    if isinstance(result, InputRequiredResult):
+                        outcome = "asked"
                 else:
                     # Over budget: ask an admin right away. request() keeps one open request per member
                     # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
@@ -412,13 +421,13 @@ class Upstreams:
             else:
                 headers, identity, refusal = self._credential(user, gateway_slug, row)
                 if refusal:
-                    result = error_result(refusal)
-            return row, audit_id, headers, identity, result, note
+                    result, outcome = error_result(refusal), "denied"
+            return row, audit_id, headers, identity, result, note, outcome
 
-        row, audit_id, headers, identity, result, note = await anyio.to_thread.run_sync(prepare)
+        row, audit_id, headers, identity, result, note, outcome = await anyio.to_thread.run_sync(prepare)
         if isinstance(result, InputRequiredResult):  # a question: no upstream, PII or alert step
             await anyio.to_thread.run_sync(lambda: self.db.execute(
-                "UPDATE audit_log SET error = ?, duration_ms = ? WHERE id = ?",
+                "UPDATE audit_log SET error = ?, duration_ms = ?, outcome = 'asked' WHERE id = ?",
                 (note, int((time.monotonic() - started) * 1000), audit_id)))
             return result
         if result is None:
@@ -428,13 +437,15 @@ class Upstreams:
                         result = await upstream.call_tool(tool, arguments or {}, progress_callback=progress)
             except Exception as exc:
                 result = error_result(describe_failure(server_name, exc, timeout))
+                timed_out = isinstance(_root_cause(exc), (TimeoutError, httpx2.TimeoutException))
+                outcome = "timeout" if timed_out else "unreachable"
             except anyio.get_cancelled_exc_class():
                 # The client closed the call's stream. The upstream connection is already closed
                 # by the unwinding; the audit row must not stay NO_RESULT, and it keeps counting
                 # against the budget (approvals._window).
                 with anyio.CancelScope(shield=True):
                     await anyio.to_thread.run_sync(lambda: self.db.execute(
-                        "UPDATE audit_log SET error = ?, duration_ms = ? WHERE id = ?",
+                        "UPDATE audit_log SET error = ?, duration_ms = ?, outcome = 'cancelled' WHERE id = ?",
                         (CANCELLED, int((time.monotonic() - started) * 1000), audit_id)))
                 raise
 
@@ -459,7 +470,7 @@ class Upstreams:
         def finish():
             self.db.execute(
                 "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, identity = ?,"
-                " pii = ?, payload = ?, payload_masked_for_log = ?, args = ? WHERE id = ?",
+                " pii = ?, payload = ?, payload_masked_for_log = ?, args = ?, outcome = ? WHERE id = ?",
                 (
                     0 if result.is_error else 1,
                     duration_ms,
@@ -469,6 +480,7 @@ class Upstreams:
                     _payload(logged),
                     masked_for_log,
                     masked_args.content[0].text[:PAYLOAD_CAP] if masked_args else None,
+                    outcome or ("tool_error" if result.is_error else "ok"),
                     audit_id,
                 ),
             )
@@ -505,7 +517,7 @@ class Upstreams:
             return self._reason(ask, user, gateway_slug, row, tool, name, arguments, over)
         kind = ask.state.get("ask")
         if kind not in ("confirm", "reason") or ask.state.get("call") != interaction.call_hash(name, arguments):
-            return error_result("This answer was given for a different call. Call the tool again."), None
+            return error_result("This answer was given for a different call. Call the tool again."), "answer for another call"
         if kind == "reason":
             answer = interaction.accepted(ask, "reason")
             if answer is None or not answer.content:
@@ -552,11 +564,13 @@ class Upstreams:
                 f"Too many calls: at most {self.calls_per_minute} per minute. Try again shortly."), None, "rate limited"
         else:
             result, aid, error = await approvals.builtin(self, user, gateway_slug, tool, arguments, client)
+        outcome = "rate_limited" if limited else "denied" if error == "unknown tool" else (
+            "tool_error" if result.is_error else "ok")
         duration_ms = int((time.monotonic() - started) * 1000)
         await anyio.to_thread.run_sync(lambda: self.db.execute(
-            "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, approval_id = ? WHERE id = ?",
+            "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, approval_id = ?, outcome = ? WHERE id = ?",
             (0 if result.is_error else 1, duration_ms,
-             error or ("result not logged" if result.is_error else None), aid, audit_id),
+             error or ("result not logged" if result.is_error else None), aid, outcome, audit_id),
         ))
         return result
 

@@ -271,6 +271,25 @@ CREATE TABLE IF NOT EXISTS team_alerts (
     done_at      DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS team_alerts_open ON team_alerts (team_id, done_at);
+-- What became of a call (upstream.OUTCOMES); NULL while it runs. Older rows are
+-- classified once, from ok and the error text.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'audit_log' AND column_name = 'outcome') THEN
+        ALTER TABLE audit_log ADD COLUMN outcome TEXT;
+        UPDATE audit_log SET outcome = CASE
+            WHEN ok = 1 THEN 'ok'
+            WHEN position('no result recorded' in error) = 1 THEN NULL
+            WHEN position('Too many calls' in error) = 1 THEN 'rate_limited'
+            WHEN position('did not answer within' in error) > 0 THEN 'timeout'
+            WHEN position('Upstream ' in error) = 1 THEN 'unreachable'
+            WHEN position('Unknown tool' in error) = 1 OR position('declined by the user' in error) = 1 THEN 'denied'
+            WHEN position('budget' in error) > 0 THEN 'over_budget'
+            ELSE 'tool_error' END;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS audit_outcome ON audit_log (outcome, id);
+CREATE INDEX IF NOT EXISTS audit_user ON audit_log (user_id, id);
 """
 
 

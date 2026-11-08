@@ -49,7 +49,8 @@ def seal_shared_credentials(conn, vault: Vault) -> None:
 def _audit(conn, user: dict, action: str, server: str) -> None:
     """Who changed which credential and when; never the value."""
     conn.execute(
-        "INSERT INTO audit_log (at, user_id, username, tool, server, ok, duration_ms) VALUES (?, ?, ?, ?, ?, 1, 0)",
+        "INSERT INTO audit_log (at, user_id, username, tool, server, ok, duration_ms, outcome)"
+        " VALUES (?, ?, ?, ?, ?, 1, 0, 'ok')",
         (time.time(), user["id"], user["username"], f"credential:{action}", server),
     )
 

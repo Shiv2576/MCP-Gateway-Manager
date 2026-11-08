@@ -318,6 +318,21 @@ def test_the_whole_gateway(db_url):
             mine = (await member.get("/api/audit")).json()  # a member sees their own calls
             assert mine and {e["username"] for e in mine} == {"bob"}
 
+            # Each row says what became of the call, and can be filtered on it.
+            by_tool = {e["tool"]: e["outcome"] for e in reversed(log)}
+            assert by_tool["slow__list"] == "timeout" and by_tool["nope"] == "denied"
+            assert by_tool["fx__list"] == "ok"
+            timeouts = (await admin.get("/api/audit?outcome=timeout")).json()
+            assert [e["tool"] for e in timeouts] == ["slow__list"]
+            assert (await admin.get("/api/audit?outcome=bogus")).status_code == 400
+            assert {e["tool"] for e in (await admin.get("/api/audit?tool=fx__list&user=bob")).json()} == {"fx__list"}
+            assert (await admin.get("/api/audit?user=nobody")).json() == []
+            assert (await admin.get(f"/api/audit?since={log[0]['at'] + 1}")).json() == []
+            # Keyset paging: two pages of 2 are the first 4 rows, in order.
+            first = (await admin.get("/api/audit?limit=2")).json()
+            second = (await admin.get(f"/api/audit?limit=2&before_id={first[-1]['id']}")).json()
+            assert [e["id"] for e in first + second] == [e["id"] for e in log[:4]]
+
             # Revoke the key: the next MCP request is refused.
             key_id = (await member.get("/api/keys")).json()[0]["id"]
             assert (await member.delete(f"/api/keys/{key_id}")).status_code == 200
@@ -365,6 +380,8 @@ def test_rate_limit_per_user(db_url):
             assert "Unknown tool" in text(await ups.call_tool(alice, "main", "x__y", {}))
         assert "Too many calls" in text(await ups.call_tool(alice, "main", "x__y", {}))
         assert "Unknown tool" in text(await ups.call_tool(bob, "main", "x__y", {}))
+        outcomes = [r["outcome"] for r in ups.db.execute("SELECT outcome FROM audit_log ORDER BY id").fetchall()]
+        assert outcomes == ["denied", "denied", "rate_limited", "denied"]
 
     asyncio.run(run())
 

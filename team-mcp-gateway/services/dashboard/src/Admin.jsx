@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { api, when } from './api.js'
 import { ask } from './confirm.jsx'
 import { PasswordInput } from './App.jsx'
@@ -311,8 +311,49 @@ function pretty(s) {
   }
 }
 
+const PAGE = 100
+const OUTCOMES = ['ok', 'tool_error', 'timeout', 'unreachable', 'rate_limited', 'denied', 'over_budget', 'asked', 'cancelled']
+const SINCE = [['', 'Any time'], ['3600', 'Last hour'], ['86400', 'Last 24 h'], ['604800', 'Last 7 days']]
+
+function outcomeOf(r) {
+  if (r.outcome) return r.outcome
+  if (r.error?.startsWith('no result recorded')) return 'running'
+  return r.ok ? 'ok' : 'error'
+}
+
 export function Audit() {
-  const [rows, load, error] = useLoad('/audit?limit=200')
+  const [f, setF] = useState({ user: '', server: '', tool: '', outcome: '', since: '' })
+  const [rows, setRows] = useState([])
+  const [more, setMore] = useState(false)
+  const [error, setError] = useState('')
+  const query = (extra) => {
+    const q = new URLSearchParams({ limit: PAGE, ...extra })
+    for (const k of ['user', 'server', 'tool', 'outcome']) if (f[k].trim()) q.set(k, f[k].trim())
+    if (f.since) q.set('since', Date.now() / 1000 - Number(f.since))
+    return q
+  }
+  const current = useRef(f) // drops a reply for filters that have since changed
+  current.current = f
+  // replace: a new filter. Otherwise refresh the first page, keeping older pages already loaded.
+  const load = useCallback((replace) => {
+    const asked = f
+    api(`/audit?${query()}`)
+      .then((fresh) => {
+        if (current.current !== asked) return
+        setError('')
+        if (replace) setMore(fresh.length === PAGE)
+        setRows((prev) => (replace || !fresh.length ? fresh : [...fresh, ...prev.filter((r) => r.id < fresh.at(-1).id)]))
+      })
+      .catch((e) => setError(e.message))
+  }, [f])
+  const older = () =>
+    api(`/audit?${query({ before_id: rows.at(-1).id })}`)
+      .then((page) => {
+        setRows((prev) => [...prev, ...page.filter((r) => r.id < prev.at(-1).id)])
+        setMore(page.length === PAGE)
+      })
+      .catch((e) => setError(e.message))
+  useEffect(() => load(true), [load])
   const [open, setOpen] = useState({}) // id -> full entry, or null while it loads
   const toggle = (id) => {
     if (id in open) {
@@ -325,7 +366,7 @@ export function Audit() {
       .catch((e) => setOpen((o) => (id in o ? { ...o, [id]: { error_loading: e.message } } : o)))
   }
   useEffect(() => {
-    const t = setInterval(load, 5000)
+    const t = setInterval(() => load(false), 5000)
     return () => clearInterval(t)
   }, [load])
 
@@ -333,11 +374,24 @@ export function Audit() {
     <>
       <div className="toolbar">
         <h2>Audit log</h2>
-        <button className="ghost" onClick={load}>
+        <button className="ghost" onClick={() => load(false)}>
           Refresh
         </button>
       </div>
       {error && <p className="error">{error}</p>}
+      <div className="row" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
+        {['user', 'server', 'tool'].map((k) => (
+          <input key={k} className="search" type="search" aria-label={`Filter by ${k}`} placeholder={`${k[0].toUpperCase()}${k.slice(1)}…`}
+            value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} style={{ maxWidth: 180 }} />
+        ))}
+        <select aria-label="Filter by outcome" value={f.outcome} onChange={(e) => setF({ ...f, outcome: e.target.value })}>
+          <option value="">All outcomes</option>
+          {OUTCOMES.map((o) => <option key={o} value={o}>{o.replace('_', ' ')}</option>)}
+        </select>
+        <select aria-label="Filter by time" value={f.since} onChange={(e) => setF({ ...f, since: e.target.value })}>
+          {SINCE.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+      </div>
       <table className="card">
         <thead>
           <tr>
@@ -378,7 +432,13 @@ export function Audit() {
                   <td className="mono">{r.tool}</td>
                   <td>{r.gateway || <span className="muted">—</span>}</td>
                   <td>{r.identity || <span className="muted">—</span>}</td>
-                  <td>{r.ok ? <span className="pill ok">ok</span> : <span className="pill bad" title={r.error}>error</span>} <span className="muted small">{r.error}</span></td>
+                  <td>
+                    {(() => {
+                      const o = outcomeOf(r)
+                      return <span className={o === 'ok' ? 'pill ok' : o === 'asked' || o === 'running' ? 'pill' : 'pill bad'} title={r.error}>{o.replace('_', ' ')}</span>
+                    })()}{' '}
+                    <span className="muted small">{r.error}</span>
+                  </td>
                   <td>
                     {r.pii ? Object.entries(JSON.parse(r.pii)).map(([n, c]) => <span key={n} className="pill">{n} {c}</span>) : <span className="muted">—</span>}
                     {r.payload_masked_for_log && <span className="pill bad" title="Member saw unmasked data; log copy masked">unmasked</span>}
@@ -407,8 +467,18 @@ export function Audit() {
               </Fragment>
             )
           })}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={10} className="muted">No calls match these filters.</td>
+            </tr>
+          )}
         </tbody>
       </table>
+      {more && (
+        <div className="row end">
+          <button className="ghost" onClick={older}>Load older</button>
+        </div>
+      )}
     </>
   )
 }

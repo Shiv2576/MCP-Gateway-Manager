@@ -44,3 +44,30 @@ def test_unreachable_database_fails_fast():
     except store.DatabaseUnavailable as e:
         assert "2s" in str(e)
     assert time.monotonic() - started < 6
+
+
+def test_old_audit_rows_get_an_outcome_once(db_url):
+    from app.upstream import NO_RESULT
+
+    db = store.connect(db_url)
+    db.execute("ALTER TABLE audit_log DROP COLUMN outcome")  # as before the column existed
+    old = [
+        (1, None, "ok"),
+        (0, "Too many calls: at most 2 per minute. Try again shortly.", "rate_limited"),
+        (0, "Upstream 'x' did not answer within 1s.", "timeout"),
+        (0, "Upstream 'x' is unreachable (ConnectError).", "unreachable"),
+        (0, "Unknown tool 'a'. Tools are named <server>__<tool>.", "denied"),
+        (0, "declined by the user", "denied"),
+        (0, "note needs an admin's approval: over the hourly budget of 20 items/hour.", "over_budget"),
+        (0, NO_RESULT, None),
+        (0, "order 7 not found", "tool_error"),
+    ]
+    db.executemany("INSERT INTO audit_log (at, username, tool, ok, duration_ms, error) VALUES (0, 'u', 't', ?, 0, ?)",
+                   [(ok, err) for ok, err, _ in old])
+    store.connect(db_url).close()
+    got = [r["outcome"] for r in db.execute("SELECT outcome FROM audit_log ORDER BY id")]
+    assert got == [want for *_, want in old]
+    db.execute("UPDATE audit_log SET outcome = 'ok' WHERE outcome IS NULL")  # a later start must not reclassify
+    store.connect(db_url).close()
+    assert [r["outcome"] for r in db.execute("SELECT outcome FROM audit_log ORDER BY id")][-2] == "ok"
+    db.close()

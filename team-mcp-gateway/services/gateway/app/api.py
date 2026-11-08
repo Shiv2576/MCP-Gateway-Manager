@@ -23,7 +23,7 @@ from starlette.routing import Route
 from . import db as store
 from . import events
 from .ssrf import OPERATOR_HOST, public
-from .upstream import Status, Upstreams
+from .upstream import OUTCOMES, Status, Upstreams
 
 SESSION_COOKIE = "gw_session"
 SESSION_TTL_S = 12 * 3600
@@ -626,19 +626,34 @@ async def call_tool(request: Request) -> Response:
 # --------------------------------------------------------------------- audit
 
 
-AUDIT_LIST = ("id, at, user_id, username, tool, server, gateway, ok, duration_ms, error, identity,"
+AUDIT_LIST = ("id, at, user_id, username, tool, server, gateway, ok, outcome, duration_ms, error, identity,"
               " pii, payload_masked_for_log")
+# query parameter -> condition; all are optional and combine with AND.
+AUDIT_FILTERS = {
+    "user": "username = ?", "server": "server = ?", "tool": "tool = ?", "gateway": "gateway = ?",
+    "outcome": "outcome = ?", "since": "at >= ?", "until": "at < ?", "before_id": "id < ?",
+}
 
 
 @handler
 async def audit(request: Request) -> Response:
-    user = current_user(request)  # members see only their own calls
+    """Newest first. Page with before_id = the last id of the previous page."""
+    user = current_user(request)
+    q = request.query_params
     try:
-        limit = min(int(request.query_params.get("limit", 100)), 1000)
+        limit = min(int(q.get("limit", 100)), 1000)
+        params = [float(q[k]) if k in ("since", "until") else int(q[k]) if k == "before_id" else q[k]
+                  for k in AUDIT_FILTERS if q.get(k)]
     except ValueError:
-        raise HTTPError(400, "limit must be a number") from None
+        raise HTTPError(400, "limit, before_id, since and until must be numbers") from None
+    conds = [c for k, c in AUDIT_FILTERS.items() if q.get(k)]
+    if q.get("outcome") and q["outcome"] not in OUTCOMES:
+        raise HTTPError(400, f"outcome must be one of: {', '.join(OUTCOMES)}")
+    if user["role"] != "admin":  # members see only their own calls
+        conds.append("user_id = ?")
+        params.append(user["id"])
+    where = f"WHERE {' AND '.join(conds)} " if conds else ""
     # Without payload: up to 64 KB each, fetched one row at a time by audit_entry.
-    where, params = ("", ()) if user["role"] == "admin" else ("WHERE user_id = ? ", (user["id"],))
     rows = request.app.state.db.execute(
         f"SELECT {AUDIT_LIST} FROM audit_log {where}ORDER BY id DESC LIMIT ?", (*params, limit)
     ).fetchall()

@@ -131,7 +131,7 @@ def test_closing_the_stream_cancels_the_call(db_url):
             saw_end = threading.Event()
             edge, key, admin = await steps_edge(db_url, stack, saw_end=saw_end)
             await cancel_slow_write(edge, key)
-            assert (await audit_error(admin))["error"] == "cancelled by the client"
+            assert (await audit_error(admin))["outcome"] == "cancelled"
             assert await asyncio.to_thread(saw_end.wait, 5)  # the upstream saw the request end
 
     asyncio.run(run())
@@ -169,6 +169,11 @@ def answering(action="accept", content=None):
     return cb, asked
 
 
+def note_outcomes(db_url):
+    with psycopg.connect(db_url) as c:
+        return [r[0] for r in c.execute("SELECT outcome FROM audit_log WHERE tool = 'st__note' ORDER BY id")]
+
+
 def note_audit(db_url):
     with psycopg.connect(db_url) as c:
         return c.execute("SELECT ok, error, items FROM audit_log WHERE tool = 'st__note' ORDER BY id").fetchall()
@@ -188,6 +193,7 @@ def test_accept_runs_the_write_once(db_url):
             rows = note_audit(db_url)
             assert [(x[0], x[1]) for x in rows] == [(0, "confirmation asked"), (1, None)]
             assert [x[2] is not None for x in rows] == [False, True]
+            assert note_outcomes(db_url) == ["asked", "ok"]
 
     asyncio.run(run())
 
@@ -203,6 +209,7 @@ def test_decline_runs_nothing_and_charges_nothing(db_url):
             assert r.content[0].text == DECLINED
             assert len(asked) == 1 and notes == []
             assert note_audit(db_url) == [(0, "confirmation asked", None), (0, "declined by the user", None)]
+            assert note_outcomes(db_url) == ["asked", "denied"]
 
     asyncio.run(run())
 
@@ -307,7 +314,7 @@ def test_state_for_another_call_is_refused():
                   {"ask": "reason", "call": call_hash("st__note", {"text": "other"})},
                   {"ask": "bogus", "call": call_hash("st__note", {"text": "hi"})}):
         r, note = ups._confirm(Ask(True, state, ACCEPT), {}, "main", row, "note", "st__note", {"text": "hi"})
-        assert r.is_error and note is None
+        assert r.is_error and note == "answer for another call"
     ok = {"ask": "confirm", "call": call_hash("st__note", {"text": "hi"})}
     assert ups._confirm(Ask(True, ok, ACCEPT), {}, "main", row, "note", "st__note", {"text": "hi"}) is None
     no = {"confirm": ElicitResult(action="accept", content={"confirm": False})}
@@ -337,6 +344,7 @@ def test_over_budget_asks_for_a_reason_and_files_it(db_url):
             [card] = await approvals_list(admin)
             assert card["summary"] == REASON and notes == []
             assert note_audit(db_url)[0] == (0, "reason asked", None)
+            assert note_outcomes(db_url) == ["asked", "over_budget"]
 
     asyncio.run(run())
 
