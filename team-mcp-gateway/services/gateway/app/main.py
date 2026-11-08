@@ -324,7 +324,7 @@ def create_app(
     if (
         not edge
     ):  # edges only read; the control plane owns the schema and its migrations
-        credentials.seal_shared_credentials(conn, vault)
+        credentials.upgrade_credentials(conn, vault)
 
     upstreams = Upstreams(
         conn,

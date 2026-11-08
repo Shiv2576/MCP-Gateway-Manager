@@ -82,7 +82,7 @@ def test_setup_registers_the_store_server_first(db_url):
             names = [s["name"] for s in (await c.get("/api/servers")).json()]
             assert names == ["woo-mcp", "aaa"]  # seeded one first, though "aaa" sorts before it
             row = app.state.db.execute("SELECT * FROM servers WHERE name = 'woo-mcp'").fetchone()
-            assert row["auth_header"] == "Authorization" and app.state.vault.open(row["auth_value"]) == "Bearer tok"
+            assert row["auth_header"] == "Authorization" and app.state.vault.open(row["auth_value"], server_id=row["id"], url=row["url"]) == "Bearer tok"
 
     asyncio.run(run())
 

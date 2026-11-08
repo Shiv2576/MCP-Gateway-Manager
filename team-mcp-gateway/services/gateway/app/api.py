@@ -570,15 +570,17 @@ async def create_server(request: Request) -> Response:
         raise HTTPError(400, "name: 'gateway' is reserved for the gateway's own tools")
     url = await _upstream_url(request, user, _str(data, "url"))
     header, value = _auth_fields(data)
-    value = value and request.app.state.vault.seal(value)
     store_name = _str(data, "store", required=False)
     conn = request.app.state.db
-    sid = conn.execute(
-        "INSERT INTO servers (name, url, auth_header, auth_value, enabled, store, personal_header, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        (name, url, header, value, 1 if data.get("enabled", True) else 0, store_name,
+    # The id first: the credential is sealed with it (credentials.Vault).
+    sid = conn.execute("SELECT nextval(pg_get_serial_sequence('servers', 'id')) AS id").fetchone()["id"]
+    value = value and request.app.state.vault.seal(value, server_id=sid, url=url)
+    conn.execute(
+        "INSERT INTO servers (id, name, url, auth_header, auth_value, enabled, store, personal_header, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (sid, name, url, header, value, 1 if data.get("enabled", True) else 0, store_name,
          personal_header(data.get("personal_header")), time.time()),
-    ).fetchone()["id"]
+    )
     request.app.state.upstreams.refresh_soon(sid)
     events.notify(conn, "*")
     row = conn.execute("SELECT * FROM servers WHERE id = ?", (sid,)).fetchone()
@@ -607,7 +609,10 @@ async def update_server(request: Request) -> Response:
     enabled = (1 if data["enabled"] else 0) if "enabled" in data else row["enabled"]
     if "auth" in data:
         header, value = _auth_fields(data)
-        value = value and request.app.state.vault.seal(value)
+        value = value and request.app.state.vault.seal(value, server_id=row["id"], url=url)
+    elif url != row["url"] and row["auth_value"]:
+        # A stored credential is sealed for this server's URL and never follows it elsewhere.
+        raise HTTPError(400, "the URL changed: enter the server's credential again (it isn't sent to a new address)")
     else:  # kept as stored, already sealed
         header, value = row["auth_header"], row["auth_value"]
     personal = personal_header(data["personal_header"]) if "personal_header" in data else row["personal_header"]

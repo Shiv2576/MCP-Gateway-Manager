@@ -18,7 +18,7 @@ edgeWorkers: 2
 
 # Secret with DATABASE_URL (key) for the shared Postgres. Both modes.
 dbSecret: gateway-db
-# Secret with CREDENTIALS_KEY (key): the Fernet key that encrypts members' own
+# Secret with CREDENTIALS_KEY (key): a Fernet-format key; the AES-GCM key that encrypts members' own
 # upstream credentials. Both modes; the gateway does not start without it.
 # Edges also need REQUEST_STATE_KEY (same Secret): seals requestState so any replica
 # can take an interactive call's retry. `openssl rand -base64 32`.

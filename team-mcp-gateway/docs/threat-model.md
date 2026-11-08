@@ -7,8 +7,11 @@ log). **Members** are trusted only with the tools their teams are given.
 ## Shared upstream credentials: what a member can do with a credential they never see
 
 A server's shared credential (a store's MCP token, an API key) is stored
-encrypted with Fernet (`CREDENTIALS_KEY`), decrypted only in memory just before
-a call, and added by the gateway to its own outgoing request. No API endpoint,
+encrypted with AES-256-GCM (key derived from `CREDENTIALS_KEY`), sealed with a
+label naming that server's id and URL (and, for a personal credential, the
+member), so someone with only database write access can't copy it to another
+row or point its server elsewhere: it no longer decrypts. It is decrypted only
+in memory just before a call, and added by the gateway to its own outgoing request. No API endpoint,
 page or log returns it; the API shows only `auth_header` and `has_credential`.
 
 So a member cannot read, copy or use it outside the gateway. Through the

@@ -106,6 +106,22 @@ still runs on: add tables and nullable columns, and rename or drop only a releas
 `schema-compat` job proves it by running the previous release's test suite on the new schema
 (`scripts/schema-compat.sh`), so a rollback finds a database it understands.
 
+One data change is one-way: the release that binds credentials to their server re-seals every
+stored credential in a format older code can't read, and keeps the old values in
+`credential_backup_v1`. Rolling back past it, put them back before (or right after) the old
+code starts, else its servers report "the stored credential cannot be read":
+
+```sh
+kubectl -n mercora exec -i db-postgres-0 -- psql -U postgres gateway <<'SQL'
+UPDATE servers s SET auth_value = b.value FROM credential_backup_v1 b
+  WHERE b.source = 'servers' AND b.server_id = s.id;
+UPDATE user_credentials u SET secret = b.value FROM credential_backup_v1 b
+  WHERE b.source = 'user_credentials' AND b.server_id = u.server_id AND b.user_id = u.user_id;
+SQL
+```
+
+Credentials added or changed after the upgrade have no old copy: enter those again.
+
 ## Notes
 
 - `helm ls` / `helm history` on the VPS stop changing for Argo-managed releases:

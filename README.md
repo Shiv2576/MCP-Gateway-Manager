@@ -296,7 +296,7 @@ Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
 **Where:** `team-mcp-gateway/services/gateway/app/credentials.py`, `team-mcp-gateway/charts/*/templates/networkpolicy.yaml`, `team-mcp-gateway/charts/*/templates/rbac.yaml`
 
-- Upstream credentials encrypted with Fernet, decrypted only in memory at call time, never returned by any API.
+- Upstream credentials encrypted with AES-256-GCM, each bound to its server's id and URL (and member, for personal ones), so a copied or redirected value doesn't decrypt; decrypted only in memory at call time, never returned by any API.
 - Members start with zero tools; access only through team policies, per gateway and per tool.
 - New upstream tools stay hidden until an admin allows them.
 - Per-user rate limit across all pods.

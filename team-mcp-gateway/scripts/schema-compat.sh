@@ -36,5 +36,8 @@ echo "== new code migrates template1"
 (cd "$new" && uv run --frozen python -c "import sys; from app import db; db.connect(sys.argv[1]).close()" "$template")
 
 echo "== previous release's tests, on the new schema"
-(cd "$old/services/gateway" && TEST_DATABASE_URL=$base uv run --frozen pytest -q -p no:cacheprovider)
+# test_migrations checks the migration runner on a fresh database at exactly its own version; here
+# every database starts at the newer version on purpose, so it isn't a compatibility test.
+(cd "$old/services/gateway" && TEST_DATABASE_URL=$base uv run --frozen pytest -q -p no:cacheprovider \
+  --ignore=tests/test_migrations.py)
 echo "== ok: $ref runs on this schema"

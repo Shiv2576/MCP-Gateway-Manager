@@ -79,6 +79,8 @@ def test_personal_identity(db_url):
             conn = store.connect(db_url, create_schema=False)
             audit = lambda: conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()  # noqa: E731
             vault = Vault(KEY)
+            echo_url = conn.execute("SELECT url FROM servers WHERE id = ?", (sid,)).fetchone()["url"]
+            mine = lambda value, uid: vault.seal(value, server_id=sid, url=echo_url, user_id=uid)  # noqa: E731
 
             async def whoami(key):
                 async with gateway_client(edge, key) as mcp:
@@ -105,9 +107,9 @@ def test_personal_identity(db_url):
                 assert len(calls) == before
 
                 # Each member's own value, and only it, even when calls overlap.
-                conn.execute("UPDATE user_credentials SET secret = ? WHERE user_id = ?", (vault.seal("bob-key"), bob_id))
+                conn.execute("UPDATE user_credentials SET secret = ? WHERE user_id = ?", (mine("bob-key", bob_id), bob_id))
                 conn.execute("INSERT INTO user_credentials (user_id, server_id, secret, updated_at) VALUES (?, ?, ?, 0)",
-                             (carol_id, sid, vault.seal("carol-key")))
+                             (carol_id, sid, mine("carol-key", carol_id)))
                 results = await asyncio.gather(*(whoami(k) for k in [bob, carol] * 20))
                 assert results == [(False, "bob-key|None"), (False, "carol-key|None")] * 20
                 assert (audit()["identity"], audit()["ok"]) == ("personal", 1)
@@ -173,8 +175,10 @@ def test_credentials_api(db_url, caplog):
             r = await bob.put(url, json={"value": "  bob-key "})
             assert r.status_code == 200 and r.json()["set"] is True and "bob-key" not in r.text
             conn = store.connect(db_url, create_schema=False)
-            secret = conn.execute("SELECT secret FROM user_credentials").fetchone()["secret"]
-            assert secret.startswith("gAAAAA") and Vault(KEY).open(secret) == "bob-key"
+            row = conn.execute("SELECT uc.secret, uc.user_id, s.url FROM user_credentials uc"
+                               " JOIN servers s ON s.id = uc.server_id").fetchone()
+            assert row["secret"].startswith("v2:")
+            assert Vault(KEY).open(row["secret"], server_id=sid, url=row["url"], user_id=row["user_id"]) == "bob-key"
             assert (await bob.put(url, json={"value": "bob-key-2"})).status_code == 200
 
             # The call goes out with it.
@@ -216,17 +220,19 @@ def test_shared_credential_is_encrypted_at_rest(db_url):
             key = (await admin.post("/api/keys", json={"name": "k"})).json()["key"]
             conn = store.connect(db_url, create_schema=False)
             stored = lambda: conn.execute("SELECT auth_value FROM servers WHERE id = ?", (sid,)).fetchone()["auth_value"]  # noqa: E731
-            assert SHARED not in stored() and Vault(KEY).open(stored()) == SHARED
+            url = conn.execute("SELECT url FROM servers WHERE id = ?", (sid,)).fetchone()["url"]
+            opened = lambda: Vault(KEY).open(stored(), server_id=sid, url=url)  # noqa: E731
+            assert SHARED not in stored() and opened() == SHARED
             with serve(create_app(edge_settings(db_url, "main"))) as edge:
                 await wait_tools(edge, key, 1)  # the echo's guard let the decrypted header in
 
             # A row from before encryption is sealed when the control plane starts.
             conn.execute("UPDATE servers SET auth_value = ? WHERE id = ?", (SHARED, sid))
             create_app(settings, gateways=FakeGateways())
-            assert Vault(KEY).open(stored()) == SHARED
+            assert opened() == SHARED
 
             # Sealed with another key: refused, never sent as garbage.
-            conn.execute("UPDATE servers SET auth_value = ? WHERE id = ?", (Vault(Fernet.generate_key().decode()).seal(SHARED), sid))
+            conn.execute("UPDATE servers SET auth_value = ? WHERE id = ?", (Vault(Fernet.generate_key().decode()).seal(SHARED, server_id=sid, url=url), sid))
             with serve(create_app(edge_settings(db_url, "main"))) as edge:
                 async with gateway_client(edge, key) as mcp:
                     r = await mcp.call_tool("echo__whoami", {})

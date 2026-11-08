@@ -75,12 +75,14 @@ async def setup(request: Request) -> Response:
             uid = store.create_user(tx, username, password, "admin")
             if seeding:
                 # Same transaction: the admin's first login already lists it.
-                token = settings.seed_server_token
+                token, url = settings.seed_server_token, settings.seed_server_url
+                sid = tx.execute("SELECT nextval(pg_get_serial_sequence('servers', 'id')) AS id").fetchone()["id"]
                 seed = tx.execute(
-                    "INSERT INTO servers (name, url, auth_header, auth_value, enabled, created_at)"
-                    " VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT (name) DO NOTHING RETURNING id",
-                    (SEED_SERVER, settings.seed_server_url, "Authorization" if token else None,
-                     request.app.state.vault.seal("Bearer " + token) if token else None, time.time()),
+                    "INSERT INTO servers (id, name, url, auth_header, auth_value, enabled, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT (name) DO NOTHING RETURNING id",
+                    (sid, SEED_SERVER, url, "Authorization" if token else None,
+                     request.app.state.vault.seal("Bearer " + token, server_id=sid, url=url) if token else None,
+                     time.time()),
                 ).fetchone()
     except store.IntegrityError:
         raise HTTPError(409, "already set up") from None

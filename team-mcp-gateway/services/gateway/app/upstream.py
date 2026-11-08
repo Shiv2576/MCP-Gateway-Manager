@@ -118,7 +118,7 @@ def shared_headers(row: dict, vault) -> dict | None:
     None when it is stored but cannot be decrypted."""
     if not row["auth_header"]:
         return {}
-    value = vault.open(row["auth_value"]) if vault and row["auth_value"] else None
+    value = vault.open(row["auth_value"], server_id=row["id"], url=row["url"]) if vault and row["auth_value"] else None
     return None if value is None else {row["auth_header"]: value}
 
 
@@ -608,7 +608,8 @@ class Upstreams:
         if kind is None or stored is None or not row["personal_header"]:
             return {}, None, (f"Server '{row['name']}' uses your personal credential on gateway '{gateway_slug}', "
                               "and you have not added one. Add it in the dashboard under My credentials.")
-        value = self.vault.open(stored["secret"]) if self.vault else None
+        value = (self.vault.open(stored["secret"], server_id=row["id"], url=row["url"], user_id=user["id"])
+                 if self.vault else None)
         if value is None:
             return {}, None, (f"Your saved credential for server '{row['name']}' cannot be read. "
                               "Enter it again in the dashboard under My credentials.")
