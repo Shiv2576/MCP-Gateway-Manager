@@ -293,6 +293,7 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 760px) { .chat-page { height: auto; min-height: 70vh; } .chat-empty { padding-top: 6vh; } .composer { position: sticky; bottom: 8px; } }
 .call { border-left: 3px solid var(--ok); padding: 4px 10px; margin-bottom: 6px; border-radius: 6px; }
 .call.bad { border-left-color: var(--destructive); }
+.call.running { border-left-color: var(--muted-foreground); }
 .call summary { cursor: pointer; }
 
 .access { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

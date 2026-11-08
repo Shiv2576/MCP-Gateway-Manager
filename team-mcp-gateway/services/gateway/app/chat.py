@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -29,11 +31,13 @@ import time
 import httpx2
 import jsonschema
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .api import HTTPError, body, current_user, gateway_param, handler
 from .approvals import budget_for, describe
 from .upstream import SEP
+
+log = logging.getLogger("gateway.chat")
 
 MAX_ROUNDS = 6
 MAX_MESSAGES = 20
@@ -213,6 +217,35 @@ async def _allowed(settings, history: list[dict], tools: list) -> bool:
     return (reply.get("content") or "").strip().lower().startswith(("in_scope", "off_topic"))
 
 
+async def _once(payload: dict):
+    yield "done", payload
+
+
+async def _respond(stream: bool, steps) -> Response:
+    """The agent's steps as one JSON reply (the "done" payload, as before), or, when the client
+    asked for text/event-stream, as server-sent events while they happen."""
+    if not stream:
+        async with contextlib.aclosing(steps):
+            async for kind, payload in steps:  # an HTTPError reaches @handler, as before
+                if kind == "done":
+                    return JSONResponse(payload)
+
+    async def events():
+        async with contextlib.aclosing(steps):
+            try:
+                async for kind, payload in steps:
+                    yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+            except HTTPError as e:  # e.g. the model provider failed mid-run: the steps so far stand
+                yield f"event: error\ndata: {json.dumps({'error': e.message})}\n\n"
+            except Exception:
+                log.exception("chat stream failed")
+                yield f"event: error\ndata: {json.dumps({'error': 'the chat failed; see the gateway log'})}\n\n"
+
+    # no-cache and X-Accel-Buffering: no, so the dashboard's nginx passes each event on at once.
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @handler
 async def chat(request: Request) -> Response:
     user = current_user(request)
@@ -221,13 +254,14 @@ async def chat(request: Request) -> Response:
     settings = request.app.state.settings
     if not settings.openrouter_api_key:
         raise HTTPError(503, "chat is not configured: OPENROUTER_API_KEY is not set")
+    stream = "text/event-stream" in request.headers.get("accept", "")
     if data.get("cancel") is not None:
         # Spent without running, so the token is dead now rather than in 5 minutes.
         try:
             redeem(settings, user, gateway, data["cancel"])
         except HTTPError:
             pass  # already used, expired or invalid: nothing left to cancel
-        return JSONResponse({"reply": "Cancelled.", "calls": []})
+        return await _respond(stream, _once({"reply": "Cancelled.", "calls": []}))
     history = _messages(data)
     upstreams = request.app.state.upstreams
     available = {t.name: t for t in upstreams.list_tools(user, gateway) if FUNCTION_NAME.match(t.name)}
@@ -266,62 +300,78 @@ async def chat(request: Request) -> Response:
     ]
 
     calls = []
-    draft = None  # the agent's first reply, when it ran alongside the guard
 
-    async def run(name: str, args: dict, call_id: str) -> None:
-        result = await upstreams.call_tool(user, gateway, name, args)
-        text = _result_text(result)[:8000]
-        calls.append({"name": name, "arguments": args, "ok": not result.is_error, "result": text[:2000]})
-        messages.append({"role": "tool", "tool_call_id": call_id, "content": _as_data(text)})
+    # The agent's steps, as (event, data): "call_start" when a tool begins, "call" with its
+    # result, and finally "done" with the reply (and any write held for Confirm). A streaming
+    # client sees each step as it happens; any other gets the "done" payload as before.
+    async def steps():
+        draft = None  # the agent's first reply, when it ran alongside the guard
 
-    if data.get("confirm") is not None:
-        # The signed token is the user's intent; the injection check has nothing to add.
-        name, args = redeem(settings, user, gateway, data["confirm"])
-        call = {"id": "confirmed", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
-        messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
-        await run(name, args, "confirmed")  # call_tool re-checks policy and budget, as on any call
-    else:
-        # Guard and agent at once, saving a round-trip: the draft is only text until we act on it,
-        # so on a refusal it is dropped and no tool has run.
-        allowed, draft = await asyncio.gather(
-            _allowed(settings, history, list(available.values())), _complete(settings, messages, tools))
-        if not allowed:
-            return JSONResponse({"reply": REFUSAL, "calls": []})
+        async def run(name: str, args: dict, call_id: str):
+            yield "call_start", {"name": name, "arguments": args}
+            result = await upstreams.call_tool(user, gateway, name, args)
+            text = _result_text(result)[:8000]
+            calls.append({"name": name, "arguments": args, "ok": not result.is_error, "result": text[:2000]})
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": _as_data(text)})
+            yield "call", calls[-1]
 
-    for _ in range(MAX_ROUNDS):
-        reply = draft or await _complete(settings, messages, tools)
-        draft = None
-        tool_calls = reply.get("tool_calls") or []
-        if not tool_calls:
-            return JSONResponse({"reply": reply.get("content") or "", "calls": calls})
-        messages.append({"role": "assistant", "content": reply.get("content"), "tool_calls": tool_calls})
-        for i, tc in enumerate(tool_calls):
-            name = tc["function"]["name"]
-            try:
-                args = json.loads(tc["function"].get("arguments") or "{}")
-            except ValueError:
-                args = None
-            tool = available.get(name)
-            if tool is None:
-                problem = f"Unknown tool '{name}'."
-            elif not isinstance(args, dict):
-                problem = "Arguments were not a JSON object."
-            elif errors := _arg_errors(tool, args):
-                problem = ("Not called: " + "; ".join(errors)
-                           + ". Ask the user for the missing or invalid values in one short question; do not guess.")
-            else:
-                problem = None
-            if problem:
-                calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}, "ok": False,
-                              "result": problem})
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": problem})
-            elif _is_write(tool):
-                # Held for the user; the rest of this round is dropped and asked again after.
-                return JSONResponse({
-                    "reply": reply.get("content") or f"Ready to run {name}. Confirm?",
-                    "calls": calls,
-                    "pending": {"name": name, "arguments": args, "token": sign_call(settings, user, gateway, name, args)},
-                })
-            else:
-                await run(name, args, tc["id"])
-    return JSONResponse({"reply": f"Stopped after {MAX_ROUNDS} rounds of tool calls.", "calls": calls})
+        if data.get("confirm") is not None:
+            # The signed token is the user's intent; the injection check has nothing to add.
+            name, args = redeem(settings, user, gateway, data["confirm"])
+            call = {"id": "confirmed", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
+            async for step in run(name, args, "confirmed"):  # call_tool re-checks policy and budget
+                yield step
+        else:
+            # Guard and agent at once, saving a round-trip: the draft is only text until we act on it,
+            # so on a refusal it is dropped and no tool has run.
+            allowed, draft = await asyncio.gather(
+                _allowed(settings, history, list(available.values())), _complete(settings, messages, tools))
+            if not allowed:
+                yield "done", {"reply": REFUSAL, "calls": []}
+                return
+
+        for _ in range(MAX_ROUNDS):
+            reply = draft or await _complete(settings, messages, tools)
+            draft = None
+            tool_calls = reply.get("tool_calls") or []
+            if not tool_calls:
+                yield "done", {"reply": reply.get("content") or "", "calls": calls}
+                return
+            messages.append({"role": "assistant", "content": reply.get("content"), "tool_calls": tool_calls})
+            for tc in tool_calls:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                except ValueError:
+                    args = None
+                tool = available.get(name)
+                if tool is None:
+                    problem = f"Unknown tool '{name}'."
+                elif not isinstance(args, dict):
+                    problem = "Arguments were not a JSON object."
+                elif errors := _arg_errors(tool, args):
+                    problem = ("Not called: " + "; ".join(errors)
+                               + ". Ask the user for the missing or invalid values in one short question; do not guess.")
+                else:
+                    problem = None
+                if problem:
+                    calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}, "ok": False,
+                                  "result": problem})
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": problem})
+                    yield "call", calls[-1]
+                elif _is_write(tool):
+                    # Held for the user; the rest of this round is dropped and asked again after.
+                    yield "done", {
+                        "reply": reply.get("content") or f"Ready to run {name}. Confirm?",
+                        "calls": calls,
+                        "pending": {"name": name, "arguments": args,
+                                    "token": sign_call(settings, user, gateway, name, args)},
+                    }
+                    return
+                else:
+                    async for step in run(name, args, tc["id"]):
+                        yield step
+        yield "done", {"reply": f"Stopped after {MAX_ROUNDS} rounds of tool calls.", "calls": calls}
+
+    return await _respond(stream, steps())

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from './api.js'
+import { apiStream } from './api.js'
 import { Icon } from './App.jsx'
 import { GatewayPicker, useGateway } from './Gateways.jsx'
 
@@ -32,10 +32,26 @@ export default function Chat({ user }) {
     setTurns(next)
     setError('')
     setBusy(true)
+    // Streamed: each tool call shows as a card when it starts and fills in when it ends.
+    const live = { role: 'assistant', content: '', calls: [] }
+    const show = () => setTurns([...next, { ...live, calls: [...live.calls] }])
     try {
       const messages = next.map(({ role, content }) => ({ role, content }))
-      const r = await api('/chat', { method: 'POST', body: { gateway: gateway.slug, messages, ...extra } })
-      setTurns([...next, { role: 'assistant', content: r.reply, calls: r.calls, pending: r.pending }])
+      await apiStream('/chat', { gateway: gateway.slug, messages, ...extra }, (kind, data) => {
+        if (kind === 'call_start') {
+          live.calls.push({ ...data, running: true })
+          show()
+        } else if (kind === 'call') {
+          const i = live.calls.findIndex((c) => c.running && c.name === data.name)
+          if (i >= 0) live.calls[i] = data
+          else live.calls.push(data) // a call refused before it ran: no start event
+          show()
+        } else if (kind === 'done') {
+          setTurns([...next, { role: 'assistant', content: data.reply, calls: data.calls, pending: data.pending }])
+        } else if (kind === 'error') {
+          throw new Error(data.error) // the cards so far stay on screen
+        }
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -90,12 +106,13 @@ export default function Chat({ user }) {
           {turns.map((t, i) => (
             <div key={i} className={`msg ${t.role}`}>
               {t.calls?.map((c, j) => (
-                <details key={j} className={c.ok ? 'call ok' : 'call bad'}>
-                  <summary className="mono small">
-                    {c.ok ? '✓' : '✗'} {c.name}
+                <details key={j} className={c.running ? 'call running' : c.ok ? 'call ok' : 'call bad'}>
+                  <summary className="mono small" aria-live="polite">
+                    {c.running ? '…' : c.ok ? '✓' : '✗'} {c.name}
+                    {c.running && <span className="muted"> running</span>}
                   </summary>
                   <pre>{JSON.stringify(c.arguments, null, 2)}</pre>
-                  <pre>{c.result}</pre>
+                  {!c.running && <pre>{c.result}</pre>}
                 </details>
               ))}
               {t.content && <div className="bubble">{t.content}</div>}
