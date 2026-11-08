@@ -108,6 +108,45 @@ async def create_hosted(request: Request) -> Response:
     return JSONResponse(_view(cr), status_code=201)
 
 
+UPDATABLE = {"image", "args", "env"}
+
+
+@handler
+async def update_hosted(request: Request) -> Response:
+    """A new image, args or env, rolled out in place: the operator keeps the old pod serving until
+    the new one is ready, and rolls back with the reason if it never gets there. port, path and
+    the token would change the server's URL or secret, so those still mean delete and recreate."""
+    require_admin(request)
+    hosted = _backend(request)
+    name = request.path_params["name"]
+    cr = await hosted.get(name)
+    if cr is None:
+        raise HTTPError(404, "no such hosted server")
+    if cr["metadata"].get("deletionTimestamp"):
+        raise HTTPError(409, "this hosted server is being deleted")
+    data = await body(request)
+    if not data or set(data) - UPDATABLE:
+        raise HTTPError(400, "only image, args and env can be changed; to change anything else, delete and recreate")
+    spec = cr["spec"]
+    # Validated as a whole spec: env is merged (a null value removes that variable), since the
+    # API never returns env values for an admin to send back.
+    env = dict(spec.get("env") or {})
+    changes = data.get("env") or {}
+    if not isinstance(changes, dict):
+        raise HTTPError(400, "env: an object of variables; null removes one")
+    for k, v in changes.items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
+    checked = _spec({**spec, "image": data.get("image", spec["image"]), "args": data.get("args", spec.get("args", [])),
+                     "env": env, "token_env": spec.get("tokenEnv", ""), "auth_header": spec.get("authHeader")})
+    patch = {k: checked[k] for k in ("image", "args") if k in data}
+    if "env" in data:
+        patch["env"] = {k: (env[k] if k in env else None) for k in changes}  # merge patch: null deletes
+    return JSONResponse(_view(await hosted.patch(name, {"spec": patch})))
+
+
 @handler
 async def delete_hosted(request: Request) -> Response:
     require_admin(request)  # org-wide like servers: any admin may remove one
@@ -122,5 +161,6 @@ async def delete_hosted(request: Request) -> Response:
 routes = [
     Route("/api/hosted", list_hosted, methods=["GET"]),
     Route("/api/hosted", create_hosted, methods=["POST"]),
+    Route("/api/hosted/{name}", update_hosted, methods=["PATCH"]),
     Route("/api/hosted/{name}", delete_hosted, methods=["DELETE"]),
 ]

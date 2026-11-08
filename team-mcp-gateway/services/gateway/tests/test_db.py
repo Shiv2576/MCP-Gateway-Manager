@@ -51,6 +51,7 @@ def test_old_audit_rows_get_an_outcome_once(db_url):
 
     db = store.connect(db_url)
     db.execute("ALTER TABLE audit_log DROP COLUMN outcome")  # as before the column existed
+    db.execute("DELETE FROM schema_version")  # and before migrations were versioned: the baseline runs again
     old = [
         (1, None, "ok"),
         (0, "Too many calls: at most 2 per minute. Try again shortly.", "rate_limited"),
@@ -68,6 +69,7 @@ def test_old_audit_rows_get_an_outcome_once(db_url):
     got = [r["outcome"] for r in db.execute("SELECT outcome FROM audit_log ORDER BY id")]
     assert got == [want for *_, want in old]
     db.execute("UPDATE audit_log SET outcome = 'ok' WHERE outcome IS NULL")  # a later start must not reclassify
+    db.execute("DELETE FROM schema_version")  # even if the idempotent baseline ran again
     store.connect(db_url).close()
     assert [r["outcome"] for r in db.execute("SELECT outcome FROM audit_log ORDER BY id")][-2] == "ok"
     db.close()

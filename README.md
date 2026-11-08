@@ -405,7 +405,7 @@ Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
 ### 13. Tools provided by the gateway itself
 
-**Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`
+**Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`, `team-mcp-gateway/services/gateway/app/search.py`
 
 | Tool | What it does |
 | --- | --- |
@@ -413,6 +413,10 @@ Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 | `gateway__wait_for_approval` | Waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected. |
 | `gateway__list_team_alerts` | Lists alerts for the caller's teams (open, done or all). |
 | `gateway__mark_team_alert_done` | Marks an alert handled; teammates see who did it. |
+| `gateway__search_tools` | Search mode: finds the caller's allowed tools by what they want to do, with their full input schemas. |
+| `gateway__call_tool` | Search mode: runs a found tool through the normal call path, so policy, budgets, confirmation, PII filtering and audit still apply. |
+
+**Search mode:** a client that sends the header `X-Gateway-Tool-Mode: search` is listed only the gateway's own tools instead of every allowed tool's schema. One store's MCP server alone is about 14,000 tokens of tool definitions, sent with every message.
 
 **Why I built them:**
 

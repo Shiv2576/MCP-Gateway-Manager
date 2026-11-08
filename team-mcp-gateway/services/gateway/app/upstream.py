@@ -160,6 +160,7 @@ class Upstreams:
         self.status: dict[int, Status] = {}
         self._tasks: set[asyncio.Task] = set()
         self._retrying: set[int] = set()  # servers with a recheck already scheduled
+        self.refreshed = False  # the first full tool check finished: readiness waits for it
 
     def connect(self, row: dict, timeout: float, headers: dict):
         return self.pool.session(row, headers, timeout)
@@ -204,6 +205,10 @@ class Upstreams:
         if status.state != "ok":
             self._failed(row["id"], status, prev)
         self.status[row["id"]] = status
+        try:
+            await anyio.to_thread.run_sync(self._record, row["id"], status)
+        except Exception as exc:  # e.g. the server was just deleted; the next check writes again
+            log.warning("could not record the status of %s: %s", row["name"], exc)
         # notify=False after a notice: a refresh caused by a notice must not send one, or a
         # flapping upstream would echo notices between processes without end.
         if (notify and self.gateway_slug and prev and prev.state == status.state == "ok"
@@ -212,6 +217,18 @@ class Upstreams:
                 await anyio.to_thread.run_sync(events.notify, self.db, self.gateway_slug)
             except Exception:
                 log.exception("could not notify %s", self.gateway_slug)
+
+    def _record(self, server_id: int, status: Status) -> None:
+        """This checker's view in Postgres: every replica and worker of a gateway writes the same
+        row, and since only moves when the state changes."""
+        self.db.execute(
+            "INSERT INTO server_status (server_id, checker, state, error, since, checked_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (server_id, checker) DO UPDATE SET"
+            " since = CASE WHEN server_status.state = excluded.state THEN server_status.since ELSE excluded.since END,"
+            " state = excluded.state, error = excluded.error, checked_at = excluded.checked_at"
+            " WHERE excluded.checked_at >= server_status.checked_at",  # a slower worker's older check loses
+            (server_id, self.gateway_slug or "control", status.state, status.error, status.checked_at, status.checked_at),
+        )
 
     def _failed(self, server_id: int, status: Status, prev: Status | None) -> None:
         status.failures = (prev.failures if prev else 0) + 1
@@ -262,6 +279,7 @@ class Upstreams:
             while True:
                 try:
                     await self.refresh_all()
+                    self.refreshed = True  # a down server doesn't block this: refresh_one never raises
                 except Exception:
                     log.exception("refresh failed")
                 await asyncio.sleep(self.refresh_interval)

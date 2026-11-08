@@ -8,6 +8,7 @@ does the provisioning. Its Role allows nothing else.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import ssl
@@ -60,9 +61,10 @@ class Kube:
         self.url = f"https://{host}:{port}/apis/{GROUP}/v1/namespaces/{namespace}/{plural}"
         self.tls = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
 
-    async def _request(self, method: str, path: str = "", **kw) -> httpx2.Response:
+    async def _request(self, method: str, path: str = "", headers_extra: dict | None = None, **kw) -> httpx2.Response:
         async with httpx2.AsyncClient(verify=self.tls, timeout=10) as http:
-            return await http.request(method, self.url + path, headers={"Authorization": f"Bearer {_sa_token()}"}, **kw)
+            headers = {"Authorization": f"Bearer {_sa_token()}", **(headers_extra or {})}
+            return await http.request(method, self.url + path, headers=headers, **kw)
 
     async def list(self, owner_id: int | None = None) -> list[dict]:
         params = {"labelSelector": f"{OWNER_LABEL}={owner_id}"} if owner_id is not None else None
@@ -91,6 +93,13 @@ class Kube:
         r = await self._request("DELETE", f"/{name}")
         if r.status_code != 404:
             r.raise_for_status()
+
+    async def patch(self, name: str, changes: dict) -> dict:
+        """A JSON merge patch (RFC 7386): a null value removes that key."""
+        r = await self._request("PATCH", f"/{name}", content=json.dumps(changes),
+                                headers_extra={"Content-Type": "application/merge-patch+json"})
+        r.raise_for_status()
+        return r.json()
 
 
 def _sa_token() -> str:

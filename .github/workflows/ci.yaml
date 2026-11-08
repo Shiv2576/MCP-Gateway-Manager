@@ -62,6 +62,27 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:t@127.0.0.1:5433/postgres
 
+  # A rollback (git revert) brings back the previous gateway code but keeps the migrated
+  # database, so the previous release's tests must pass on this change's schema.
+  schema-compat:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.services), 'gateway') && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_PASSWORD: t }
+        ports: ["5433:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 } # the previous release's commit
+      - uses: astral-sh/setup-uv@v6
+      # PR: what main runs now. Push to main: what main pointed to before this push.
+      - run: team-mcp-gateway/scripts/schema-compat.sh "${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}"
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:t@127.0.0.1:5433/postgres
+
   # Every chart lints, and the three Argo deploys render with their prod values, so a
   # bad template fails here instead of as an Argo sync error on the VPS.
   charts:

@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import alerts, api, approvals, chat, credentials, events, interaction, oauth, pii, pii_api, setup, teams
+from . import alerts, api, approvals, chat, credentials, events, interaction, oauth, pii, pii_api, search, setup, teams
 from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
@@ -185,22 +185,32 @@ class ApiKeyGuard:
 def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route], bus: events.PostgresBus):
     """/mcp for one gateway's attached servers, plus OAuth when PUBLIC_URL is set."""
 
-    async def on_list_tools(ctx, params) -> ListToolsResult:
-        return ListToolsResult(
-            tools=await anyio.to_thread.run_sync(
-                upstreams.list_tools, ctx.request.state.user, settings.gateway_slug
-            )
+    async def allowed(ctx) -> list:
+        return await anyio.to_thread.run_sync(
+            upstreams.list_tools, ctx.request.state.user, settings.gateway_slug
         )
+
+    async def on_list_tools(ctx, params) -> ListToolsResult:
+        tools = await allowed(ctx)
+        return ListToolsResult(tools=search.listed(tools) if search.wants_search(ctx.request.headers) else tools)
 
     async def on_call_tool(ctx, params) -> CallToolResult | InputRequiredResult:
         info = getattr(
             ctx.session.client_params, "client_info", None
         )  # None on stateless requests without initialize
+        name, arguments = params.name, params.arguments
+        if name == search.SEARCH:
+            return search.search(await allowed(ctx), arguments)
+        if name == search.CALL:  # the real tool takes the normal path: policy, budget, PII, audit
+            unwrapped = search.unwrap(arguments)
+            if isinstance(unwrapped, CallToolResult):
+                return unwrapped
+            name, arguments = unwrapped
         return await upstreams.call_tool(
             ctx.request.state.user,
             settings.gateway_slug,
-            params.name,
-            params.arguments,
+            name,
+            arguments,
             client=info and info.name,
             progress=ctx.session.report_progress,  # does nothing when the client sent no progress token
             ask=interaction.from_request(ctx, params),
@@ -332,10 +342,11 @@ def create_app(
         return JSONResponse({"status": "ok"})
 
     def ready() -> bool:
-        # An edge is ready only while its gateway exists; both need the database.
+        # An edge is ready only while its gateway exists and its first tool check has
+        # finished (else a new pod lists no tools); both need the database.
         try:
             if edge:
-                return (
+                return upstreams.refreshed and (
                     conn.execute(
                         "SELECT 1 FROM gateways WHERE slug = ?",
                         (settings.gateway_slug,),

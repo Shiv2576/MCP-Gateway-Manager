@@ -512,8 +512,51 @@ async def list_servers(request: Request) -> Response:
     ):
         on[r["server_id"]].append(r["slug"])
     rows = conn.execute("SELECT * FROM servers ORDER BY id").fetchall()  # oldest first: the seeded store server leads
-    return JSONResponse([_server(r, ups.status.get(r["id"]), on[r["id"]])
+    health, checks = server_health(conn, time.time(), admin=user["role"] == "admin")
+    return JSONResponse([{**_server(r, ups.status.get(r["id"]), on[r["id"]]),
+                          "health": health.get(r["name"], EMPTY_HEALTH),
+                          # Only current checkers: rows of a gateway it's no longer on are stale.
+                          "checks": [c for c in checks.get(r["id"], []) if c["checker"] in ("control", *on[r["id"]])]}
                          for r in rows if allowed is None or r["id"] in allowed])
+
+
+# Calls that reached the upstream; of those, the ones the upstream (not policy) failed.
+REACHED = ("ok", "tool_error", "timeout", "unreachable")
+FAILED = ("tool_error", "timeout", "unreachable")
+EMPTY_HEALTH = {"calls": 0, "error_rate": None, "p50_ms": None, "p95_ms": None, "last_error": None, "last_error_at": None}
+
+
+def server_health(conn: store.Db, now: float, admin: bool) -> tuple[dict[str, dict], dict[int, list[dict]]]:
+    """Per server name: the last hour's calls, error rate and p50/p95 latency, plus its last
+    upstream failure (last 7 days); per server id: every health checker's latest view.
+    A member gets a failure's text only when the gateway wrote it (timeout, unreachable): a
+    tool_error is the upstream's answer to someone else's call, which they can't see in the audit."""
+    reached, failed = ", ".join("?" * len(REACHED)), ", ".join("?" * len(FAILED))
+    health = {
+        r["server"]: {
+            "calls": r["calls"],
+            "error_rate": r["errors"] / r["calls"],
+            "p50_ms": round(r["p50"]), "p95_ms": round(r["p95"]), "last_error": None, "last_error_at": None,
+        }
+        for r in conn.execute(
+            f"SELECT server, COUNT(*) AS calls, SUM(CASE WHEN outcome IN ({failed}) THEN 1 ELSE 0 END) AS errors,"
+            " percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,"
+            " percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95"
+            f" FROM audit_log WHERE at > ? AND server IS NOT NULL AND outcome IN ({reached}) GROUP BY server",
+            (*FAILED, now - 3600, *REACHED),
+        )
+    }
+    for r in conn.execute(
+        f"SELECT DISTINCT ON (server) server, at, error, outcome FROM audit_log WHERE at > ? AND server IS NOT NULL"
+        f" AND outcome IN ({failed}) ORDER BY server, at DESC",
+        (now - 7 * 86400, *FAILED),
+    ):
+        text = r["error"] if admin or r["outcome"] != "tool_error" else "the tool returned an error (details in the audit log)"
+        health.setdefault(r["server"], dict(EMPTY_HEALTH)).update(last_error=text, last_error_at=r["at"])
+    checks = collections.defaultdict(list)
+    for r in conn.execute("SELECT * FROM server_status ORDER BY checker"):
+        checks[r["server_id"]].append({k: r[k] for k in ("checker", "state", "error", "since", "checked_at")})
+    return health, checks
 
 
 @handler

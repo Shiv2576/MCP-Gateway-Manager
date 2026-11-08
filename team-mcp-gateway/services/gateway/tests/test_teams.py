@@ -86,6 +86,7 @@ def test_schema_drops_orphaned_team_tools(db_url):
     # A part-2 install: no attachment constraint, a row left over from a detach.
     conn.execute("ALTER TABLE team_tools DROP CONSTRAINT team_tools_attachment")
     conn.execute("INSERT INTO team_tools (team_id, gateway_id, server_id, tool) VALUES (?, ?, ?, 'x')", (t, g, s1))
+    conn.execute("DELETE FROM schema_version")  # and from before versioned migrations: the baseline runs again
     conn.close()
     conn = store.connect(db_url)
     assert conn.execute("SELECT count(*) AS n FROM team_tools").fetchone()["n"] == 0

@@ -100,7 +100,11 @@ push. Argo deploys it; the old image is still in GHCR, so the old code really co
 back. (`argocd app rollback` refuses while auto-sync is on: git is the place to roll back.)
 
 Not rolled back by either: database migrations, and CRDs (Argo applies new ones but
-never deletes them).
+never deletes them). That's why the schema is versioned (`services/gateway/app/migrations/`,
+recorded in `schema_version`) and every migration must leave a schema the previous release
+still runs on: add tables and nullable columns, and rename or drop only a release later. CI's
+`schema-compat` job proves it by running the previous release's test suite on the new schema
+(`scripts/schema-compat.sh`), so a rollback finds a database it understands.
 
 ## Notes
 

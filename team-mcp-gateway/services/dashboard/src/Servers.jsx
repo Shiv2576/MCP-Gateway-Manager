@@ -26,6 +26,12 @@ function authBody(f) {
   return { type: 'none' }
 }
 
+// The last hour's calls that reached this server, from the audit log.
+function healthLine(h) {
+  if (!h || !h.calls) return 'No calls in the last hour'
+  return `Last hour: ${h.calls} call${h.calls === 1 ? '' : 's'} · ${Math.round(h.error_rate * 100)}% errors · p50 ${h.p50_ms} ms · p95 ${h.p95_ms} ms`
+}
+
 // How the gateway authenticates to this upstream; the value itself never reaches the browser.
 function authLabel(s) {
   if (!s.has_credential) return 'None'
@@ -38,6 +44,7 @@ export default function Servers({ user }) {
   const [hosted, setHosted] = useState([]) // container-image servers, by phase
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(null) // null | 'new' | server
+  const [updating, setUpdating] = useState(null) // a hosted server being given a new image or env
   const [open, setOpen] = useState({})
   const [oauth, setOauth] = useState(false)
 
@@ -99,6 +106,17 @@ export default function Servers({ user }) {
       </div>
       {error && <p className="error">{error}</p>}
 
+      {updating && (
+        <HostedUpdateForm
+          hosted={updating}
+          onCancel={() => setUpdating(null)}
+          onSaved={() => {
+            setUpdating(null)
+            load()
+          }}
+        />
+      )}
+
       {editing && (
         <ServerForm
           server={editing === 'new' ? null : editing}
@@ -122,9 +140,14 @@ export default function Servers({ user }) {
             {h.message && <div className={h.phase === 'Failed' ? 'error small' : 'muted small'}>{h.message}</div>}
           </div>
           {h.phase !== 'Deleting' && (
-            <button className="ghost danger" onClick={() => removeHosted(h.name)}>
-              Delete
-            </button>
+            <>
+              <button className="ghost" onClick={() => setUpdating(h)}>
+                Update
+              </button>
+              <button className="ghost danger" onClick={() => removeHosted(h.name)}>
+                Delete
+              </button>
+            </>
           )}
         </div>
       ))}
@@ -165,6 +188,19 @@ export default function Servers({ user }) {
                         </div>
                         <div className="muted mono small">{hostedBy[s.name]?.image ?? s.url}</div>
                         {s.error && <div className="error small">{s.error}</div>}
+                        {hostedBy[s.name]?.message && (
+                          // A failed update (rolled back) or one the Kubernetes API hasn't accepted yet: worth noticing.
+                          <div className={/failed|waiting to apply/.test(hostedBy[s.name].message) ? 'error small' : 'muted small'}>
+                            {hostedBy[s.name].phase === 'Updating' ? 'Updating: ' : ''}
+                            {hostedBy[s.name].message}
+                          </div>
+                        )}
+                        <div className="muted small">{healthLine(s.health)}</div>
+                        {s.health?.last_error && (
+                          <div className="muted small" title={s.health.last_error}>
+                            Last failure {when(s.health.last_error_at)}: {s.health.last_error.slice(0, 120)}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -199,7 +235,12 @@ export default function Servers({ user }) {
                   {isAdmin && (
                     <td>
                       <div className="actions right">
-                        <button className="icon-btn" aria-label={`Edit ${s.name}`} title="Edit" onClick={() => setEditing(s)}>
+                        <button
+                          className="icon-btn"
+                          aria-label={`Edit ${s.name}`}
+                          title={hostedBy[s.name] ? 'Update image or env' : 'Edit'}
+                          onClick={() => (hostedBy[s.name] ? setUpdating(hostedBy[s.name]) : setEditing(s))}
+                        >
                           <Icon name="edit" />
                         </button>
                         <button
@@ -222,6 +263,20 @@ export default function Servers({ user }) {
                 {open[s.id] && (
                   <tr>
                     <td colSpan={isAdmin ? 8 : 7}>
+                      {s.checks.length > 0 && (
+                        <ul className="tools">
+                          {s.checks.map((c) => (
+                            // Each health checker's own view: the control plane, and each gateway's edge pods.
+                            <li key={c.checker}>
+                              <span className={`dot ${c.state}`} /> <span className="mono">{c.checker === 'control' ? 'control plane' : `gateway ${c.checker}`}</span>
+                              <span className="muted">
+                                {' '}— {STATUS_LABEL[c.state] ?? c.state} since {when(c.since)}, checked {when(c.checked_at)}
+                                {c.error ? ` · ${c.error}` : ''}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       <ul className="tools">
                         {s.tools.map((t) => (
                           <li key={t.name}>
@@ -250,6 +305,68 @@ function Stat({ label, value, tone }) {
       <div className="value">{value}</div>
       <div className="muted">{label}</div>
     </div>
+  )
+}
+
+// A running container server: new image, args or env, rolled out in place. The old pod keeps
+// serving until the new one is ready; a version that never gets ready is rolled back.
+function HostedUpdateForm({ hosted, onCancel, onSaved }) {
+  const [f, setF] = useState({ image: hosted.image, args: hosted.args.join(' '), env: '', remove: '' })
+  const [error, setError] = useState('')
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    try {
+      const body = {}
+      if (f.image.trim() !== hosted.image) body.image = f.image.trim()
+      const args = f.args.trim() ? f.args.trim().split(/\s+/) : []
+      if (args.join(' ') !== hosted.args.join(' ')) body.args = args
+      const env = parseEnv(f.env)
+      for (const k of f.remove.split(/[\s,]+/).filter(Boolean)) env[k] = null // null removes it
+      if (Object.keys(env).length) body.env = env
+      if (!Object.keys(body).length) throw new Error('Nothing changed')
+      await api(`/hosted/${hosted.name}`, { method: 'PATCH', body })
+      onSaved()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  return (
+    <form className="card form" onSubmit={submit}>
+      <h3>Update {hosted.name}</h3>
+      <div className="grid">
+        <label>
+          Image
+          <input value={f.image} onChange={set('image')} required />
+        </label>
+        <label>
+          Args
+          <input value={f.args} onChange={set('args')} placeholder="e.g. http" />
+        </label>
+        <label>
+          Remove variables
+          <input value={f.remove} onChange={set('remove')} placeholder={hosted.env.join(' ') || 'none set'} />
+        </label>
+      </div>
+      <label className="field">
+        Set variables (KEY=value per line; others stay as they are)
+        <textarea rows={3} value={f.env} onChange={set('env')} placeholder={'LOG_LEVEL=debug'} />
+      </label>
+      <p className="muted small">
+        Current variables: {hosted.env.length ? hosted.env.join(', ') : 'none'} (values are never shown). The old version
+        keeps serving until the new one is ready; if it never gets ready it is rolled back and the reason shown here.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button type="button" className="ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary">Roll out</button>
+      </div>
+    </form>
   )
 }
 

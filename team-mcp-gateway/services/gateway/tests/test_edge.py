@@ -187,6 +187,35 @@ def test_oauth_token_works_only_at_the_gateway_it_was_issued_for(db_url):
     asyncio.run(run())
 
 
+def test_edge_is_not_ready_before_its_first_tool_refresh(db_url, monkeypatch):
+    """A new edge pod must not get traffic while its tool cache is still empty."""
+    from app.upstream import Upstreams
+
+    conn = store.connect(db_url)
+    conn.execute("INSERT INTO gateways (slug, name, created_at) VALUES ('prod', 'Prod', 0)")
+    real, release = Upstreams.refresh_all, asyncio.Event()
+
+    async def held_refresh(self, notify=True):
+        await release.wait()
+        await real(self, notify)
+
+    monkeypatch.setattr(Upstreams, "refresh_all", held_refresh)
+
+    async def run():
+        with serve(create_app(edge_settings(db_url, "prod"))) as edge:
+            async with httpx2.AsyncClient(base_url=edge) as http:
+                assert (await http.get("/readyz")).status_code == 503
+                release.set()
+                for _ in range(50):
+                    if (await http.get("/readyz")).status_code == 200:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    raise AssertionError("never became ready after the first refresh")
+
+    asyncio.run(run())
+
+
 def test_slow_database_does_not_freeze_the_edge(db_url, monkeypatch):
     """Database work runs in worker threads: while one request waits on a slow query,
     the same edge still answers /healthz at once (and so passes its liveness probe)."""

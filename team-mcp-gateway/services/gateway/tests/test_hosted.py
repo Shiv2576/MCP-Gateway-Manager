@@ -32,6 +32,18 @@ class FakeHosted:
     async def delete(self, name):
         self.items.pop(name, None)
 
+    async def patch(self, name, changes):
+        def merge(target, patch):  # RFC 7386, as the Kubernetes API applies it
+            for k, v in patch.items():
+                if v is None:
+                    target.pop(k, None)
+                elif isinstance(v, dict) and isinstance(target.get(k), dict):
+                    merge(target[k], v)
+                else:
+                    target[k] = v
+        merge(self.items[name], changes)
+        return self.items[name]
+
 
 NOTES = {"name": "notes2", "image": "docker.io/me/demo-mcp:0.1.0", "port": 8000, "path": "/mcp",
          "env": {"DEMO_SERVER": "notes", "AUTH_HEADER": "X-API-Key"},
@@ -80,6 +92,22 @@ def test_hosted_api(db_url):
             assert (await admin.post("/api/hosted", json={**NOTES, "name": "fx"})).status_code == 409
             await admin.post("/api/stores", json={"name": "shop1", "template": "blank"})
             assert (await admin.post("/api/hosted", json={**NOTES, "name": "shop1"})).status_code == 409
+
+            # Update in place: image, args and env only; env is merged and null removes a variable.
+            assert (await bob.patch("/api/hosted/notes2", json={"image": "me/demo-mcp:0.2.0"})).status_code == 403
+            assert (await admin.patch("/api/hosted/nope", json={"image": "me/x:1"})).status_code == 404
+            for bad in ({}, {"port": 9000}, {"path": "/x"}, {"token_env": "T"}, {"image": "has space"},
+                        {"env": {"1X": "v"}}, {"env": {"AUTH_TOKEN": "mine"}}, {"env": ["A"]}, {"args": "http"}):
+                r = await admin.patch("/api/hosted/notes2", json=bad)
+                assert r.status_code == 400, (bad, r.text)
+            r = await admin.patch("/api/hosted/notes2", json={
+                "image": "docker.io/me/demo-mcp:0.2.0", "env": {"AUTH_HEADER": None, "LOG": "debug"}})
+            assert r.status_code == 200, r.text
+            spec = fake.items["notes2"]["spec"]
+            assert spec["image"] == "docker.io/me/demo-mcp:0.2.0"
+            assert spec["env"] == {"DEMO_SERVER": "notes", "LOG": "debug"}
+            assert (spec["port"], spec["tokenEnv"]) == (8000, "AUTH_TOKEN")  # untouched
+            assert r.json()["env"] == ["DEMO_SERVER", "LOG"]
 
             assert [h["name"] for h in (await admin.get("/api/hosted")).json()] == ["notes2", "github"]
             assert (await admin.delete("/api/hosted/notes2")).status_code == 202

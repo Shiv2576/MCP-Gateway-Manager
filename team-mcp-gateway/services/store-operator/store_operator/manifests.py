@@ -418,6 +418,9 @@ def hosted_deployment(spec: dict) -> dict:
         "metadata": {"name": "mcp", "labels": HOSTED_APP},
         "spec": {
             "replicas": 1,
+            # An update starts the new pod first and stops the old one only once the new one is
+            # ready, so a bad image never takes the server down (the quota leaves room for two).
+            "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
             "selector": {"matchLabels": HOSTED_APP},
             "template": {
                 "metadata": {"labels": HOSTED_APP},
@@ -460,6 +463,30 @@ def unschedulable(pods: list[tuple[str, str, datetime]], now: datetime) -> str:
             head = f"not enough {' and '.join(short)} left in the cluster" if short else "no node can run it"
             return f"{head} ({name}: {message})"[:500]
     return ""
+
+
+def serving(spec: dict) -> dict:
+    """What PATCH /api/hosted may change, so what a rollback restores; empty args and env are
+    stated, so a rollback also removes ones the failed update added."""
+    return {"image": spec["image"], "args": spec.get("args") or [], "env": spec.get("env") or {}}
+
+
+def rollout_done(generation: int, observed: int | None, want: int, updated: int | None,
+                 available: int | None, total: int | None) -> bool:
+    """The Deployment runs only the new version: the controller saw this spec, every pod is
+    updated and available, and the old ReplicaSet's pod is gone."""
+    return (observed or 0) >= generation and (updated or 0) == want and (available or 0) >= want and (total or 0) == want
+
+
+def hosted_update_progress(done: bool, waiting: list[tuple[str, str]]) -> tuple[str, str]:
+    """An update's state: done, failed (a new pod is stuck: roll back now, not after the
+    timeout), or still waiting."""
+    if done:
+        return "done", ""
+    for reason, message in waiting:
+        if reason in STUCK:
+            return "failed", f"{reason}: {message}"[:300]
+    return "waiting", "rolling out the new version"
 
 
 def hosted_progress(ready: bool, waiting: list[tuple[str, str]]) -> tuple[str, str]:

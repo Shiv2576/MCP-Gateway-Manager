@@ -15,6 +15,10 @@ rules:
   - apiGroups: ["mcpgateway.example.com"]
     resources: ["stores", "mcpgateways", "hostedservers"]
     verbs: ["get", "list", "create", "delete"]
+  # PATCH /api/hosted/{name}: a new image, args or env, rolled out by the operator.
+  - apiGroups: ["mcpgateway.example.com"]
+    resources: ["hostedservers"]
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -106,6 +106,8 @@ async def create_gateway(request: Request) -> Response:
     slug, name = _str(data, "slug"), _str(data, "name")
     if not SLUG.match(slug):
         raise HTTPError(400, "slug: 2-20 of a-z 0-9 and -, starting with a letter")
+    if slug == "control":  # server_status names the control plane's health checks this
+        raise HTTPError(400, "slug: 'control' is reserved")
     public_url = _url(_str(data, "public_url")).rstrip("/") if data.get("public_url") else None
     tailnet = request.app.state.settings.tailnet_domain
     if public_url is None and tailnet:

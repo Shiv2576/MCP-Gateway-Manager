@@ -359,15 +359,70 @@ def on_hosted_created(name, spec, labels, patch, retry, logger, **_):
     logger.info(f"hosted {name}: deployed into {ns}")
 
 
-def _waiting_reasons(core: CoreV1Api, ns: str) -> list[tuple[str, str]]:
+def _waiting_reasons(core: CoreV1Api, ns: str, since: datetime | None = None) -> list[tuple[str, str]]:
+    """Why containers are waiting; with since, only pods created since then: during an update the
+    old pod may itself be crash-looping (that's why it's being fixed) and must not count."""
     pods = core.list_namespaced_pod(ns, label_selector="app.kubernetes.io/name=hosted-mcp").items
     return [(cs.state.waiting.reason or "", cs.state.waiting.message or "")
-            for p in pods for cs in (p.status.container_statuses or []) if cs.state and cs.state.waiting]
+            for p in pods if since is None or p.metadata.creation_timestamp >= since
+            for cs in (p.status.container_statuses or []) if cs.state and cs.state.waiting]
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _replace_deployment(ns: str, spec: dict) -> None:
+    AppsV1Api().replace_namespaced_deployment("mcp", ns, m.hosted_deployment(spec))
+
+
+@kopf.on.update(m.GROUP, m.VERSION, m.HOSTED_PLURAL, field="spec")
+def on_hosted_updated(name, spec, old, status, meta, patch, logger, **_):
+    """PATCH /api/hosted changed the image, args or env. A running server is updated in place:
+    the old pod keeps serving until the new one is ready (reconcile_hosted rolls back if not)."""
+    if meta.get("deletionTimestamp"):
+        return
+    ns = m.hosted_namespace_name(name)
+    if status.get("phase") in ("Ready", "Updating"):
+        # Through repeated edits, roll back to what last ran, not to a version that never came up.
+        last = status.get("serving") or m.serving(old or {})
+        try:
+            _replace_deployment(ns, spec)
+        except ApiException as e:
+            # kopf retries this handler; meanwhile the dashboard shows the update is pending and why.
+            # updateApplied=False: the Deployment still runs the old spec, so reconcile_hosted must
+            # not read its finished rollout as this update being done.
+            _could_not_apply(name, e, phase="Updating", serving=last, updateApplied=False, updateStarted=_now())
+        patch.status.update(phase="Updating", message=f"rolling out {spec['image']}", serving=last,
+                            updateStarted=_now(), updateApplied=True)
+        logger.info(f"hosted {name}: rolling out {spec['image']}")
+        return
+    try:  # still deploying or failed: start the wait again with the new spec
+        _replace_deployment(ns, spec)
+    except ApiException as e:
+        if e.status != 404:
+            _could_not_apply(name, e, phase="Provisioning", startedAt=_now())
+    patch.status.update(phase="Provisioning", message="deploying", startedAt=_now())
+
+
+def _could_not_apply(name: str, e: ApiException, **fields) -> None:
+    """Show why an update isn't applied yet, then let kopf retry. Written straight to the status:
+    a handler that raises can't rely on its own status patch."""
+    message = f"waiting to apply the update: the Kubernetes API answered {e.status} {e.reason or ''}".strip()
+    CustomObjectsApi().patch_namespaced_custom_object_status(
+        m.GROUP, m.VERSION, NAMESPACE, m.HOSTED_PLURAL, name, {"status": {**fields, "message": message[:500]}})
+    raise kopf.TemporaryError(message, delay=10)
 
 
 @kopf.timer(m.GROUP, m.VERSION, m.HOSTED_PLURAL, interval=5)
 def reconcile_hosted(name, spec, meta, status, patch, logger, **_):
-    if status.get("phase") != "Provisioning" or meta.get("deletionTimestamp"):
+    if meta.get("deletionTimestamp"):
+        return
+    if status.get("phase") == "Updating":
+        if status.get("updateApplied", True):  # not yet applied: on_hosted_updated is still retrying
+            _reconcile_update(name, spec, status, patch, logger)
+        return
+    if status.get("phase") != "Provisioning":
         return
     ns = m.hosted_namespace_name(name)
     core = CoreV1Api()
@@ -381,8 +436,40 @@ def reconcile_hosted(name, spec, meta, status, patch, logger, **_):
         logger.info(f"hosted {name}: ready and registered in the gateway")
     elif stuck := _unschedulable(core, ns):
         patch.status.update(phase="Failed", message=stuck)
-    elif m.timed_out(meta["creationTimestamp"], datetime.now(timezone.utc), m.HOSTED_TIMEOUT_S):
+    elif m.timed_out(status.get("startedAt") or meta["creationTimestamp"], datetime.now(timezone.utc), m.HOSTED_TIMEOUT_S):
         patch.status.update(phase="Failed", message=f"not ready after {m.HOSTED_TIMEOUT_S // 60} min: {message}")
+    else:
+        patch.status["message"] = message
+
+
+def _reconcile_update(name, spec, status, patch, logger) -> None:
+    ns = m.hosted_namespace_name(name)
+    last = status["serving"]
+    try:
+        d = AppsV1Api().read_namespaced_deployment("mcp", ns)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        patch.status.update(phase="Failed", updateStarted=None, message="the server's Deployment is gone; delete and recreate it")
+        return
+    want = d.spec.replicas or 1
+    done = m.rollout_done(d.metadata.generation, d.status.observed_generation, want,
+                          d.status.updated_replicas, d.status.available_replicas, d.status.replicas)
+    started = datetime.fromisoformat(status["updateStarted"])
+    state, message = m.hosted_update_progress(done, _waiting_reasons(CoreV1Api(), ns, since=started))
+    if state == "waiting" and m.timed_out(status["updateStarted"], datetime.now(timezone.utc), m.HOSTED_TIMEOUT_S):
+        state, message = "failed", f"not ready after {m.HOSTED_TIMEOUT_S // 60} min"
+    if state == "done":
+        patch.status.update(phase="Ready", message="", serving=None, updateStarted=None, updateApplied=None)
+        logger.info(f"hosted {name}: now serving {spec['image']}")
+    elif state == "failed":
+        # Like helm --atomic: put back what last ran. The spec keeps the failed image, so the
+        # dashboard shows what was asked for next to why it isn't running; serving stays set,
+        # so the next update's rollback target is still this working version, not the spec.
+        _replace_deployment(ns, {**spec, **last})
+        patch.status.update(phase="Ready", serving=last, updateStarted=None, updateApplied=None,
+                            message=f"update to {spec['image']} failed ({message}); still serving {last['image']}"[:500])
+        logger.warning(f"hosted {name}: update to {spec['image']} failed, rolled back: {message}")
     else:
         patch.status["message"] = message
 

@@ -213,8 +213,9 @@ and edges refuse to start without it. Before merging or rolling out this version
 kubectl -n mercora patch secret gateway-credentials --type merge -p "{\"stringData\":{\"REQUEST_STATE_KEY\":\"$(openssl rand -base64 32)\"}}"
 ```
 
-The operator image must be rebuilt (it bundles the chart), and existing `gw-*` edges upgraded
-by hand with helm.
+With GitOps (docs/gitops.md) nothing else is manual: CI rebuilds the operator image (it bundles
+the chart), and the operator upgrades the `gw-*` edges and each store's woo-mcp when their image
+tags change.
 
 Each store's Secrets are made by the operator, as on local.
 
