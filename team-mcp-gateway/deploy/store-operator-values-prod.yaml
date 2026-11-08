@@ -3,11 +3,11 @@
 # Set by CI (.github/workflows/ci.yaml) to the commit it built; Argo CD deploys it.
 image:
   repository: ghcr.io/shiv2576/store-operator
-  tag: "a495ce0a882e38d8e08a684b46550ff6594fcfa2"
+  tag: "cc6ebb35ec8ac7b0cfa95711b5410e37b2f310d2"
 gatewayUrl: http://team-gateway:8000
 maxStores: 5
 edgeImageRepository: ghcr.io/shiv2576/gateway
-edgeImageTag: "a495ce0a882e38d8e08a684b46550ff6594fcfa2"
+edgeImageTag: "cc6ebb35ec8ac7b0cfa95711b5410e37b2f310d2"
 wooMcpImage:
   repository: ghcr.io/shiv2576/woo-mcp
   tag: "2c832c63496ab54a4e5ce0404787cc6d4c7fdbf0"
