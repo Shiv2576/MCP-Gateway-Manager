@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import db as store
+from . import events
 from .api import HTTPError, _server_ids, _str, _url, body, current_user, handler, require_admin
 from .kube import AlreadyExists, gateway_resource
 
@@ -160,6 +161,7 @@ async def delete_gateway(request: Request) -> Response:
     await kube.delete(slug)  # the operator uninstalls the edge
     if row is not None:
         conn.execute("DELETE FROM gateways WHERE id = ?", (row["id"],))
+        events.notify(conn, slug)
     return JSONResponse({"ok": True}, status_code=202)
 
 
@@ -178,6 +180,7 @@ async def set_gateway_servers(request: Request) -> Response:
             "INSERT INTO gateway_servers (gateway_id, server_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
             [(row["id"], s) for s in ids],
         )
+    events.notify(conn, row["slug"])
     return JSONResponse({"ok": True, "server_ids": ids})
 
 
@@ -215,6 +218,7 @@ async def set_pii(request: Request) -> Response:
     if not isinstance(enabled, bool):
         raise HTTPError(400, "enabled must be true or false")
     request.app.state.db.execute("UPDATE gateways SET pii_protection = ? WHERE id = ?", (enabled, row["id"]))
+    events.notify(request.app.state.db, row["slug"])  # PII protection changes the tools' output schemas
     return JSONResponse({"ok": True, "pii_protection": enabled})
 
 

@@ -28,7 +28,7 @@ from mcp.server.mcpserver import MCPServer
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "demo-mcp"))
 from demo_mcp import TokenGuard, build_fx, build_notes  # noqa: E402
 
-from tests import KEY  # noqa: E402
+from tests import KEY, STATE_KEY  # noqa: E402
 from app.main import Settings, create_app  # noqa: E402
 
 ADMIN = ("admin", "admin-password-123")
@@ -106,7 +106,7 @@ async def add_denies(admin: httpx2.AsyncClient, user_id: int, gateway: str, tool
 
 
 def edge_settings(db_url: str, slug: str, **kw) -> Settings:
-    return Settings(mode="edge", gateway_slug=slug, database_url=db_url, credentials_key=KEY, **{"refresh_interval_s": 0.5, **kw})
+    return Settings(mode="edge", gateway_slug=slug, database_url=db_url, credentials_key=KEY, **{"refresh_interval_s": 0.5, "request_state_key": STATE_KEY, **kw})
 
 
 async def wait_tools(url: str, key: str, n: int, timeout: float = 5) -> set[str]:

@@ -33,7 +33,8 @@ kubectl -n mercora create secret generic gateway-db --from-literal=POSTGRES_PASS
 kubectl -n mercora create secret generic gateway-admin --from-literal=SETUP_TOKEN=$(openssl rand -hex 16) \
   --from-literal=OPENROUTER_API_KEY=sk-or-...
 kubectl -n mercora create secret generic gateway-credentials \
-  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
+  --from-literal=REQUEST_STATE_KEY="$(openssl rand -base64 32)"
 ```
 
 ### Step 3 — Build and import images
@@ -233,7 +234,7 @@ kubectl get pods -A; kubectl get certificate -A
 | Choice | Why | Trade-off |
 | --- | --- | --- |
 | Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache. |
-| Stateless edges and chat | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | No server push (e.g. tools-changed notifications). |
+| Stateless edges and chat | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | Still no sessions. On protocol 2026-07-28 the edges add write confirmation and over-budget reason (elicitation), progress, cancellation and tools-changed push; older clients get the old behaviour, but receive event-stream responses instead of plain JSON (real MCP clients accept both). |
 | One central Postgres | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request. | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
 | Write budgets + admin approval | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure. | A big job waits for an admin. |
 

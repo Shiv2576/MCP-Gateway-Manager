@@ -143,12 +143,13 @@ def test_a_filter_failure_fails_only_that_call(db_url, monkeypatch):
                 def boom(*a):
                     raise RuntimeError("bug")
 
+                real = upstream_mod.redact_result
                 monkeypatch.setattr(upstream_mod, "redact_result", boom)
                 async with gateway_client(support, key) as mcp:
                     r = await mcp.call_tool("shop__get_order", {})
                 assert r.is_error and text(r) == "Result withheld: the PII filter failed. An admin can check the gateway log."
 
-                monkeypatch.undo()
+                monkeypatch.setattr(upstream_mod, "redact_result", real)  # not undo(): keeps conftest's patches
                 # A real catastrophic custom pattern, not a sleep: proves the regex
                 # engine itself lets go of the event loop and stops at the deadline.
                 r = await admin.post("/api/pii-rules", json={"name": "SLOW", "type": "pattern", "match": r"(\w|\w\w)+$"})

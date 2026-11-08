@@ -16,17 +16,22 @@ import logging
 import random
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import httpx2
-from mcp import Client
-from mcp.client.streamable_http import streamable_http_client
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolResult, InputRequiredResult, TextContent, Tool
 
+from . import events
 from .db import allowed_tools, connection_identity
 from .pii import FILTER_TIMEOUT, load_rules, redact_result
+from .pool import UpstreamPool
+from .ssrf import Blocked
+
+if TYPE_CHECKING:
+    from .interaction import Ask
 
 log = logging.getLogger("gateway")
 
@@ -55,6 +60,7 @@ WITHHELD = {
     "FILTER_ERROR": "Result withheld: the PII filter failed. An admin can check the gateway log.",
     "FILTER_TIMEOUT": "Result withheld: the PII filter took too long. An admin can check the PII rules.",
 }
+CANCELLED = "cancelled by the client"
 NO_RESULT = "no result recorded: still running, or the gateway stopped mid-call"
 PAYLOAD_CAP = 65_536  # characters of a result kept in the audit log
 STALE_TOOLS_S = 300  # a down server keeps listing its last good tools this long, then drops them
@@ -90,6 +96,8 @@ def _root_cause(exc: BaseException) -> BaseException:
 
 def describe_failure(name: str, exc: BaseException, timeout: float) -> str:
     exc = _root_cause(exc)
+    if isinstance(exc, Blocked):
+        return f"Upstream '{name}': {exc}."
     if isinstance(exc, (TimeoutError, httpx2.TimeoutException)):
         return f"Upstream '{name}' did not answer within {timeout:g}s."
     if isinstance(exc, httpx2.HTTPStatusError):
@@ -113,15 +121,13 @@ def shared_headers(row: dict, vault) -> dict | None:
 
 @contextlib.asynccontextmanager
 async def connect(row: dict, timeout: float, headers: dict):
-    # The caller picks the credential. Headers from the gateway's own MCP
-    # clients are never forwarded.
-    async with httpx2.AsyncClient(
-        headers=headers, timeout=timeout, follow_redirects=False
-    ) as http:
-        async with Client(
-            streamable_http_client(row["url"], http_client=http), mode="auto"
-        ) as client:
+    """One-off connection over a throwaway pool (tests); Upstreams.connect uses the shared one."""
+    pool = UpstreamPool()
+    try:
+        async with pool.session(row, headers, timeout) as client:
             yield client
+    finally:
+        await pool.aclose()
 
 
 class Upstreams:
@@ -147,9 +153,13 @@ class Upstreams:
         self.gateway_slug = gateway_slug
         self.vault = vault
         self.approval_timeout = approval_timeout
+        self.pool = UpstreamPool()
         self.status: dict[int, Status] = {}
         self._tasks: set[asyncio.Task] = set()
         self._retrying: set[int] = set()  # servers with a recheck already scheduled
+
+    def connect(self, row: dict, timeout: float, headers: dict):
+        return self.pool.session(row, headers, timeout)
 
     def _attached(self) -> set[int] | None:
         """Server ids attached to this edge's gateway, for its health loop;
@@ -164,7 +174,7 @@ class Upstreams:
 
     # ------------------------------------------------------------ health loop
 
-    async def refresh_one(self, row: dict) -> None:
+    async def refresh_one(self, row: dict, notify: bool = True) -> None:
         prev = self.status.get(row["id"])
         status = Status(checked_at=time.time())
         headers = shared_headers(row, self.vault)
@@ -173,7 +183,7 @@ class Upstreams:
         else:
             try:
                 with anyio.fail_after(self.list_timeout):
-                    async with connect(row, self.list_timeout, headers) as client:
+                    async with self.connect(row, self.list_timeout, headers) as client:
                         tools, cursor = [], None
                         while True:
                             page = await client.list_tools(cursor=cursor)
@@ -191,6 +201,14 @@ class Upstreams:
         if status.state != "ok":
             self._failed(row["id"], status, prev)
         self.status[row["id"]] = status
+        # notify=False after a notice: a refresh caused by a notice must not send one, or a
+        # flapping upstream would echo notices between processes without end.
+        if (notify and self.gateway_slug and prev and prev.state == status.state == "ok"
+                and {t.name for t in prev.tools} != {t.name for t in status.tools}):
+            try:  # the server's tools changed between two good checks: tell this gateway's listeners
+                await anyio.to_thread.run_sync(events.notify, self.db, self.gateway_slug)
+            except Exception:
+                log.exception("could not notify %s", self.gateway_slug)
 
     def _failed(self, server_id: int, status: Status, prev: Status | None) -> None:
         status.failures = (prev.failures if prev else 0) + 1
@@ -227,14 +245,14 @@ class Upstreams:
         attached = self._attached()
         return [r for r in rows if attached is None or r["id"] in attached]
 
-    async def refresh_all(self) -> None:
+    async def refresh_all(self, notify: bool = True) -> None:
         rows = await anyio.to_thread.run_sync(self._servers_to_check)
         ids = {r["id"] for r in rows}
         for gone in self.status.keys() - ids:
             del self.status[gone]
         # Concurrently, each under its own timeout: one hung server costs
         # list_timeout once, not once per server.
-        await asyncio.gather(*(self.refresh_one(r) for r in rows))
+        await asyncio.gather(*(self.refresh_one(r, notify) for r in rows))
 
     async def run_forever(self) -> None:
         try:
@@ -247,6 +265,7 @@ class Upstreams:
         finally:  # shutdown: no retry may outlive the database connection
             for task in list(self._tasks):
                 task.cancel()
+            await self.pool.aclose()
 
     def read_only(self, server_id: int, tool: str) -> bool:
         """The upstream marks this tool read-only (MCP readOnlyHint). Unknown or not yet
@@ -338,10 +357,13 @@ class Upstreams:
     async def call_tool(
         self, user: dict, gateway_slug: str, name: str, arguments: dict[str, Any] | None, *,
         approval_id: int | None = None, timeout: float | None = None, client: str | None = None,
-    ) -> CallToolResult:
+        progress: Callable[[float, float | None, str | None], Awaitable[None]] | None = None,
+        ask: Ask | None = None,
+    ) -> CallToolResult | InputRequiredResult:
         """The one path for every tool call: route, check the gateway's policy and the
         caller's write budget, call with a timeout, filter PII, audit. An approved run
-        (approval_id set) skips the rate limit and the budget; nothing else."""
+        (approval_id set) skips the rate limit and the budget; nothing else. With `ask`
+        from a client that can answer, a write is confirmed with the user first."""
         from . import approvals
 
         server_name, sep, tool = name.partition(SEP)
@@ -355,7 +377,7 @@ class Upstreams:
         # and with it every other request on this pod.
         def prepare():
             row = self.db.execute("SELECT * FROM servers WHERE name = ?", (server_name,)).fetchone()
-            identity, headers, result = None, {}, None
+            identity, headers, result, note = None, {}, None, None
             # Written before the upstream is called, so a pod that dies mid-call still
             # leaves a row; the UPDATE below replaces this with the outcome.
             audit_id = self.db.execute(
@@ -373,26 +395,48 @@ class Upstreams:
                 result = error_result(f"Unknown tool '{name}'. Tools are named <server>__<tool>.")
             elif not row["enabled"]:
                 result = error_result(f"Server '{server_name}' is disabled.")
+            # After the policy checks, before charging: asking charges nothing.
+            elif approval_id is None and ask and (asked := self._confirm(ask, user, gateway_slug, row, tool, name,
+                                                                          arguments or {}, client)):
+                result, note = asked
             elif approval_id is None and (over := approvals.charge(
                     self, user, gateway_slug, row, tool, name, arguments or {}, audit_id)):
-                # Over budget: ask an admin right away. request() keeps one open request per member
-                # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
-                filed, _, code = approvals.request(self, user, gateway_slug, {"tool": name, "arguments": arguments or {}}, client)
-                result = error_result(over if code == "bad input" else f"{over} {filed.content[0].text}")
+                if ask and (asked := self._reason(ask, user, gateway_slug, row, tool, name, arguments or {}, over)):
+                    result, note = asked  # budget used up since the confirmation: ask for a reason
+                else:
+                    # Over budget: ask an admin right away. request() keeps one open request per member
+                    # and tool (and locks the tool for an hour after a rejection), so retries cannot spam.
+                    filed, _, code = approvals.request(self, user, gateway_slug,
+                                                       {"tool": name, "arguments": arguments or {}}, client)
+                    result = error_result(over if code == "bad input" else f"{over} {filed.content[0].text}")
             else:
                 headers, identity, refusal = self._credential(user, gateway_slug, row)
                 if refusal:
                     result = error_result(refusal)
-            return row, audit_id, headers, identity, result
+            return row, audit_id, headers, identity, result, note
 
-        row, audit_id, headers, identity, result = await anyio.to_thread.run_sync(prepare)
+        row, audit_id, headers, identity, result, note = await anyio.to_thread.run_sync(prepare)
+        if isinstance(result, InputRequiredResult):  # a question: no upstream, PII or alert step
+            await anyio.to_thread.run_sync(lambda: self.db.execute(
+                "UPDATE audit_log SET error = ?, duration_ms = ? WHERE id = ?",
+                (note, int((time.monotonic() - started) * 1000), audit_id)))
+            return result
         if result is None:
             try:
                 with anyio.fail_after(timeout):
-                    async with connect(row, timeout, headers) as upstream:
-                        result = await upstream.call_tool(tool, arguments or {})
+                    async with self.connect(row, timeout, headers) as upstream:
+                        result = await upstream.call_tool(tool, arguments or {}, progress_callback=progress)
             except Exception as exc:
                 result = error_result(describe_failure(server_name, exc, timeout))
+            except anyio.get_cancelled_exc_class():
+                # The client closed the call's stream. The upstream connection is already closed
+                # by the unwinding; the audit row must not stay NO_RESULT, and it keeps counting
+                # against the budget (approvals._window).
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(lambda: self.db.execute(
+                        "UPDATE audit_log SET error = ?, duration_ms = ? WHERE id = ?",
+                        (CANCELLED, int((time.monotonic() - started) * 1000), audit_id)))
+                raise
 
         result = _scrub(result, headers)  # for the caller too, whatever the PII setting
         filtered, pii = await self._redact(result, row and row["id"], tool, name)
@@ -406,8 +450,8 @@ class Upstreams:
         masked_args, _ = await self._redact(
             CallToolResult(content=[TextContent(type="text", text=json.dumps(arguments or {}))]),
             row and row["id"], tool, name)
-        error = None
-        if result.is_error:
+        error = note
+        if result.is_error and note is None:
             error = (" ".join(c.text for c in logged.content if isinstance(c, TextContent))[:500]
                      if logged else "error text not kept: the PII filter failed")
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -431,16 +475,61 @@ class Upstreams:
             if not result.is_error and logged is not None and row is not None:
                 from . import alerts  # here, like approvals: avoids an import cycle through api
 
-                listed = next((t for t in self.status.get(row["id"], Status()).tools if t.name == tool), None)
                 try:
                     alerts.fire(self.db, user=user, gateway_slug=gateway_slug, server_id=row["id"], tool=tool,
-                                title=(listed and (listed.title or (listed.annotations and listed.annotations.title))) or tool,
+                                title=self._title(row["id"], tool) or tool,
                                 arguments=arguments or {}, result=logged, approval_id=approval_id, audit_id=audit_id)
                 except Exception:
                     log.exception("team alert for %s failed", name)  # the caller gets their result either way
 
         await anyio.to_thread.run_sync(finish)
         return result
+
+    def _title(self, server_id: int, tool: str) -> str | None:
+        listed = next((t for t in self.status.get(server_id, Status()).tools if t.name == tool), None)
+        return listed and (listed.title or (listed.annotations and listed.annotations.title))
+
+    def _confirm(self, ask: Ask, user, gateway_slug: str, row: dict, tool: str, name: str,
+                 arguments: dict, client: str | None = None
+                 ) -> tuple[CallToolResult | InputRequiredResult, str | None] | None:
+        """Write confirmation, or a reason when over budget: (what to answer, its audit error),
+        or None to go on and charge."""
+        from . import approvals, interaction
+
+        if not ask.can_elicit or self.read_only(row["id"], tool):
+            return None
+        if ask.state is None:
+            over = approvals.fits(self, user, gateway_slug, row, tool, name, arguments)
+            if over is None:
+                return interaction.confirm_request(name, self._title(row["id"], tool), arguments), "confirmation asked"
+            return self._reason(ask, user, gateway_slug, row, tool, name, arguments, over)
+        kind = ask.state.get("ask")
+        if kind not in ("confirm", "reason") or ask.state.get("call") != interaction.call_hash(name, arguments):
+            return error_result("This answer was given for a different call. Call the tool again."), None
+        if kind == "reason":
+            answer = interaction.accepted(ask, "reason")
+            if answer is None or not answer.content:
+                over = approvals.fits(self, user, gateway_slug, row, tool, name, arguments)
+                return error_result(over or interaction.DECLINED), "declined by the user"
+            filed, _, _ = approvals.request(self, user, gateway_slug, {
+                "tool": name, "arguments": arguments, "summary": answer.content.get("reason")}, client)
+            return error_result(filed.content[0].text), None  # an error, like today's over-budget answer
+        answer = interaction.accepted(ask, "confirm")
+        if answer is None or not answer.content or answer.content.get("confirm") is not True:
+            return error_result(interaction.DECLINED), "declined by the user"
+        return None  # accepted: charged and run like any call
+
+    def _reason(self, ask: Ask, user, gateway_slug: str, row: dict, tool: str, name: str, arguments: dict,
+                over: str) -> tuple[CallToolResult | InputRequiredResult, str | None] | None:
+        """Over budget, a client that can answer: ask why, unless filing would be refused anyway.
+        None for today's path (no question)."""
+        from . import approvals, interaction
+
+        if not ask.can_elicit or isinstance(approvals.measure(tool, arguments), str):
+            return None  # a call that cannot be counted cannot be filed either
+        if refused := approvals.would_refuse(self, user, gateway_slug, name):
+            return error_result(f"{over} {refused.content[0].text}"), None
+        return interaction.reason_request(name, self._title(row["id"], tool), arguments, over), "reason asked"
 
     async def _builtin(self, user, gateway_slug: str, name: str, tool: str, arguments: dict, client):
         """gateway__request_approval and gateway__wait_for_approval. Waiting is not

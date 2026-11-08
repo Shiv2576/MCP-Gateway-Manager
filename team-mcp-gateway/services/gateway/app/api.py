@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import ipaddress
 import re
 import secrets
 import socket
@@ -22,6 +21,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import db as store
+from . import events
+from .ssrf import OPERATOR_HOST, public
 from .upstream import Status, Upstreams
 
 SESSION_COOKIE = "gw_session"
@@ -31,9 +32,6 @@ HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 USERNAME = re.compile(r"^[a-z0-9._-]{2,32}$")
 # Set by the HTTP or MCP transport; a member's credential must not replace them.
 RESERVED_HEADERS = {"host", "content-length", "content-type", "accept", "connection", "transfer-encoding"}
-# The only cluster-internal upstreams, and only the store operator may register them:
-# MCP servers it runs in its own locked-down namespaces (store-<name>, mcp-<name>).
-OPERATOR_HOST = re.compile(r"^[a-z0-9-]+\.(?:store|mcp)-[a-z0-9-]+\.svc\.cluster\.local$")
 
 
 class HTTPError(Exception):
@@ -461,8 +459,8 @@ def personal_header(value) -> str | None:
 def check_upstream_url(value: str, operator: bool = False) -> str:
     """SSRF guard: an admin-added URL must resolve only to public addresses, so the
     gateway cannot be aimed at cloud metadata, Postgres, the Kubernetes API or other
-    pods. Only the operator may register its own store/hosted servers. The gateway's
-    egress NetworkPolicy catches a DNS record changed later."""
+    pods. Only the operator may register its own store/hosted servers. A DNS record
+    changed later is caught on connect (ssrf.GuardedBackend), and by the egress NetworkPolicy."""
     try:
         parts = urlsplit(value)
         scheme, host, port = parts.scheme, (parts.hostname or "").rstrip("."), parts.port
@@ -478,12 +476,8 @@ def check_upstream_url(value: str, operator: bool = False) -> str:
         infos = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
     except (OSError, UnicodeError):
         raise HTTPError(400, f"url: cannot resolve {host}") from None
-    for *_, addr in infos:
-        ip = ipaddress.ip_address(addr[0].split("%")[0])
-        if getattr(ip, "ipv4_mapped", None):
-            ip = ip.ipv4_mapped
-        if not ip.is_global:
-            raise HTTPError(400, f"url: {host} is a private or internal address")
+    if not all(public(addr[0]) for *_, addr in infos):
+        raise HTTPError(400, f"url: {host} is a private or internal address")
     return value
 
 
@@ -543,6 +537,7 @@ async def create_server(request: Request) -> Response:
          personal_header(data.get("personal_header")), time.time()),
     ).fetchone()["id"]
     request.app.state.upstreams.refresh_soon(sid)
+    events.notify(conn, "*")
     row = conn.execute("SELECT * FROM servers WHERE id = ?", (sid,)).fetchone()
     return JSONResponse(_server(row, None), status_code=201)
 
@@ -582,6 +577,7 @@ async def update_server(request: Request) -> Response:
         (url, enabled, header, value, personal, sid),
     )
     request.app.state.upstreams.refresh_soon(sid)
+    events.notify(conn, "*")  # also covers the enabled toggle
     row = conn.execute("SELECT * FROM servers WHERE id = ?", (sid,)).fetchone()
     return JSONResponse(_server(row, None))
 
@@ -599,6 +595,7 @@ async def delete_server(request: Request) -> Response:
         raise HTTPError(400, "this server belongs to a store or hosted server; delete that instead")
     conn.execute("DELETE FROM servers WHERE id = ?", (sid,))
     request.app.state.upstreams.status.pop(sid, None)
+    events.notify(conn, "*")
     return JSONResponse({"ok": True})
 
 

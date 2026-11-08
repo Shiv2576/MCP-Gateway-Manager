@@ -52,6 +52,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.credentialsSecret }}
                   key: CREDENTIALS_KEY
+            {{- if eq .Values.mode "edge" }}
+            - name: REQUEST_STATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentialsSecret }}
+                  key: REQUEST_STATE_KEY
+            {{- end }}
             - name: CALL_TIMEOUT_S
               value: {{ .Values.callTimeoutSeconds | quote }}
             - name: LIST_TIMEOUT_S

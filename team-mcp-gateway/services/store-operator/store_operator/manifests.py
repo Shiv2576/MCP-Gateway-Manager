@@ -335,7 +335,10 @@ def hosted_namespace(name: str, owner_id: str) -> dict:
     return {
         "apiVersion": "v1",
         "kind": "Namespace",
-        "metadata": {"name": hosted_namespace_name(name), "labels": {OWNER_LABEL: owner_id, HOSTED_LABEL: name}},
+        # The API server itself refuses any pod here that breaks the restricted level,
+        # whatever creates it: hosted_deployment meets it, a bug or leaked operator token cannot.
+        "metadata": {"name": hosted_namespace_name(name), "labels": {
+            OWNER_LABEL: owner_id, HOSTED_LABEL: name, "pod-security.kubernetes.io/enforce": "restricted"}},
     }
 
 
@@ -401,8 +404,11 @@ def hosted_deployment(spec: dict) -> dict:
         "readinessProbe": {"tcpSocket": {"port": spec["port"]}, "periodSeconds": 5},
         "livenessProbe": {"tcpSocket": {"port": spec["port"]}, "initialDelaySeconds": 30, "periodSeconds": 20},
         "resources": HOSTED_RESOURCES,
-        # Not runAsNonRoot: many published images run as root and would never start.
-        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+        # A root image never starts (CreateContainerConfigError, shown as the server's error);
+        # it needs a numeric non-root USER. /tmp is the only writable path.
+        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                            "readOnlyRootFilesystem": True},
+        "volumeMounts": [{"name": "tmp", "mountPath": "/tmp"}],
     }
     if not container["args"]:
         del container["args"]  # keep the image's own CMD
@@ -419,8 +425,9 @@ def hosted_deployment(spec: dict) -> dict:
                     "automountServiceAccountToken": False,  # third-party code gets no cluster API access
                     "enableServiceLinks": False,
                     "priorityClassName": STORE_PRIORITY,
-                    "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
+                    "securityContext": {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}},
                     "containers": [container],
+                    "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}],
                 },
             },
         },

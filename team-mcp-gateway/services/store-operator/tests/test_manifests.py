@@ -184,6 +184,7 @@ def test_hosted_names_and_url():
     assert m.hosted_url("notes", SPEC) == "http://mcp.mcp-notes.svc.cluster.local:8000/mcp"
     ns = m.hosted_namespace("notes", "7")
     assert m.owns_hosted_namespace(ns, "notes") and not m.owns_hosted_namespace(ns, "fx")
+    assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
     assert not m.owns_hosted_namespace(m.namespace("notes", "7"), "notes")  # a store namespace is not ours
 
 
@@ -195,6 +196,8 @@ def test_hosted_deployment_and_secret():
     pod = m.hosted_deployment(SPEC)["spec"]["template"]["spec"]
     c = pod["containers"][0]
     assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True and c["securityContext"]["readOnlyRootFilesystem"] is True
+    assert pod["volumes"][0]["emptyDir"] and c["volumeMounts"] == [{"name": "tmp", "mountPath": "/tmp"}]
     assert c["image"] == "me/demo-mcp:0.1.0" and "args" not in c  # image CMD kept
     assert {"name": "DEMO_SERVER", "value": "notes"} in c["env"]
     assert {"name": "AUTH_TOKEN", "valueFrom": {"secretKeyRef": {"name": m.HOSTED_SECRET, "key": "token"}}} in c["env"]

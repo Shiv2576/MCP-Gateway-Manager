@@ -48,7 +48,10 @@ It calls the WooCommerce REST API (`/wp-json/wc/v3`) with a read/write API key.
   localhost-only Host-header allowlist. In a cluster pass `host="0.0.0.0"` or
   every request by Service name is rejected.
 - `stateless_http=True` keeps no session, so several replicas work behind a
-  plain Service.
+  plain Service. On protocol 2026-07-28 the edges add elicitation (write
+  confirmation, over-budget reason), progress, cancellation and `list_changed`
+  push; older clients get the old behaviour, but their responses are now event streams
+  instead of plain JSON (real MCP clients accept both).
 
 ## The gateway
 
@@ -172,7 +175,7 @@ gateway is on the internet while it runs.
 Known limits: Postgres is one replica with no backups: it is the demo's single
 shared failure point (two edge replicas keep a gateway up, not the database).
 Production needs backups and an HA Postgres. Edges are stateless MCP (no
-sessions), so any replica answers any request; the rate limit is per user
+sessions; elicitation, progress, cancellation and push on 2026-07-28 only), so any replica answers any request; the rate limit is per user
 across the organization, in fixed one-minute windows.
 
 ### Shared vs personal identity
@@ -186,7 +189,7 @@ Gateways page, and have each member add their own value under *My
 credentials* (for `woo-mcp`: `<consumer_key>:<consumer_secret>` of a
 WooCommerce REST key made while logged in as themselves). A member without
 one gets an error; the shared credential is never used in its place. Values
-are encrypted with `CREDENTIALS_KEY` and never shown again. Tool permissions
+are encrypted with `CREDENTIALS_KEY` and never shown again. Edges also need `REQUEST_STATE_KEY` (`openssl rand -base64 32`, in the same `gateway-credentials` Secret): it seals the state of interactive calls. Tool permissions
 (teams minus per-member denies on the Members page) are checked first; the
 identity only decides whose credential goes upstream.
 

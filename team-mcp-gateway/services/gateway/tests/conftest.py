@@ -34,7 +34,8 @@ def _loopback_upstreams(monkeypatch):
     """Fake upstreams listen on 127.0.0.1, which the SSRF guard refuses outside tests."""
     from urllib.parse import urlsplit
 
-    from app import api
+    from app import api, ssrf
     check = api.check_upstream_url
     monkeypatch.setattr(api, "check_upstream_url", lambda url, operator=False:
                         url if urlsplit(url).hostname == "127.0.0.1" else check(url, operator))
+    monkeypatch.setattr(ssrf.GuardedBackend, "allowed", lambda self, a: a == "127.0.0.1" or ssrf.public(a))

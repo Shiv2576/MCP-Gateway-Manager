@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from mcp.types import Tool
 
-from app import db as store, upstream
+from app import db as store
 from app.upstream import STALE_TOOLS_S, Upstreams
 
 
@@ -30,7 +30,7 @@ def test_failed_check_keeps_tools_and_rechecks_soon(db_url, monkeypatch):
 
         yield SimpleNamespace(list_tools=list_tools)
 
-    monkeypatch.setattr(upstream, "connect", fake_connect)
+    monkeypatch.setattr(Upstreams, "connect", lambda self, *a: fake_connect(*a))
     ups = Upstreams(conn, call_timeout=1, list_timeout=1, refresh_interval=30)
 
     async def run():

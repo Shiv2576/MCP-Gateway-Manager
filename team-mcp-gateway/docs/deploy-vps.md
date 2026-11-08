@@ -200,10 +200,21 @@ kubectl -n mercora create secret generic gateway-db \
 kubectl -n mercora create secret generic gateway-admin \
   --from-literal=SETUP_TOKEN=$(openssl rand -hex 16)      # add OPENROUTER_API_KEY for chat
 kubectl -n mercora create secret generic gateway-credentials \
-  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+  --from-literal=CREDENTIALS_KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
+  --from-literal=REQUEST_STATE_KEY="$(openssl rand -base64 32)"
 kubectl -n mercora create secret generic notes-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 kubectl -n mercora create secret generic fx-mcp-credentials --from-literal=AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
+
+**Upgrading an existing install:** its `gateway-credentials` Secret has no `REQUEST_STATE_KEY`,
+and edges refuse to start without it. Before merging or rolling out this version, add it:
+
+```
+kubectl -n mercora patch secret gateway-credentials --type merge -p "{\"stringData\":{\"REQUEST_STATE_KEY\":\"$(openssl rand -base64 32)\"}}"
+```
+
+The operator image must be rebuilt (it bundles the chart), and existing `gw-*` edges upgraded
+by hand with helm.
 
 Each store's Secrets are made by the operator, as on local.
 

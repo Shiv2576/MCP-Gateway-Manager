@@ -26,7 +26,11 @@
 - **Postgres is the only shared state.** Edges are stateless MCP
   (`stateless_http`), so any replica answers any request, and policies, keys and
   enabled flags are read per request: a revoke or a policy change applies on the
-  next call with no cache to invalidate.
+  next call with no cache to invalidate. Still no sessions: on protocol
+  2026-07-28 the edges add elicitation (write confirmation, over-budget reason),
+  progress, cancellation and `list_changed` push; older clients get the old
+  behaviour, but their responses are now event streams instead of plain JSON (real MCP
+  clients accept both).
 - **An operator, not the API, touches Kubernetes.** The gateway only writes
   `Store` / `McpGateway` / `HostedServer` resources (RBAC: those resources in
   `mercora`). The kopf operator holds the wider rights and does the Helm

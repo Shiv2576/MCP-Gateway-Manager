@@ -147,8 +147,8 @@ def _window(conn, user_id: int, gateway_slug: str, name: str, now: float) -> lis
     return conn.execute(
         "SELECT at, items, refund_total FROM audit_log WHERE user_id = ? AND gateway = ? AND tool = ?"
         " AND items IS NOT NULL AND approval_id IS NULL AND at > ?"
-        " AND (ok = 1 OR (ok = 0 AND error = ?)) ORDER BY at",
-        (user_id, gateway_slug, name, now - WINDOW_SECONDS, upstream.NO_RESULT),
+        " AND (ok = 1 OR (ok = 0 AND error IN (?, ?))) ORDER BY at",
+        (user_id, gateway_slug, name, now - WINDOW_SECONDS, upstream.NO_RESULT, upstream.CANCELLED),
     ).fetchall()
 
 
@@ -210,6 +210,14 @@ def assess(conn, user: dict, gateway_slug: str, server_id: int, name: str, tool:
     return out
 
 
+def fits(ups, user: dict, gateway_slug: str, row: dict, tool: str, name: str, arguments: dict) -> str | None:
+    """charge()'s check without recording anything: why this call would be refused now, or None."""
+    if ups.read_only(row["id"], tool):
+        return None
+    a = assess(ups.db, user, gateway_slug, row["id"], name, tool, arguments, time.time(), ups.default_items_per_hour)
+    return a and a["refusal"]
+
+
 def charge(ups, user: dict, gateway_slug: str, row: dict, tool: str, name: str,
            arguments: dict, audit_id: int) -> str | None:
     """The budget check of a direct call: why it is refused, or None to run it.
@@ -264,6 +272,33 @@ async def builtin(ups, user: dict, gateway_slug: str, tool: str, arguments: dict
     return upstream.error_result(f"Unknown tool '{BUILTIN}__{tool}'. Tools are named <server>__<tool>."), None, "unknown tool"
 
 
+def _refusal(conn, ups, user: dict, gateway_slug: str, name: str, now: float):
+    """request()'s refusal for an open request or a lock: (result, approval id, audit error), or None."""
+    housekeep(conn, ups.approval_timeout)
+    key = (user["id"], gateway_slug, name)
+    open_ = conn.execute("SELECT id FROM approvals WHERE user_id = ? AND gateway = ? AND tool = ?"
+                         " AND status IN ('pending', 'running') ORDER BY id LIMIT 1", key).fetchone()
+    if open_:
+        return _text(f"Approval #{open_['id']} for {name} is still open. Call gateway__wait_for_approval "
+                     f"with {{\"id\": {open_['id']}}}.", error=True), open_["id"], "already open"
+    locked = conn.execute("SELECT id, decided_at FROM approvals WHERE user_id = ? AND gateway = ? AND tool = ?"
+                          " AND status = 'rejected' AND decided_at > ? ORDER BY decided_at DESC LIMIT 1",
+                          (*key, now - LOCK_SECONDS)).fetchone()
+    if locked:
+        return _text(f"Approval #{locked['id']} was rejected; new requests for this tool are locked until "
+                     f"{_clock(locked['decided_at'] + LOCK_SECONDS)}. Your hourly budget still works.",
+                     error=True), locked["id"], "locked"
+    return None
+
+
+def would_refuse(ups, user: dict, gateway_slug: str, name: str) -> CallToolResult | None:
+    """What request() would answer at once without filing (an open request, a lock), or None.
+    No lock taken: request() checks again under its lock when it files."""
+    with ups.db.transaction() as tx:
+        refused = _refusal(tx, ups, user, gateway_slug, name, time.time())
+    return refused and refused[0]
+
+
 def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | None):
     conn = ups.db
     name, args, summary = arguments.get("tool"), arguments.get("arguments"), arguments.get("summary")
@@ -291,20 +326,8 @@ def request(ups, user: dict, gateway_slug: str, arguments: dict, client: str | N
     with conn.transaction() as tx:
         # Serialized per member and tool, so two requests cannot both pass the checks below.
         tx.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"approval|{user['id']}|{gateway_slug}|{name}",))
-        housekeep(tx, ups.approval_timeout)
-        key = (user["id"], gateway_slug, name)
-        open_ = tx.execute("SELECT id FROM approvals WHERE user_id = ? AND gateway = ? AND tool = ?"
-                           " AND status IN ('pending', 'running') ORDER BY id LIMIT 1", key).fetchone()
-        if open_:
-            return _text(f"Approval #{open_['id']} for {name} is still open. Call gateway__wait_for_approval "
-                         f"with {{\"id\": {open_['id']}}}.", error=True), open_["id"], "already open"
-        locked = tx.execute("SELECT id, decided_at FROM approvals WHERE user_id = ? AND gateway = ? AND tool = ?"
-                            " AND status = 'rejected' AND decided_at > ? ORDER BY decided_at DESC LIMIT 1",
-                            (*key, now - LOCK_SECONDS)).fetchone()
-        if locked:
-            return _text(f"Approval #{locked['id']} was rejected; new requests for this tool are locked until "
-                         f"{_clock(locked['decided_at'] + LOCK_SECONDS)}. Your hourly budget still works.",
-                         error=True), locked["id"], "locked"
+        if refused := _refusal(tx, ups, user, gateway_slug, name, now):
+            return refused
         aid = tx.execute(
             "INSERT INTO approvals (status, user_id, gateway, tool, arguments, items, refund_total, budget, client,"
             " requested_at, summary) VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",

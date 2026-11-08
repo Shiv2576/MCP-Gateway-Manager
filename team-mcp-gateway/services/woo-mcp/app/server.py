@@ -12,7 +12,7 @@ reads when it decides which tool to call, so they are written for the model.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_CEILING, Decimal
@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import anyio
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, model_validator
@@ -483,7 +483,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         except WooError as exc:
             raise ToolError(str(exc)) from exc
 
-    async def all_pages(path: str, params: dict[str, Any]) -> tuple[list[Any], bool]:
+    async def all_pages(
+        path: str, params: dict[str, Any], on_page: Callable[[int], Awaitable[None]] | None = None
+    ) -> tuple[list[Any], bool]:
         """Every row up to MAX_PAGES pages, and whether we stopped early."""
         rows: list[Any] = []
         for page in range(1, MAX_PAGES + 1):
@@ -491,6 +493,8 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
                 "GET", path, params={**params, "per_page": PER_PAGE, "page": page}
             )
             rows += batch
+            if on_page:
+                await on_page(page)
             if len(batch) < PER_PAGE:
                 return rows, False
         return rows, True
@@ -1121,10 +1125,10 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
             status=status,
         )
 
-    async def inventory(days: int) -> tuple[dict[int, dict], list[StockRow], int, bool]:
+    async def inventory(days: int, on_page: Callable[[int], Awaitable[None]] | None = None) -> tuple[dict[int, dict], list[StockRow], int, bool]:
         """Every product by id, a row per stock-tracked one (soonest to run out first),
         how many products track no stock, and whether a page limit cut the data."""
-        products, cut_products = await all_pages("/products", {})
+        products, cut_products = await all_pages("/products", {}, on_page)
         now = datetime.now(timezone.utc)
         fmt = "%Y-%m-%dT%H:%M:%S"
         orders, cut_orders = await sales_in((now - timedelta(days=days)).strftime(fmt), now.strftime(fmt))
@@ -1146,6 +1150,7 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
 
     @server.tool(title="Inventory health", annotations=READ)
     async def get_inventory_health(
+        ctx: Context,
         days: Annotated[int, Field(ge=7, le=90, description="Sales window: per_day is units sold in the last this many days / days")] = STOCK_WINDOW_DAYS,
         limit: Annotated[int, Field(ge=1, le=100, description="How many products to return")] = 50,
     ) -> InventoryHealth:
@@ -1156,7 +1161,9 @@ def build_server(woo: WooClient, settings: Settings) -> MCPServer:
         could arrive); healthy; overstock (nothing sold, or more than overstock_days of stock).
         Reorders go through create_restock_plan, clearance sales through create_clearance_offers;
         both need an admin's approval. No customer data."""
-        _, rows, untracked, truncated = await inventory(days)
+        _, rows, untracked, truncated = await inventory(
+            days, lambda p: ctx.report_progress(p, None, f"fetched page {p}")
+        )
         priced = [r for r in rows if r.cogs]
         return InventoryHealth(
             days=days,

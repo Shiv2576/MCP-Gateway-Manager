@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from . import events
 from .api import HTTPError, _str, body, current_user, handler, require_admin
 from .approvals import REFUND_TOOL
 
@@ -60,6 +61,14 @@ def _views(conn, teams: list[dict]) -> list[dict]:
              "budgets": budgets[t["id"]], "alert_rules": alert_rules[t["id"]]} for t in teams]
 
 
+def _team_slugs(conn, team_id: int) -> list[str]:
+    """The gateways this team has tools on: whose edges to tell when its members or tools change."""
+    return [r["slug"] for r in conn.execute(
+        "SELECT DISTINCT g.slug FROM team_tools tt JOIN gateways g ON g.id = tt.gateway_id WHERE tt.team_id = ?",
+        (team_id,),
+    )]
+
+
 def _team(request: Request) -> dict:
     row = request.app.state.db.execute("SELECT * FROM teams WHERE id = ?", (request.path_params["id"],)).fetchone()
     if row is None:
@@ -98,7 +107,11 @@ async def create_team(request: Request) -> Response:
 async def delete_team(request: Request) -> Response:
     require_admin(request)
     team = _team(request)
-    request.app.state.db.execute("DELETE FROM teams WHERE id = ?", (team["id"],))
+    conn = request.app.state.db
+    slugs = _team_slugs(conn, team["id"])  # read before the cascade removes them
+    conn.execute("DELETE FROM teams WHERE id = ?", (team["id"],))
+    for slug in slugs:
+        events.notify(conn, slug)
     return JSONResponse({"ok": True})
 
 
@@ -117,6 +130,8 @@ async def set_members(request: Request) -> Response:
     with conn.transaction() as tx:
         tx.execute("DELETE FROM team_members WHERE team_id = ?", (team["id"],))
         tx.executemany("INSERT INTO team_members (team_id, user_id) VALUES (?, ?)", [(team["id"], u) for u in set(ids)])
+    for slug in _team_slugs(conn, team["id"]):
+        events.notify(conn, slug)
     return JSONResponse({"ok": True, "user_ids": sorted(set(ids))})
 
 
@@ -155,6 +170,7 @@ async def set_tools(request: Request) -> Response:
         tx.execute("DELETE FROM team_tools WHERE team_id = ? AND gateway_id = ?", (team["id"], gateway["id"]))
         tx.executemany("INSERT INTO team_tools (team_id, gateway_id, server_id, tool) VALUES (?, ?, ?, ?)",
                        [(team["id"], gateway["id"], s, t) for s, t in rows])
+    events.notify(request.app.state.db, request.path_params["slug"])
     return JSONResponse({"ok": True, "count": len(rows)})
 
 
@@ -241,6 +257,7 @@ async def set_denies(request: Request) -> Response:
         tx.execute("DELETE FROM user_denies WHERE user_id = ? AND gateway_id = ?", (user["id"], gateway["id"]))
         tx.executemany("INSERT INTO user_denies (user_id, gateway_id, server_id, tool) VALUES (?, ?, ?, ?)",
                        [(user["id"], gateway["id"], s, t) for s, t in rows])
+    events.notify(conn, request.path_params["slug"])
     return JSONResponse({"ok": True, "count": len(rows)})
 
 

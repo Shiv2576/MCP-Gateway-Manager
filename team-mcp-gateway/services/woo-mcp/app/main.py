@@ -108,7 +108,7 @@ def create_app(
         # No server-side sessions: any replica can answer any request, so this
         # scales to several pods behind a plain Service with no sticky routing.
         stateless_http=True,
-        json_response=True,
+        json_response=False,  # progress needs the call's response stream
         # The SDK turns on a Host-header allowlist (localhost only) when host is
         # 127.0.0.1. In a cluster the Host is the Service name, so bind-all here
         # and rely on the NetworkPolicy plus the token instead.

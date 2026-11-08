@@ -771,6 +771,23 @@ def test_inventory_health_gives_stock_facts():
     asyncio.run(run())
 
 
+def test_inventory_health_reports_a_progress_update_per_page(monkeypatch):
+    monkeypatch.setattr("app.server.PER_PAGE", 3)  # 7 products: three pages
+
+    async def run():
+        got = []
+
+        async def on_progress(progress, total, message):
+            got.append((progress, total, message))
+
+        with serve(_stock_store()) as store, serve(create_app(settings_for(store))) as url:
+            async with mcp_client(url) as client:
+                await client.call_tool("get_inventory_health", {}, progress_callback=on_progress)
+        assert got == [(p, None, f"fetched page {p}") for p in (1, 2, 3)]
+
+    asyncio.run(run())
+
+
 def test_inventory_health_on_a_store_without_the_data():
     async def run():
         fake = build_fake_woo()  # one product, no stock tracking, no purchase orders

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 from dataclasses import dataclass, field
@@ -20,15 +21,17 @@ from mcp.server.auth.settings import (
     RevocationOptions,
 )
 from mcp.server.lowlevel import Server
+from mcp.server.request_state import RequestStateBoundary, RequestStateSecurity
+from mcp.server.subscriptions import ListenHandler
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, ListToolsResult
+from mcp.types import CallToolResult, InputRequiredResult, ListToolsResult
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import alerts, api, approvals, chat, credentials, oauth, pii, pii_api, setup, teams
+from . import alerts, api, approvals, chat, credentials, events, interaction, oauth, pii, pii_api, setup, teams
 from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
@@ -54,6 +57,9 @@ class Settings:
     gateway_slug: str = ""  # edge only: which gateway's attached servers to serve
     # Fernet key that encrypts members' own upstream credentials. Both modes.
     credentials_key: str = field(default="", repr=False)
+    # Seals the requestState of interactive calls so any replica can take the retry.
+    # Edge only; >= 32 bytes, e.g. `openssl rand -base64 32`.
+    request_state_key: str = field(default="", repr=False)
     # Needed until first-run setup is done; then unused.
     setup_token: str = field(default="", repr=False)
     call_timeout_s: float = 10
@@ -103,6 +109,7 @@ class Settings:
             mode=env("GATEWAY_MODE", cls.mode).strip(),
             gateway_slug=env("GATEWAY_SLUG", "").strip(),
             setup_token=env("SETUP_TOKEN", "").strip(),
+            request_state_key=env("REQUEST_STATE_KEY", "").strip(),
             credentials_key=env("CREDENTIALS_KEY", "").strip(),
             call_timeout_s=float(env("CALL_TIMEOUT_S", cls.call_timeout_s)),
             list_timeout_s=float(env("LIST_TIMEOUT_S", cls.list_timeout_s)),
@@ -175,7 +182,7 @@ class ApiKeyGuard:
         return user
 
 
-def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route]):
+def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route], bus: events.PostgresBus):
     """/mcp for one gateway's attached servers, plus OAuth when PUBLIC_URL is set."""
 
     async def on_list_tools(ctx, params) -> ListToolsResult:
@@ -185,7 +192,7 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
             )
         )
 
-    async def on_call_tool(ctx, params) -> CallToolResult:
+    async def on_call_tool(ctx, params) -> CallToolResult | InputRequiredResult:
         info = getattr(
             ctx.session.client_params, "client_info", None
         )  # None on stateless requests without initialize
@@ -195,6 +202,8 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
             params.name,
             params.arguments,
             client=info and info.name,
+            progress=ctx.session.report_progress,  # does nothing when the client sent no progress token
+            ask=interaction.from_request(ctx, params),
         )
 
     server = Server(
@@ -205,6 +214,25 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
         ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
+        on_subscriptions_listen=ListenHandler(bus),
+    )
+
+    try:
+        state_security = RequestStateSecurity(
+            keys=[settings.request_state_key],
+            ttl=600.0,
+            audience=settings.gateway_slug,
+            bind_principal=lambda ctx: str(ctx.request.state.user["id"]),
+        )
+    except ValueError as e:
+        raise ConfigError(
+            "REQUEST_STATE_KEY must be at least 32 bytes (openssl rand -base64 32)"
+        ) from e
+    server.middleware.append(
+        RequestStateBoundary(
+            state_security,
+            default_audience=settings.gateway_slug,
+        )
     )
 
     auth = provider = None
@@ -226,7 +254,7 @@ def _edge_app(settings: Settings, conn, upstreams: Upstreams, health: list[Route
         # No MCP sessions are kept: any replica answers any request, no sticky routing.
         # The gateway needs no session features (no server-to-client requests, no resumption).
         stateless_http=True,
-        json_response=True,
+        json_response=False,  # progress, keepalives and cancellation need the call's response stream
         host="0.0.0.0",
         transport_security=_transport_security(settings),
         # No token_verifier: the SDK serves the OAuth endpoints, ApiKeyGuard guards /mcp.
@@ -262,6 +290,8 @@ def create_app(
     edge = settings.mode == "edge"
     if edge and not settings.gateway_slug:
         raise ConfigError("an edge needs GATEWAY_SLUG")
+    if edge and not settings.request_state_key:
+        raise ConfigError("an edge needs REQUEST_STATE_KEY")
     if not settings.database_url:
         raise ConfigError("DATABASE_URL is required")
     try:
@@ -327,8 +357,10 @@ def create_app(
         Route("/healthz", healthz, methods=["GET"]),
         Route("/readyz", readyz, methods=["GET"]),
     ]
+    bus = events.PostgresBus(settings.database_url, settings.gateway_slug,
+                             functools.partial(upstreams.refresh_all, notify=False)) if edge else None
     if edge:
-        app = _edge_app(settings, conn, upstreams, health)
+        app = _edge_app(settings, conn, upstreams, health, bus)
     else:
         app = Starlette(
             routes=[
@@ -385,10 +417,17 @@ def create_app(
     async def lifespan(a):
         async with sdk_lifespan(a):
             task = asyncio.create_task(upstreams.run_forever())
+            listening = asyncio.create_task(bus.run()) if bus else None
             try:
                 yield
             finally:
                 task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task  # lets the pool close before shutdown
+                if listening:
+                    listening.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await listening  # closes the LISTEN connection
                 conn.close()
 
     app.router.lifespan_context = lifespan

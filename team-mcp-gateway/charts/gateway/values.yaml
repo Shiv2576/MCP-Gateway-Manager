@@ -20,6 +20,8 @@ edgeWorkers: 2
 dbSecret: gateway-db
 # Secret with CREDENTIALS_KEY (key): the Fernet key that encrypts members' own
 # upstream credentials. Both modes; the gateway does not start without it.
+# Edges also need REQUEST_STATE_KEY (same Secret): seals requestState so any replica
+# can take an interactive call's retry. `openssl rand -base64 32`.
 credentialsSecret: gateway-credentials
 # Control only. Secret with SETUP_TOKEN (first-run setup) and optionally
 # OPENROUTER_API_KEY (dashboard chat agent). The chart never holds them.

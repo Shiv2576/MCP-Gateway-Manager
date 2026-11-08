@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx2
@@ -18,6 +19,13 @@ from tests.test_gateway import (
 from demo_mcp import build_fx, build_notes  # noqa: E402  (tests.test_gateway puts it on sys.path)
 
 
+def rpc_json(response) -> dict:
+    """The JSON-RPC message of a reply that is plain JSON or an SSE stream."""
+    if response.headers["content-type"].startswith("application/json"):
+        return response.json()
+    return json.loads(next(l[5:] for l in response.text.splitlines() if l.startswith("data:")))
+
+
 def test_mode_and_slug_are_checked(db_url):
     for s in (Settings(mode="edge", database_url=db_url, credentials_key=KEY), Settings(mode="nope", database_url=db_url, credentials_key=KEY, setup_token=SETUP)):
         try:
@@ -25,6 +33,22 @@ def test_mode_and_slug_are_checked(db_url):
         except ConfigError:
             continue
         raise AssertionError(f"started with mode={s.mode!r} slug={s.gateway_slug!r}")
+
+
+def test_edge_needs_a_request_state_key(db_url):
+    try:
+        create_app(edge_settings(db_url, "prod", request_state_key=""))
+    except ConfigError:
+        return
+    raise AssertionError("an edge started without REQUEST_STATE_KEY")
+
+
+def test_edge_rejects_a_short_request_state_key(db_url):
+    try:
+        create_app(edge_settings(db_url, "prod", request_state_key="short-key1"))
+    except ConfigError:
+        return
+    raise AssertionError("an edge started with a short REQUEST_STATE_KEY")
 
 
 def test_each_edge_serves_only_its_servers(db_url):
@@ -68,11 +92,11 @@ def test_each_edge_serves_only_its_servers(db_url):
                                    "clientInfo": {"name": "test", "version": "0"}}})
                     assert init.status_code == 200, init.text
                     assert "mcp-session-id" not in init.headers
-                    version = init.json()["result"]["protocolVersion"]
+                    version = rpc_json(init)["result"]["protocolVersion"]
                     r = await raw.post(f"{prod_b}/mcp", headers={**h, "MCP-Protocol-Version": version}, json={
                         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
                         "params": {"name": "fx__list", "arguments": {}}})
-                    assert r.status_code == 200 and r.json()["result"]["isError"] is False, r.text
+                    assert r.status_code == 200 and rpc_json(r)["result"]["isError"] is False, r.text
 
                     # A valid key is not enough with a foreign Host header.
                     r = await raw.post(f"{prod}/mcp", headers={**h, "Host": "evil.example"}, json={})
