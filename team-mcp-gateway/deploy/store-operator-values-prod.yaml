@@ -7,7 +7,7 @@ image:
 gatewayUrl: http://team-gateway:8000
 maxStores: 5
 edgeImageRepository: ghcr.io/shiv2576/gateway
-edgeImageTag: "fb6c5ff232e78e7325ff4cdfa6e0caffdfe21318"
+edgeImageTag: "21222e2c9ec0a4212b8958773ef8edb3d7202144"
 wooMcpImage:
   repository: ghcr.io/shiv2576/woo-mcp
   tag: "2c832c63496ab54a4e5ce0404787cc6d4c7fdbf0"
