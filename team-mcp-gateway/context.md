@@ -41,7 +41,7 @@ Built on top (each covered below): control plane + per-gateway edges, Postgres,
 teams with per-tool policies, per-member denies, shared vs personal upstream
 identity, write budgets + admin approvals, PII masking, team alerts, chat agent
 with guardrails, store provisioning operator, hosted MCP servers from an image,
-OAuth for Claude custom connectors, Reports + live WordPress metrics, network
+OAuth for Claude custom connectors, Reports + Prometheus metrics, network
 hardening, a production VPS with TLS, and a GitOps pipeline.
 
 Removed along the way: the `customer` role, per-member server grants
@@ -114,7 +114,9 @@ team-mcp-gateway/
       credentials.py        Fernet encryption of upstream + personal credentials, SSRF check
       gateways.py           McpGateway CRs, attach servers, shared/personal identity
       hosted.py             HostedServer CRs (MCP server from an image)
-      stores.py, kube.py    Store CRs, store limit, live metrics, TokenReview client
+      stores.py, kube.py    Store CRs, store limit, TokenReview client
+      metrics.py            Prometheus /metrics on :9100 (tool calls, durations)
+      metrics_report.py     GET /api/reports/metrics: Reports charts from Prometheus
       chat.py               chat agent (POST /api/chat) with guardrails
       oauth.py              OAuth authorization server for /mcp
     store-operator/         kopf: Store / McpGateway / HostedServer → namespaces + Helm releases
@@ -137,8 +139,8 @@ data via `files/seed.php`), and a `restock.php` mu-plugin (purchase orders).
 Templates: `catalog-a` (40 products with cost and stock + 90 days of sales
 history, ~1,500 orders: the restock demo, setup ~5 min), `catalog-b` (300
 products, 7 orders), `blank` (3 products, 2 orders). Seed orders are dated the
-day the store is created. An apache-exporter sidecar exposes busy workers on
-`store-wordpress-metrics:9150` (the dashboard no longer shows it, see 4.11).
+day the store is created. An apache-exporter sidecar still runs but is unused
+(see 4.11); nothing may reach it.
 
 ### 4.2 woo-mcp (`services/woo-mcp`)
 
@@ -203,8 +205,8 @@ across all pods; refused calls are audited.
 REST API: `docs/reference.md` has the main table. Added since: `/api/approvals`
 (+ approve/reject/count), `/api/alerts` (+ done/count), `/api/pii-rules`
 (+ fields/test), `/api/gateways/{slug}/pii`, `/api/gateways/{slug}/servers/{id}/identity`,
-`/api/me/credentials`, `/api/hosted`, `/api/reports`, `/api/stores/limit`,
-`/api/stores/metrics`, `/api/teams/{id}/gateways/{slug}/{budgets,alert-rules}`,
+`/api/me/credentials`, `/api/hosted`, `/api/reports`, `/api/reports/metrics`, `/api/stores/limit`,
+`/api/teams/{id}/gateways/{slug}/{budgets,alert-rules}`,
 `/api/users/{id}/gateways/{slug}/denies`, `/api/audit/{id}`.
 
 ### 4.4 Gateways (control + edges)
@@ -295,15 +297,18 @@ PII Protection (admin), Audit log (admin, expandable result rows, Server
 column). Confirm dialogs use `src/confirm.jsx` `ask()`, not `window.confirm`.
 `PageBoundary` in `App.jsx` keeps one page's crash from blanking the app.
 
-### 4.11 Reports and live metrics
+### 4.11 Reports and metrics
 
-**Reports** (admin): per-store report tools as tables, plus (since d177923)
-a **WordPress metrics** section: one card per Ready store with live CPU
-(millicores) and memory (MiB) from metrics-server, polled from
-`GET /api/stores/metrics` every 5 s, last 5 minutes kept in the browser only.
-The separate "WordPress metrics" tab and the Apache busy-workers graph were
-removed; the backend still returns `busy_workers` and the store chart still
-runs the exporter sidecar (unused by the UI now).
+**Reports** (admin): counts and top-10 charts from `audit_log` (`GET /api/reports`),
+plus a **Gateway and store metrics** section with history from Prometheus
+(`GET /api/reports/metrics?range=1h|24h|7d|30d`, `metrics_report.py`): calls per
+minute, error rate and p95 per gateway; storefront requests, 5xx, CPU and memory
+per store. Every gateway pod serves `/metrics` on :9100 (`metrics.py`, multiprocess
+across uvicorn workers); store numbers come from Traefik and cAdvisor, so the store
+chart is unchanged. Prometheus (server only, 365 days capped at 15 GB) is the Argo
+app `deploy/argocd/apps/monitoring.yaml`; see `docs/gitops.md` → Monitoring.
+The old live metrics-server path (`/api/stores/metrics`) is gone; the Apache
+exporter sidecar still runs in stores but is unused.
 
 ### 4.12 Chat agent (`chat.py`, `Chat.jsx`)
 

@@ -29,6 +29,12 @@ spec:
         {{- end }}
       ports:
         - { protocol: TCP, port: 8000 }
+    # Prometheus scrapes /metrics.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.metrics.namespace }} } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+      ports:
+        - { protocol: TCP, port: {{ .Values.metrics.port }} }
   egress:
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
@@ -55,12 +61,12 @@ spec:
         - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/hosted, operator: Exists }] }
           podSelector: { matchLabels: { app.kubernetes.io/name: hosted-mcp } }
     {{- if eq .Values.mode "control" }}
-    # Each store WordPress's apache-exporter (busy workers, for the Metrics tab).
+    # The Reports charts query Prometheus.
     - to:
-        - namespaceSelector: { matchExpressions: [{ key: mcpgateway.example.com/store, operator: Exists }] }
-          podSelector: { matchLabels: { app.kubernetes.io/name: wordpress } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.metrics.namespace }} } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
       ports:
-        - { protocol: TCP, port: 9117 }
+        - { protocol: TCP, port: 9090 }
     {{- end }}
     # Internet upstreams and the LLM API, any port; never pod/Service IPs or metadata.
     # The Kubernetes API is reached through this rule too: its Service IP is

@@ -1,0 +1,66 @@
+# Prometheus server only: history for the dashboard's Reports charts (gateway /metrics,
+# Traefik per store, cAdvisor). No Grafana, Alertmanager or exporters.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 29.47.0
+    helm:
+      releaseName: prometheus
+      valuesObject:
+        alertmanager: { enabled: false }
+        kube-state-metrics: { enabled: false }
+        prometheus-node-exporter: { enabled: false }
+        prometheus-pushgateway: { enabled: false }
+        # Scrape only what the Reports charts read (pods with prometheus.io/scrape: gateways and
+        # Traefik; cAdvisor for store CPU/memory). The chart's other jobs (API server, nodes,
+        # service endpoints) would be tens of thousands of series and eat the 15 GB cap.
+        scrapeConfigs:
+          prometheus: { enabled: false }
+          kubernetes-api-servers: { enabled: false }
+          kubernetes-nodes: { enabled: false }
+          kubernetes-service-endpoints: { enabled: false }
+          kubernetes-service-endpoints-slow: { enabled: false }
+          prometheus-pushgateway: { enabled: false }
+          kubernetes-services: { enabled: false }
+          kubernetes-pods-slow: { enabled: false }
+          kubernetes-nodes-cadvisor:
+            metric_relabel_configs:
+              - source_labels: [__name__]
+                regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes
+                action: keep
+        server:
+          global: { scrape_interval: 30s }
+          retention: 365d
+          retentionSize: 15GB  # oldest data goes first: never fills the disk the stores share
+          persistentVolume: { size: 20Gi }
+          resources:
+            requests: { cpu: 100m, memory: 300Mi }
+            limits: { memory: 1Gi }
+        extraManifests:
+          - |
+            # Only the control gateway may query Prometheus.
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata: { name: prometheus-server-ingress }
+            spec:
+              podSelector:
+                matchLabels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/component: server }
+              policyTypes: [Ingress]
+              ingress:
+                - from:
+                    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mercora } }
+                      podSelector: { matchLabels: { app.kubernetes.io/name: gateway } }
+                  ports: [{ protocol: TCP, port: 9090 }]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

@@ -16,6 +16,7 @@ dependencies = [
     "cryptography>=43",
     # Patterns with a timeout that release the GIL: a slow custom regex fails one call, not the pod.
     "regex>=2024.11.6",
+    "prometheus-client>=0.21",
 ]
 
 [dependency-groups]

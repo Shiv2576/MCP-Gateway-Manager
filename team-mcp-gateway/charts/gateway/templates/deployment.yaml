@@ -12,6 +12,9 @@ spec:
       {{- include "gateway.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
       labels:
         # app.kubernetes.io/name: gateway is the label upstream and Postgres NetworkPolicies allow.
         {{- include "gateway.selectorLabels" . | nindent 8 }}
@@ -35,6 +38,8 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
           env:
             - name: GATEWAY_MODE
               value: {{ .Values.mode | quote }}
@@ -83,6 +88,14 @@ spec:
             {{- end }}
             - name: LLM_MODEL
               value: {{ .Values.llmModel | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: PROMETHEUS_MULTIPROC_DIR  # every uvicorn worker's numbers, summed on a scrape
+              value: /tmp/metrics
+            {{- if and (eq .Values.mode "control") .Values.metrics.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.metrics.prometheusUrl | quote }}
+            {{- end }}
             {{- with .Values.publicUrl }}
             - name: PUBLIC_URL
               value: {{ . | quote }}

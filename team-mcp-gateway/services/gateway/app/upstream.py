@@ -24,7 +24,7 @@ import anyio
 import httpx2
 from mcp.types import CallToolResult, InputRequiredResult, TextContent, Tool
 
-from . import events
+from . import events, metrics
 from .db import allowed_tools, connection_identity
 from .pii import FILTER_TIMEOUT, load_rules, redact_result
 from .pool import UpstreamPool
@@ -443,7 +443,9 @@ class Upstreams:
             return row, audit_id, headers, identity, result, note, outcome
 
         row, audit_id, headers, identity, result, note, outcome = await anyio.to_thread.run_sync(prepare)
+        server = row["name"] if row else metrics.UNKNOWN  # never the requested name: labels stay bounded
         if isinstance(result, InputRequiredResult):  # a question: no upstream, PII or alert step
+            metrics.record_call(gateway_slug, server, "asked", time.monotonic() - started)
             await anyio.to_thread.run_sync(lambda: self.db.execute(
                 "UPDATE audit_log SET error = ?, duration_ms = ?, outcome = 'asked' WHERE id = ?",
                 (note, int((time.monotonic() - started) * 1000), audit_id)))
@@ -462,6 +464,7 @@ class Upstreams:
                 # by the unwinding; the audit row must not stay NO_RESULT, and it keeps counting
                 # against the budget (approvals._window).
                 with anyio.CancelScope(shield=True):
+                    metrics.record_call(gateway_slug, server, "cancelled", time.monotonic() - started)
                     await anyio.to_thread.run_sync(lambda: self.db.execute(
                         "UPDATE audit_log SET error = ?, duration_ms = ?, outcome = 'cancelled' WHERE id = ?",
                         (CANCELLED, int((time.monotonic() - started) * 1000), audit_id)))
@@ -484,6 +487,8 @@ class Upstreams:
             error = (" ".join(c.text for c in logged.content if isinstance(c, TextContent))[:500]
                      if logged else "error text not kept: the PII filter failed")
         duration_ms = int((time.monotonic() - started) * 1000)
+        outcome = outcome or ("tool_error" if result.is_error else "ok")
+        metrics.record_call(gateway_slug, server, outcome, duration_ms / 1000)
 
         def finish():
             self.db.execute(
@@ -498,7 +503,7 @@ class Upstreams:
                     _payload(logged),
                     masked_for_log,
                     masked_args.content[0].text[:PAYLOAD_CAP] if masked_args else None,
-                    outcome or ("tool_error" if result.is_error else "ok"),
+                    outcome,
                     audit_id,
                 ),
             )
@@ -585,6 +590,7 @@ class Upstreams:
         outcome = "rate_limited" if limited else "denied" if error == "unknown tool" else (
             "tool_error" if result.is_error else "ok")
         duration_ms = int((time.monotonic() - started) * 1000)
+        metrics.record_call(gateway_slug, approvals.BUILTIN, outcome, duration_ms / 1000)
         await anyio.to_thread.run_sync(lambda: self.db.execute(
             "UPDATE audit_log SET ok = ?, duration_ms = ?, error = ?, approval_id = ?, outcome = ? WHERE id = ?",
             (0 if result.is_error else 1, duration_ms,

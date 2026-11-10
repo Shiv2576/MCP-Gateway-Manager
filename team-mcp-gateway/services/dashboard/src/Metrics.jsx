@@ -2,79 +2,92 @@ import { useEffect, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api.js'
 
-const POLL_MS = 5000
-const POINTS = 60 // 5 minutes at one sample per 5 s; kept only while this page is open
+const RANGES = ['1h', '24h', '7d', '30d']
+const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
-const time = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+// One row per timestamp, one key per series: the shape Recharts draws several lines from.
+// The server aligns every query to the same steps, so the timestamps line up.
+function rows(series) {
+  const byT = new Map()
+  for (const s of series) {
+    for (const [t, v] of s.points) {
+      if (!byT.has(t)) byT.set(t, { t })
+      byT.get(t)[s.name] = v
+    }
+  }
+  return [...byT.values()].sort((a, b) => a.t - b.t)
+}
 
-// One live line, in the same Recharts style as Reports.
-function Graph({ title, now, data, dataKey, unit, color }) {
+function Chart({ chart, short }) {
+  const tick = (t) => new Date(t * 1000).toLocaleString([], short
+    ? { hour: '2-digit', minute: '2-digit' }
+    : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
   return (
-    <div>
-      <div className="muted small">{title}</div>
-      <div className="stat">{now ?? '—'}</div>
-      <ResponsiveContainer width="100%" height={140}>
-        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-          <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="t" tickFormatter={time} minTickGap={40}
-            tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis width={44} domain={[0, 'auto']} allowDecimals={false}
-            tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
-          <Tooltip labelFormatter={time} formatter={(v) => [`${v}${unit}`, title]}
-            contentStyle={{ background: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12 }}
-            labelStyle={{ color: 'var(--popover-foreground)' }} />
-          <Line dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
-        </LineChart>
-      </ResponsiveContainer>
+    <div className="card">
+      <h3>{chart.title}</h3>
+      {chart.series.length === 0 ? (
+        <p className="muted small">No data yet.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={180}>
+          <LineChart data={rows(chart.series)} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <CartesianGrid vertical={false} stroke="var(--border)" />
+            <XAxis dataKey="t" tickFormatter={tick} minTickGap={40}
+              tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
+            <YAxis width={48} domain={[0, 'auto']}
+              tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} tickLine={false} axisLine={false} />
+            <Tooltip labelFormatter={tick} formatter={(v, name) => [`${v}${chart.unit}`, name]}
+              contentStyle={{ background: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12 }}
+              labelStyle={{ color: 'var(--popover-foreground)' }} />
+            {chart.series.map((s, i) => (
+              <Line key={s.name} dataKey={s.name} name={s.name} stroke={COLORS[i % COLORS.length]} strokeWidth={2}
+                dot={false} isAnimationActive={false} connectNulls={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      )}
     </div>
   )
 }
 
+// Gateway and store metrics with history, from Prometheus (via /api/reports/metrics).
 export default function Metrics() {
-  const [history, setHistory] = useState({}) // store name -> recent samples
+  const [range, setRange] = useState('24h')
+  const [data, setData] = useState(null)
   const [error, setError] = useState('')
-  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    const poll = () => api('/stores/metrics').then((stores) => {
-      const t = Date.now()
-      setHistory((old) => Object.fromEntries(stores.map((s) => [s.name, [...(old[s.name] || []), {
-        t,
-        cpu: s.cpu_millicores,
-        mem: s.memory_mib,
-      }].slice(-POINTS)])))
-      setError('')
-      setLoaded(true)
-    }).catch((e) => setError(e.message))
-    poll()
-    const id = setInterval(poll, POLL_MS)
-    return () => clearInterval(id)
-  }, [])
+    let current = true // a slow answer for the previous range must not replace this one
+    setError('')
+    setData(null)
+    api(`/reports/metrics?range=${range}`).then((d) => current && setData(d)).catch((e) => {
+      if (current) setError(e.status === 503 ? "Metrics aren't set up: Prometheus isn't configured." : e.message)
+    })
+    return () => { current = false }
+  }, [range])
 
-  const names = Object.keys(history)
+  const groups = data ? [...new Set(data.charts.map((c) => c.group))] : []
+  const short = range === '1h' || range === '24h'
   return (
     <>
-      <h2>WordPress metrics</h2>
-      <p className="muted small">
-        Live, every {POLL_MS / 1000} s, last {(POINTS * POLL_MS) / 60000} minutes. Not stored: leaving this page clears it.
-      </p>
+      <h2>Gateway and store metrics</h2>
+      <div className="row">
+        {RANGES.map((r) => (
+          <button key={r} className={r === range ? 'primary' : 'ghost'} aria-pressed={r === range} onClick={() => setRange(r)}>
+            {r}
+          </button>
+        ))}
+        <span className="muted small">History from Prometheus.</span>
+      </div>
       {error && <p className="error" role="alert">{error}</p>}
-      {loaded && names.length === 0 && <p className="muted">No Ready stores.</p>}
-      {names.map((name) => {
-        const data = history[name]
-        const last = data[data.length - 1]
-        return (
-          <div key={name} className="card">
-            <h3>{name}</h3>
-            <div className="metric-graphs">
-              <Graph title="CPU" now={last.cpu != null ? `${last.cpu} m` : null}
-                data={data} dataKey="cpu" unit=" m" color="var(--chart-2)" />
-              <Graph title="Memory" now={last.mem != null ? `${last.mem} MiB` : null}
-                data={data} dataKey="mem" unit=" MiB" color="var(--chart-3)" />
-            </div>
+      {!data && !error && <p className="muted small">Loading…</p>}
+      {groups.map((g) => (
+        <section key={g}>
+          <h3>{g}</h3>
+          <div className="charts">
+            {data.charts.filter((c) => c.group === g).map((c) => <Chart key={c.id} chart={c} short={short} />)}
           </div>
-        )
-      })}
+        </section>
+      ))}
     </>
   )
 }

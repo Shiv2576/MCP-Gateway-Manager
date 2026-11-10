@@ -66,6 +66,13 @@ tailscale:
 service:
   port: 8000
 
+# /metrics on its own port, never behind the Ingress; Prometheus (namespace `namespace`) scrapes it.
+metrics:
+  port: 9100
+  namespace: monitoring
+  # Control only: where /api/reports/metrics queries. Empty: the Reports charts say "not configured".
+  prometheusUrl: ""
+
 resources:
   requests:
     cpu: 50m

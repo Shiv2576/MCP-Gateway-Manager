@@ -398,10 +398,13 @@ Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
 ### 12. Observability metrics
 
-**Where:** `team-mcp-gateway/services/gateway/app/kube.py`, `team-mcp-gateway/services/dashboard/src/Metrics.jsx`
+**Where:** `team-mcp-gateway/services/gateway/app/metrics.py`, `team-mcp-gateway/services/gateway/app/metrics_report.py`, `team-mcp-gateway/services/dashboard/src/Metrics.jsx`, `team-mcp-gateway/deploy/argocd/apps/monitoring.yaml`
 
-- Per-store CPU and memory from metrics-server.
-- Shown live per store on the dashboard's **Reports** page.
+- A Prometheus server (no Grafana or alerts), installed by Argo CD in the `monitoring` namespace, keeps 365 days of history, capped at 15 GB.
+- Every gateway pod (control plane and edges) serves its own metrics on port 9100, never behind the Ingress: tool calls by gateway, server and outcome, and their duration.
+- Stores need no extra software: storefront traffic comes from Traefik, CPU and memory from the kubelet.
+- The dashboard's **Reports** page charts calls per minute, error rate and p95 latency per gateway, and requests, 5xx errors, CPU and memory per store, over 1 hour, 24 hours, 7 days or 30 days.
+- Per-user and per-tool numbers stay in the audit log, as before.
 
 ### 13. Tools provided by the gateway itself
 

@@ -17,3 +17,6 @@ baseDomain: 2001-41d0-303-2774--94.sslip.io
 urlScheme: https
 # Every new gateway: https://<slug>-gw.tailff0a64.ts.net over Tailscale Funnel (IPv4 too).
 tailnetDomain: tailff0a64.ts.net
+# Prometheus (deploy/argocd/apps/monitoring.yaml) for the Reports tab's charts.
+metrics:
+  prometheusUrl: http://prometheus-server.monitoring.svc

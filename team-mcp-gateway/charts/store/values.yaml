@@ -32,9 +32,9 @@ wordpress:
     registry: registry-1.docker.io
     repository: bitnami/wordpress
     tag: latest
-  # apache-exporter sidecar: reads Apache's local /server-status and serves busy/idle
-  # workers on :9117 (Service store-wordpress-metrics:9150) for the dashboard's Metrics tab.
-  # Only the control gateway may reach it (operator NetworkPolicy metrics-ingress).
+  # apache-exporter sidecar (busy/idle workers on :9117). Unused since the Reports charts moved
+  # to Prometheus (store CPU/memory from cAdvisor, traffic from Traefik); nothing may reach it.
+  # Removable in a later store-chart change, which existing stores get only on an upgrade.
   metrics:
     enabled: true
     resources:

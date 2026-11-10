@@ -31,12 +31,13 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import alerts, api, approvals, chat, credentials, events, interaction, oauth, pii, pii_api, search, setup, teams
+from . import alerts, api, approvals, chat, credentials, events, interaction, metrics, oauth, pii, pii_api, search, setup, teams
 from . import db as store
 from . import gateways as gateway_api
 from . import hosted as hosted_api
+from . import metrics_report
 from . import stores as store_api
-from .kube import Kube, StoreMetrics, TokenReview
+from .kube import Kube, TokenReview
 from .upstream import Upstreams
 
 log = logging.getLogger("gateway")
@@ -95,6 +96,10 @@ class Settings:
     # setup so it is the first server the admin sees. Empty: no seed.
     seed_server_url: str = ""
     seed_server_token: str = field(default="", repr=False)
+    # /metrics on its own port (the chart sets 9100); 0: not served.
+    metrics_port: int = 0
+    # Control only: Prometheus for the Reports charts (/api/reports/metrics); empty: not configured.
+    prometheus_url: str = ""
     # Where OAuth codes may be sent, besides loopback URLs. Claude's callback.
     oauth_redirect_uris: tuple[str, ...] = (
         "https://claude.ai/api/mcp/auth_callback",
@@ -134,6 +139,8 @@ class Settings:
             tailnet_domain=env("TAILNET_DOMAIN", "").strip().strip("."),
             seed_server_url=env("SEED_SERVER_URL", "").strip(),
             seed_server_token=env("SEED_SERVER_TOKEN", "").strip(),
+            metrics_port=int(env("METRICS_PORT", cls.metrics_port)),
+            prometheus_url=env("PROMETHEUS_URL", "").strip().rstrip("/"),
             oauth_redirect_uris=tuple(
                 u for u in env("OAUTH_REDIRECT_URIS", "").split(",") if u.strip()
             )
@@ -292,7 +299,6 @@ def _transport_security(settings: Settings) -> TransportSecuritySettings:
 
 def create_app(
     settings: Settings | None = None, stores=None, gateways=None, hosted=None, token_review=None,
-    store_metrics=None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     if settings.mode not in ("control", "edge"):
@@ -386,6 +392,7 @@ def create_app(
                 *pii_api.routes,
                 *approvals.routes,
                 *alerts.routes,
+                *metrics_report.routes,
                 Route("/api/chat", chat.chat, methods=["POST"]),
             ]
         )
@@ -408,7 +415,6 @@ def create_app(
             else None
         )
     )
-    app.state.store_metrics = store_metrics or (StoreMetrics() if settings.stores_namespace else None)
     app.state.token_review = token_review or (
         TokenReview() if settings.operator_service_account and not edge else None
     )
@@ -427,6 +433,8 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(a):
         async with sdk_lifespan(a):
+            if settings.metrics_port:
+                metrics.serve(settings.metrics_port)  # one worker of the pod serves; the rest skip
             task = asyncio.create_task(upstreams.run_forever())
             listening = asyncio.create_task(bus.run()) if bus else None
             try:
