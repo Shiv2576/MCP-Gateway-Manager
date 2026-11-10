@@ -301,10 +301,10 @@ column). Confirm dialogs use `src/confirm.jsx` `ask()`, not `window.confirm`.
 
 **Reports** (admin): counts and top-10 charts from `audit_log` (`GET /api/reports`),
 plus a **Gateway and store metrics** section with history from Prometheus
-(`GET /api/reports/metrics?range=1h|24h|7d|30d`, `metrics_report.py`): calls per
-minute, error rate and p95 per gateway; storefront requests, 5xx, CPU and memory
-per store. Every gateway pod serves `/metrics` on :9100 (`metrics.py`, multiprocess
-across uvicorn workers); store numbers come from Traefik and cAdvisor, so the store
+(`GET /api/reports/metrics?range=1h|24h|7d|30d`, `metrics_report.py`): tool calls
+per minute and p95 per gateway; CPU and memory per store. Every gateway pod serves
+`/metrics` on :9100 (`metrics.py`, multiprocess across uvicorn workers); store
+numbers come from cAdvisor, so the store
 chart is unchanged. Prometheus (server only, 365 days capped at 15 GB) is the Argo
 app `deploy/argocd/apps/monitoring.yaml`; see `docs/gitops.md` → Monitoring.
 The old live metrics-server path (`/api/stores/metrics`) is gone; the Apache

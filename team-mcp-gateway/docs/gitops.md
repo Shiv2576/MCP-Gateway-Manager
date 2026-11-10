@@ -131,7 +131,6 @@ Alertmanager or exporters. Its data lives on a 20 Gi volume and is kept 365 days
 every 30 s:
 
 - every gateway pod (control plane and edges), on port 9100;
-- k3s's Traefik, for each store's storefront traffic;
 - the kubelet's cAdvisor, for each store's CPU and memory.
 
 The control gateway queries it (`PROMETHEUS_URL`) for the Reports tab's charts. Only that
@@ -141,14 +140,8 @@ After the first deploy, check on the VPS:
 
 1. `kubectl -n monitoring get pods`: the server is Running.
 2. `kubectl -n monitoring port-forward svc/prometheus-server 9090:80`, then open
-   http://localhost:9090/targets: the gateway pods, `kubernetes-nodes-cadvisor` and Traefik are up.
-3. Traefik exposes metrics with scrape annotations:
-   `kubectl -n kube-system get pod -l app.kubernetes.io/name=traefik -o jsonpath='{.items[0].metadata.annotations}'`
-   shows `prometheus.io/scrape`.
-4. In Prometheus, query `traefik_service_requests_total`: a store's `service` label looks like
-   `store-<name>-store-wordpress-<port>@kubernetes`. If not, change the two `st_*` queries in
-   `services/gateway/app/metrics_report.py`.
-5. The Reports tab shows lines within about 2 minutes of traffic.
+   http://localhost:9090/targets: the gateway pods and `kubernetes-nodes-cadvisor` are up.
+3. The Reports tab shows lines within about 2 minutes of traffic.
 
 Stores made before this change keep an unused NetworkPolicy, `metrics-ingress` (the operator only
 creates policies). It is harmless; `kubectl -n store-<name> delete networkpolicy metrics-ingress`

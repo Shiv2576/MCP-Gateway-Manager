@@ -8,6 +8,8 @@
 > **Live dashboard:** [https://dash.2001-41d0-303-2774--94.sslip.io/](https://dash.2001-41d0-303-2774--94.sslip.io/)
 >
 > **MCP-Gateway Manager Intro Video:** https://youtu.be/6eaWvSC3Jjw
+>
+> **Submitted version (26 October 2026):** branch [`submission-v1`](https://github.com/Shiv2576/MCP-Gateway-Manager/tree/submission-v1). The `main` branch has kept improving since then.
 
 ---
 
@@ -231,12 +233,12 @@ kubectl get pods -A; kubectl get certificate -A
 
 ## Design and trade-offs
 
-| Choice | Why | Trade-off |
-| --- | --- | --- |
-| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token. | More moving parts; each edge has its own 30 s tool cache. |
-| Stateless edges and chat | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | Still no sessions. On protocol 2026-07-28 the edges add write confirmation and over-budget reason (elicitation), progress, cancellation and tools-changed push; older clients get the old behaviour, but receive event-stream responses instead of plain JSON (real MCP clients accept both). |
-| One central Postgres | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request. | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG). |
-| Write budgets + admin approval | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure. | A big job waits for an admin. |
+| Choice                                       | Why                                                                                                                                                                                                                                                                                                              | Trade-off                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control plane + edges (one image, two modes) | Control runs the dashboard API, chat and provisioning; each gateway's edge pods serve only `/mcp`, so public traffic can't take down admin. Control can only create our custom resources; the operator does the real provisioning; edges have no Kubernetes token.                                               | More moving parts; each edge has its own 30 s tool cache.                                                                                                                                                                                                                                     |
+| Stateless edges and chat                     | No MCP sessions: each gateway runs identical replicas, and any replica of a gateway can serve any request for that gateway’s tools; it only accepts tools from the servers attached to that gateway. Restarts don’t break clients. Chat uses the same call_tool path as /mcp, so policy and audit are identical. | Still no sessions. On protocol 2026-07-28 the edges add write confirmation and over-budget reason (elicitation), progress, cancellation and tools-changed push; older clients get the old behaviour, but receive event-stream responses instead of plain JSON (real MCP clients accept both). |
+| One central Postgres                         | Single source of truth (users, keys, policies, servers, encrypted credentials, audit); a revoked key or disabled server applies on the next request.                                                                                                                                                             | Single point of failure and bottleneck. Next: HA Postgres (CloudNativePG).                                                                                                                                                                                                                    |
+| Write budgets + admin approval               | Per member and tool, per rolling hour; going over turns the call into an approval request instead of a plain failure.                                                                                                                                                                                            | A big job waits for an admin.                                                                                                                                                                                                                                                                 |
 
 ### Routing
 
@@ -257,26 +259,26 @@ A dead upstream costs 5 s in the background loop, never on a request, and shows 
 
 Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
-| Area | Local → VPS → Next |
-| --- | --- |
-| DNS | `*.localhost` → sslip.io (VPS) → a real domain. |
-| Ingress | Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect. |
-| Storage | `local-path` (one node's disk) → replicated or cloud block storage, with backups. |
+| Area    | Local → VPS → Next                                                                                                 |
+| ------- | ------------------------------------------------------------------------------------------------------------------ |
+| DNS     | `*.localhost` → sslip.io (VPS) → a real domain.                                                                    |
+| Ingress | Traefik both; prod adds cert-manager + Let's Encrypt and HTTP→HTTPS redirect.                                      |
+| Storage | `local-path` (one node's disk) → replicated or cloud block storage, with backups.                                  |
 | Secrets | Created by hand, never in charts → k3s secrets encryption or Vault/KMS; rotate `CREDENTIALS_KEY` with MultiFernet. |
 
 ---
 
 <h2 align="center">Stand Out Features (Optional)</h2>
 
-| # | Feature | # | Feature |
-| --- | --- | --- | --- |
-| 1 | Domains and TLS | 8 | PII guardrails |
-| 2 | How woo-mcp talks to the store | 9 | Store provisioning |
-| 3 | Security measures | 10 | Cart recovery (targeted cart discounts) |
-| 4 | Production pipeline (GHCR + Argo CD) | 11 | Inventory optimization |
-| 5 | OAuth server for Claude custom connector | 12 | Observability metrics |
-| 6 | Tool and team provisioning | 13 | Tools provided by the gateway itself |
-| 7 | Rate limit and write budget | | |
+| #   | Feature                                  | #   | Feature                                 |
+| --- | ---------------------------------------- | --- | --------------------------------------- |
+| 1   | Domains and TLS                          | 8   | PII guardrails                          |
+| 2   | How woo-mcp talks to the store           | 9   | Store provisioning                      |
+| 3   | Security measures                        | 10  | Cart recovery (targeted cart discounts) |
+| 4   | Production pipeline (GHCR + Argo CD)     | 11  | Inventory optimization                  |
+| 5   | OAuth server for Claude custom connector | 12  | Observability metrics                   |
+| 6   | Tool and team provisioning               | 13  | Tools provided by the gateway itself    |
+| 7   | Rate limit and write budget              |     |                                         |
 
 ### 1. Domains and TLS
 
@@ -402,31 +404,34 @@ Same charts, only `*-local.yaml` → `*-prod.yaml` values change.
 
 - A Prometheus server (no Grafana or alerts), installed by Argo CD in the `monitoring` namespace, keeps 365 days of history, capped at 15 GB.
 - Every gateway pod (control plane and edges) serves its own metrics on port 9100, never behind the Ingress: tool calls by gateway, server and outcome, and their duration.
-- Stores need no extra software: storefront traffic comes from Traefik, CPU and memory from the kubelet.
-- The dashboard's **Reports** page charts calls per minute, error rate and p95 latency per gateway, and requests, 5xx errors, CPU and memory per store, over 1 hour, 24 hours, 7 days or 30 days.
+- Stores need no extra software: their CPU and memory come from the kubelet.
+- The dashboard's **Reports** page charts tool calls per minute and p95 latency per gateway, and CPU and memory per store, over 1 hour, 24 hours, 7 days or 30 days.
 - Per-user and per-tool numbers stay in the audit log, as before.
 
 ### 13. Tools provided by the gateway itself
 
 **Where:** `team-mcp-gateway/services/gateway/app/approvals.py`, `team-mcp-gateway/services/gateway/app/alerts.py`, `team-mcp-gateway/services/gateway/app/search.py`
 
-| Tool | What it does |
-| --- | --- |
-| `gateway__request_approval` | Asks an admin to approve a call that is over the write budget, with the exact arguments and a summary. |
-| `gateway__wait_for_approval` | Waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected. |
-| `gateway__list_team_alerts` | Lists alerts for the caller's teams (open, done or all). |
-| `gateway__mark_team_alert_done` | Marks an alert handled; teammates see who did it. |
-| `gateway__search_tools` | Search mode: finds the caller's allowed tools by what they want to do, with their full input schemas. |
-| `gateway__call_tool` | Search mode: runs a found tool through the normal call path, so policy, budgets, confirmation, PII filtering and audit still apply. |
+Every gateway serves these on its own `/mcp`, next to the tools of the servers attached to it.
 
-**Search mode:** a client that sends the header `X-Gateway-Tool-Mode: search` is listed only the gateway's own tools instead of every allowed tool's schema. One store's MCP server alone is about 14,000 tokens of tool definitions, sent with every message.
+| Tool                            | Listed           | What it does                                                                                                                                                 |
+| ------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `gateway__request_approval`     | Always (members) | Asks an admin to approve a call that is over the write budget, with the exact arguments and a summary.                                                       |
+| `gateway__wait_for_approval`    | Always (members) | Waits for the decision; returns the tool's result once approved and run, or the admin's note if rejected.                                                    |
+| `gateway__list_team_alerts`     | Always           | Lists alerts for the caller's teams (open, done or all).                                                                                                     |
+| `gateway__mark_team_alert_done` | Always           | Marks an alert handled; teammates see who did it.                                                                                                            |
+| `gateway__search_tools`         | Search mode only | Finds tools by what the caller wants to do, among the tools the caller may use on **this gateway**, and returns them with their full input schemas.          |
+| `gateway__call_tool`            | Search mode only | Runs a found tool by its full name (`<server>__<tool>`) through the normal call path, so policy, budgets, confirmation, PII filtering and audit still apply. |
+
+**Search mode:** a client that sends the header `X-Gateway-Tool-Mode: search` to a gateway is listed only the gateway's own tools (the two search tools plus the approval and alert tools above) instead of every attached server's tool schemas. One store's MCP server alone is about 14,000 tokens of tool definitions, sent with every message. Search covers only that gateway: a client connected to one gateway can't find or call another gateway's tools. Without the header, the gateway lists every allowed tool as before.
 
 **Why I built them:**
 
 - **Approvals:** a write budget that only refused calls would leave the agent stuck. With these tools the agent asks for approval, explains why, and gets the real result once an admin approves. The gateway runs the saved call itself, so the arguments can't change after approval.
 - **Alerts:** one team's action often needs another team to act (a purchase order from `create_restock_plan` means the store operators must receive the goods). An admin sets a rule on the **Teams** page ("alert this team when `<tool>` succeeds on `<gateway>`"), and every matching successful call opens a PII-masked alert for that team.
+- **Search:** an agent connected to a gateway with many tools pays for every schema on every message. In search mode it looks up the few tools it needs and runs them, with the same checks as a direct call.
 
 **Where they are shown:**
 
-- In `tools/list` for every MCP client (Claude, Claude Code, the dashboard chat), next to the store tools. Members get all four; admins get only the two alert tools.
+- In `tools/list` for every MCP client (Claude, Claude Code, the dashboard chat), next to the gateway's server tools. Members get the approval and alert tools; admins get only the two alert tools. In search mode, the two search tools replace the server tools.
 - On the dashboard's **Alerts** page: admins approve or reject requests, and members see their team alerts and mark them done. Every call also appears in the audit log.

@@ -1,5 +1,5 @@
 # Prometheus server only: history for the dashboard's Reports charts (gateway /metrics,
-# Traefik per store, cAdvisor). No Grafana, Alertmanager or exporters.
+# cAdvisor per store). No Grafana, Alertmanager or exporters.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -18,8 +18,8 @@ spec:
         kube-state-metrics: { enabled: false }
         prometheus-node-exporter: { enabled: false }
         prometheus-pushgateway: { enabled: false }
-        # Scrape only what the Reports charts read (pods with prometheus.io/scrape: gateways and
-        # Traefik; cAdvisor for store CPU/memory). The chart's other jobs (API server, nodes,
+        # Scrape only what the Reports charts read (pods with prometheus.io/scrape: the gateways;
+        # cAdvisor for store CPU/memory). The chart's other jobs (API server, nodes,
         # service endpoints) would be tens of thousands of series and eat the 15 GB cap.
         scrapeConfigs:
           prometheus: { enabled: false }

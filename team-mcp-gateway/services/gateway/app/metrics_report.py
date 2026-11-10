@@ -21,11 +21,8 @@ from .api import HTTPError, handler, require_admin
 # range -> (seconds shown, step between points): about 60-180 points per line.
 RANGES = {"1h": (3600, 60), "24h": (86400, 600), "7d": (604800, 3600), "30d": (2592000, 14400)}
 
-_ERRORS = 'outcome=~"tool_error|timeout|unreachable"'
 # A question (elicitation) isn't a call: the client sends the call again with its answer.
 _CALLS = 'outcome!="asked"'
-_STORE_SVC = 'service=~"store-.+-store-wordpress-.+"'  # Traefik's name for a store's Service
-_BY_STORE_SVC = '"store", "$1", "service", "store-(.+)-store-wordpress-.+"'
 _STORE_PODS = 'namespace=~"store-.+", container!="", container!="POD"'
 _BY_STORE_NS = '"store", "$1", "namespace", "store-(.+)"'
 
@@ -34,21 +31,9 @@ _BY_STORE_NS = '"store", "$1", "namespace", "store-(.+)"'
 CHARTS = [
     ("gw_calls", "Gateways", "Tool calls per minute", "/min",
      f"sum by (gateway) (rate(gateway_tool_calls_total{{{_CALLS}}}[{{w}}])) * 60"),
-    # `or ... * 0`: an error counter exists only after a gateway's first error; a healthy one shows 0, not no line.
-    ("gw_errors", "Gateways", "Error rate", "%",
-     f"100 * (sum by (gateway) (rate(gateway_tool_calls_total{{{_ERRORS}}}[{{w}}]))"
-     f" or sum by (gateway) (rate(gateway_tool_calls_total{{{_CALLS}}}[{{w}}])) * 0)"
-     f" / sum by (gateway) (rate(gateway_tool_calls_total{{{_CALLS}}}[{{w}}]))"),
     ("gw_p95", "Gateways", "p95 latency", " ms",
      # Not built-ins: gateway__wait_for_approval long-polls ~25 s by design.
      '1000 * histogram_quantile(0.95, sum by (gateway, le) (rate(gateway_tool_call_seconds_bucket{server!="gateway"}[{w}])))'),
-    ("st_requests", "Stores", "Storefront requests per minute", "/min",
-     f"sum by (store) (label_replace(rate(traefik_service_requests_total{{{_STORE_SVC}}}[{{w}}]),"
-     f" {_BY_STORE_SVC})) * 60"),
-    ("st_5xx", "Stores", "Storefront 5xx per minute", "/min",
-     f'(sum by (store) (label_replace(rate(traefik_service_requests_total{{{_STORE_SVC}, code=~"5.."}}[{{w}}]),'
-     f" {_BY_STORE_SVC})) or sum by (store) (label_replace(rate(traefik_service_requests_total{{{_STORE_SVC}}}[{{w}}]),"
-     f" {_BY_STORE_SVC})) * 0) * 60"),
     ("st_cpu", "Stores", "CPU", " m",
      f"sum by (store) (label_replace(rate(container_cpu_usage_seconds_total{{{_STORE_PODS}}}[{{w}}]),"
      f" {_BY_STORE_NS})) * 1000"),
@@ -60,7 +45,7 @@ CHARTS = [
 
 def _value(raw: str) -> float | None:
     v = float(raw)
-    return round(v, 2) if math.isfinite(v) else None  # NaN: 0/0, e.g. an error rate with no calls
+    return round(v, 2) if math.isfinite(v) else None  # NaN: e.g. a p95 with no calls
 
 
 def _series(result: list) -> list[dict]:

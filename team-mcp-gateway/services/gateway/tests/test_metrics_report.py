@@ -13,7 +13,7 @@ from app.main import Settings, create_app
 from tests.test_gateway import SETUP, FakeGateways, serve, setup_admin
 from tests.test_stores import login
 
-IDS = ["gw_calls", "gw_errors", "gw_p95", "st_requests", "st_5xx", "st_cpu", "st_mem"]
+IDS = ["gw_calls", "gw_p95", "st_cpu", "st_mem"]
 
 
 def fake_prometheus(seen: list, answer):
@@ -60,8 +60,8 @@ def test_returns_every_chart_in_order_from_aligned_queries(db_url):
             assert {c["group"] for c in body["charts"]} == {"Gateways", "Stores"}
             calls = body["charts"][0]
             assert calls["series"] == [{"name": "main", "points": [[1000, 1.5], [1600, None]]}]  # NaN: no traffic
-            assert body["charts"][3]["series"] == []  # no stores: an empty chart, not an error
-            assert len(seen) == 7
+            assert body["charts"][2]["series"] == []  # no stores: an empty chart, not an error
+            assert len(seen) == 4
             for q in seen:
                 assert q["step"] == "600" and int(q["end"]) % 600 == 0
                 assert int(q["end"]) - int(q["start"]) == 86400
@@ -87,13 +87,9 @@ def test_prometheus_down_is_502(db_url):
     run_with(db_url, "http://127.0.0.1:9", check)  # nothing listens
 
 
-def test_error_charts_show_zero_rather_than_no_line_and_p95_skips_builtins():
+def test_p95_skips_builtins():
     from app.metrics_report import CHARTS
     q = {c[0]: c[4] for c in CHARTS}
-    # A labelled counter exists only after its first error: without a 0 fallback a healthy
-    # gateway or store would get no line at all.
-    assert " or " in q["gw_errors"] and "* 0" in q["gw_errors"]
-    assert " or " in q["st_5xx"] and "* 0" in q["st_5xx"]
     # gateway__wait_for_approval long-polls ~25 s: built-ins must not set the gateway's p95.
     assert 'server!="gateway"' in q["gw_p95"]
 
@@ -117,4 +113,3 @@ def test_questions_are_not_counted_as_calls():
     q = {c[0]: c[4] for c in CHARTS}
     # An asked call is retried with the answer: counting both would double it.
     assert 'outcome!="asked"' in q["gw_calls"]
-    assert q["gw_errors"].count('outcome!="asked"') == 2  # the 0 fallback and the denominator
