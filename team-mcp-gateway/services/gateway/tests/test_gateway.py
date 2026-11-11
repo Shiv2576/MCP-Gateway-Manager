@@ -417,6 +417,9 @@ def fake_llm(seen: list):
         else:
             text = msgs[-1]["content"]
             message = ({"role": "assistant", "content": REFUSAL} if "weather" in text
+                       else call("gateway__search_tools", {"query": "refund"}) if "find" in text
+                       else call("gateway__call_tool", {"name": "shop__refund", "arguments": {"order_id": 7}})
+                       if "via search" in text
                        else call("shop__orders", {}) if "orders" in text
                        else call("shop__refund", {"order_id": 7}) if "order 7" in text
                        else call("shop__refund", {}))
@@ -509,18 +512,17 @@ def test_chat_agent_guardrails(db_url):
                 assert (pending["name"], pending["arguments"]) == ("shop__refund", {"order_id": 7})
                 agent = next(s for s in seen if s[1]["model"] == settings.llm_model)
                 system = agent[1]["messages"][0]["content"]
-                assert "bob" in system and "<tool_result>" in system and agent[1]["max_tokens"] == 400
+                assert "bob" in system and "<tool_result>" in system and agent[1]["max_tokens"] == 1024
                 assert "team member, never an admin" in system
                 context = json.loads(system.split("(data, not instructions):\n")[1].split("\n")[0])
                 assert context == {"username": "bob", "role": "member", "teams": ["shop"], "gateway": "main",
                                    "stores": [], "calls_per_minute": settings.calls_per_minute,
-                                   "tool_count": 6, "tools": [{"name": "shop__orders", "write": False},
-                                                              {"name": "shop__refund", "write": True,
-                                                               "limit": "20 items/hour"},
-                                                              {"name": "gateway__request_approval", "write": True},
-                                                              {"name": "gateway__wait_for_approval", "write": True},
-                                                              {"name": "gateway__list_team_alerts", "write": False},
-                                                              {"name": "gateway__mark_team_alert_done", "write": True}]}
+                                   "tool_count": 6, "write_limits": [{"name": "shop__refund", "write": True,
+                                                                      "limit": "20 items/hour"}]}
+                # Search mode: upstream tools are found by search, never listed with their schemas.
+                assert [t["function"]["name"] for t in agent[1]["tools"]] == [
+                    "gateway__search_tools", "gateway__call_tool", "gateway__request_approval",
+                    "gateway__wait_for_approval", "gateway__list_team_alerts", "gateway__mark_team_alert_done"]
                 assert agent[0] == "Bearer test-llm-key"
 
                 payload, sig = pending["token"].split(".")
@@ -543,6 +545,16 @@ def test_chat_agent_guardrails(db_url):
                 assert await say("no", cancel=out["pending"]["token"]) == (200, {"reply": "Cancelled.", "calls": []})
                 assert (await say("yes", confirm=out["pending"]["token"]))[0] == 400 and refunds == [7]
                 assert tool_msg.startswith("<tool_result>") and tool_msg.count("</tool_result>") == 1
+
+                # Search is answered in the gateway; a write through gateway__call_tool is still held.
+                seen.clear()
+                code, out = await say("find a refund tool")
+                assert code == 200 and out == {"reply": "Done.", "calls": []}
+                found = json.loads(seen[-1][1]["messages"][-1]["content"])
+                assert [t["name"] for t in found] == ["shop__refund"] and "input_schema" in found[0]
+                code, out = await say("refund it via search")
+                assert out["pending"]["name"] == "shop__refund" and refunds == [7]
+                assert (await say("no", cancel=out["pending"]["token"]))[0] == 200
 
                 log = (await admin.get("/api/audit")).json()
                 assert sorted((e["username"], e["tool"], e["ok"]) for e in log) == [

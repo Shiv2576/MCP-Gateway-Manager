@@ -34,6 +34,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .api import HTTPError, body, current_user, gateway_param, handler
+from . import search
 from .approvals import budget_for, describe
 from .upstream import SEP
 
@@ -68,6 +69,8 @@ ask for it in one short question.
 confirmation in text.
 - A tool named <server>__<tool> acts on that one server; its description starts with [store <name>] \
 when the server is a store. If the user has more than one store and the request does not say which, ask.
+- Find tools with gateway__search_tools (a few words of what the user wants), then run one with \
+gateway__call_tool; search again with other words if nothing fits.
 - Pick the tool whose description matches the request; when two could fit, prefer the one the \
 descriptions point to for that case. Never claim a result you did not get from a tool.
 
@@ -92,7 +95,7 @@ ADMIN_RULES = """You act for an admin. Their writes have no budget, but each one
 
 MEMBER_RULES = """You act for a team member, never an admin: they cannot change teams, tools, budgets or \
 settings. If no listed tool can do what they ask, say an admin must grant it; never suggest a workaround.
-A write tool with a `limit` in the JSON is held to that budget per rolling hour, counted in items \
+A write tool in `write_limits` in the JSON is held to that budget per rolling hour, counted in items \
 (entries in `items`, else 1). When the gateway refuses a call over budget, call \
 gateway__request_approval with the same tool and arguments and a one-line `summary`, then give the \
 user the approval id. Tool calls are also capped at `calls_per_minute` across all their apps."""
@@ -183,8 +186,9 @@ def redeem(settings, user: dict, gateway: str, token) -> tuple[str, dict]:
 # --------------------------------------------------------------------- model
 
 
-async def _complete(settings, messages: list[dict], tools: list[dict], *, model=None, max_tokens=400) -> dict:
-    # Without a cap OpenRouter reserves the model's full output limit against your credit.
+async def _complete(settings, messages: list[dict], tools: list[dict], *, model=None, max_tokens=1024) -> dict:
+    # A cap keeps replies short (and OpenRouter reserves the full output limit against credit); thinking
+    # models spend part of it before answering.
     payload = {"model": model or settings.llm_model, "messages": messages, "max_tokens": max_tokens}
     if tools:
         payload["tools"] = tools
@@ -198,8 +202,9 @@ async def _complete(settings, messages: list[dict], tools: list[dict], *, model=
     except httpx2.HTTPError as exc:
         raise HTTPError(502, f"model provider unreachable ({type(exc).__name__})") from None
     data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-    if r.status_code != 200 or not data.get("choices"):
-        detail = str((data.get("error") or {}).get("message", ""))[:200]
+    if r.status_code != 200 or not isinstance(data, dict) or not data.get("choices"):
+        err = data[0] if isinstance(data, list) and data else data  # Gemini wraps its error in a list
+        detail = str(((err if isinstance(err, dict) else {}).get("error") or {}).get("message", ""))[:200]
         raise HTTPError(502, f"model provider error: HTTP {r.status_code} {detail}".strip())
     return data["choices"][0]["message"]
 
@@ -212,7 +217,7 @@ async def _allowed(settings, history: list[dict], tools: list) -> bool:
         {"role": "system", "content": GUARD.format(tools=listing)},
         {"role": "user", "content": f"Assistant's previous message:\n<<<{prev[:1000]}>>>\n\n"
                                     f"Last user message:\n<<<{last}>>>"},
-    ], [], model=settings.llm_guard_model, max_tokens=5)
+    ], [], model=settings.llm_guard_model, max_tokens=20)  # one label, a few tokens
     # Fails closed: only a clean in_scope or off_topic passes; the agent refuses off-topic itself.
     return (reply.get("content") or "").strip().lower().startswith(("in_scope", "off_topic"))
 
@@ -265,9 +270,10 @@ async def chat(request: Request) -> Response:
     history = _messages(data)
     upstreams = request.app.state.upstreams
     available = {t.name: t for t in upstreams.list_tools(user, gateway) if FUNCTION_NAME.match(t.name)}
+    # Search mode: every tool's schema is too big for one prompt (woo-mcp alone is ~14k tokens).
     tools = [
         {"type": "function", "function": {"name": t.name, "description": t.description or "", "parameters": t.input_schema}}
-        for t in available.values()
+        for t in search.listed(list(available.values()))
     ]
     db = request.app.state.db
     teams = db.execute(
@@ -290,7 +296,8 @@ async def chat(request: Request) -> Response:
     context = json.dumps({
         "username": user["username"], "role": user["role"], "teams": [t["name"] for t in teams],
         "gateway": gateway, "stores": stores, "calls_per_minute": upstreams.calls_per_minute,
-        "tool_count": len(available), "tools": [describe_tool(t) for t in available.values()],
+        "tool_count": len(available),
+        "write_limits": [d for t in available.values() if "limit" in (d := describe_tool(t))],
     })
     role_rules = ADMIN_RULES if user["role"] == "admin" else MEMBER_RULES
     messages = [
@@ -318,7 +325,10 @@ async def chat(request: Request) -> Response:
         if data.get("confirm") is not None:
             # The signed token is the user's intent; the injection check has nothing to add.
             name, args = redeem(settings, user, gateway, data["confirm"])
-            call = {"id": "confirmed", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            # Gemini rejects a replayed call without a thought signature; this value is its documented skip.
+            call = {"id": "confirmed", "type": "function",
+                    "extra_content": {"google": {"thought_signature": "skip_thought_signature_validator"}},
+                    "function": {"name": search.CALL, "arguments": json.dumps({"name": name, "arguments": args})}}
             messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
             async for step in run(name, args, "confirmed"):  # call_tool re-checks policy and budget
                 yield step
@@ -345,8 +355,18 @@ async def chat(request: Request) -> Response:
                     args = json.loads(tc["function"].get("arguments") or "{}")
                 except ValueError:
                     args = None
+                if name == search.SEARCH:  # answered here; not a tool call the user sees
+                    found = search.search(list(available.values()), args if isinstance(args, dict) else None)
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _result_text(found)})
+                    continue
+                if name == search.CALL:  # the real tool then gets every check below
+                    unwrapped = search.unwrap(args if isinstance(args, dict) else None)
+                    if isinstance(unwrapped, tuple):
+                        name, args = unwrapped
                 tool = available.get(name)
-                if tool is None:
+                if name == search.CALL:
+                    problem = _result_text(unwrapped)
+                elif tool is None:
                     problem = f"Unknown tool '{name}'."
                 elif not isinstance(args, dict):
                     problem = "Arguments were not a JSON object."

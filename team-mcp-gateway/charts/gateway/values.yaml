@@ -43,8 +43,11 @@ oauthRedirectUris: ""
 # over urlScheme. Same as the store operator's values.
 baseDomain: localhost
 urlScheme: http
-# Chat agent model on OpenRouter.
-llmModel: openai/gpt-4.1-mini
+# Chat agent: any OpenAI-compatible chat completions URL; the key is OPENROUTER_API_KEY in the
+# admin Secret whatever the provider. llmGuardModel runs the scope check before every message.
+llmUrl: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+llmModel: gemini-3.5-flash
+llmGuardModel: gemini-3.5-flash-lite
 
 ingress:
   enabled: true

@@ -86,8 +86,12 @@ spec:
             - name: TAILNET_DOMAIN
               value: {{ .Values.tailnetDomain | quote }}
             {{- end }}
+            - name: LLM_URL
+              value: {{ .Values.llmUrl | quote }}
             - name: LLM_MODEL
               value: {{ .Values.llmModel | quote }}
+            - name: LLM_GUARD_MODEL
+              value: {{ .Values.llmGuardModel | quote }}
             - name: METRICS_PORT
               value: {{ .Values.metrics.port | quote }}
             - name: PROMETHEUS_MULTIPROC_DIR  # every uvicorn worker's numbers, summed on a scrape
