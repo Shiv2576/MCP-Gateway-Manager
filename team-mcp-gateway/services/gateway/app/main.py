@@ -74,7 +74,7 @@ class Settings:
     cookie_secure: bool = False
     # Chat agent. Any OpenAI-compatible chat completions URL works.
     openrouter_api_key: str = field(default="", repr=False)
-    llm_model: str = "gemini-3.5-flash"
+    llm_model: str = "gemini-3.5-flash-lite"
     # Cheap model for the scope check run before every chat message.
     llm_guard_model: str = "gemini-3.5-flash-lite"
     llm_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"

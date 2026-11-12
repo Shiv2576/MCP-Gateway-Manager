@@ -510,7 +510,7 @@ def test_chat_agent_guardrails(db_url):
                 assert code == 200 and refunds == []
                 pending = out["pending"]
                 assert (pending["name"], pending["arguments"]) == ("shop__refund", {"order_id": 7})
-                agent = next(s for s in seen if s[1]["model"] == settings.llm_model)
+                agent = next(s for s in seen if not s[1]["messages"][0]["content"].startswith("You classify"))
                 system = agent[1]["messages"][0]["content"]
                 assert "bob" in system and "<tool_result>" in system and agent[1]["max_tokens"] == 1024
                 assert "team member, never an admin" in system
